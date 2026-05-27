@@ -27,14 +27,14 @@ export function summarizeEvents(events: StatuslineEvent[]): DashboardSummary {
   const latestUsagePct = [...events]
     .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
     .find((event) => event.usagePct !== null)?.usagePct ?? null;
-  const weeklyUsagePct = [...events]
+  const latestSevenDayUsagePct = [...events]
     .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
     .find((event) => event.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null;
 
   return {
     fiveHourLatestUsagePct: latestUsagePct,
     fiveHourPeakUsagePct: usages.length > 0 ? roundNumber(Math.max(...usages), 1) : null,
-    weeklyUsagePct: sevenDayUsages.length > 0 ? weeklyUsagePct : null,
+    sevenDayUsagePct: sevenDayUsages.length > 0 ? latestSevenDayUsagePct : null,
     sampleCount: events.length,
     uniqueSessions: new Set(events.map((event) => event.sessionId).filter(Boolean)).size,
     uniqueWorkspaces: new Set(events.map((event) => event.workspaceDir).filter(Boolean)).size,

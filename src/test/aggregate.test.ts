@@ -16,7 +16,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
       aliceFile,
       JSON.stringify(
         {
-          schemaVersion: 4,
+          schemaVersion: 5,
           generatedAt: "2026-05-27T08:00:00.000Z",
           range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
           identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
@@ -36,13 +36,13 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
             },
           ],
           weeklySummary: {
-            schemaVersion: 4,
+            schemaVersion: 5,
             generatedAt: "2026-05-27T08:00:00.000Z",
             range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
             identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
             counts: { userMessageCount: 5, apiRequestCount: 3 },
             tokens: { inputTokens: 1000, outputTokens: 120, cacheReadInputTokens: 50 },
-            statusline: { sampleCount: 1, uniqueSessions: 1, uniqueWorkspaces: 1, fiveHourLatestUsagePct: 10, fiveHourPeakUsagePct: 10, weeklyUsagePct: 30 },
+            statusline: { sampleCount: 1, uniqueSessions: 1, uniqueWorkspaces: 1, fiveHourLatestUsagePct: 10, fiveHourPeakUsagePct: 10, sevenDayUsagePct: 30 },
             sources: {
               ccusDataDir: "D:/ccus",
               claudeDataDir: "C:/Users/test/.claude",
@@ -63,7 +63,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
               sampleCount: 1,
               fiveHourLatestUsagePct: 10,
               fiveHourPeakUsagePct: 10,
-              weeklyUsagePct: 30,
+              sevenDayUsagePct: 30,
               uniqueSessions: 1,
               uniqueWorkspaces: 1,
             },
@@ -79,7 +79,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
       bobFile,
       JSON.stringify(
         {
-          schemaVersion: 4,
+          schemaVersion: 5,
           generatedAt: "2026-05-27T08:00:00.000Z",
           range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
           identity: { gitUserName: "bob", gitUserEmail: "bob@example.com" },
@@ -99,13 +99,13 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
             },
           ],
           weeklySummary: {
-            schemaVersion: 4,
+            schemaVersion: 5,
             generatedAt: "2026-05-27T08:00:00.000Z",
             range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
             identity: { gitUserName: "bob", gitUserEmail: "bob@example.com" },
             counts: { userMessageCount: 4, apiRequestCount: 2 },
             tokens: { inputTokens: 800, outputTokens: 90, cacheReadInputTokens: 30 },
-            statusline: { sampleCount: 1, uniqueSessions: 1, uniqueWorkspaces: 1, fiveHourLatestUsagePct: 15, fiveHourPeakUsagePct: 15, weeklyUsagePct: 45 },
+            statusline: { sampleCount: 1, uniqueSessions: 1, uniqueWorkspaces: 1, fiveHourLatestUsagePct: 15, fiveHourPeakUsagePct: 15, sevenDayUsagePct: 45 },
             sources: {
               ccusDataDir: "D:/ccus",
               claudeDataDir: "C:/Users/test/.claude",
@@ -126,7 +126,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
               sampleCount: 1,
               fiveHourLatestUsagePct: 15,
               fiveHourPeakUsagePct: 15,
-              weeklyUsagePct: 45,
+              sevenDayUsagePct: 45,
               uniqueSessions: 1,
               uniqueWorkspaces: 1,
             },
@@ -170,19 +170,19 @@ test("loadWeeklyExportBundles rejects old schema bundles explicitly", async () =
       oldFile,
       JSON.stringify(
         {
-          schemaVersion: 3,
+          schemaVersion: 4,
           generatedAt: "2026-05-27T08:00:00.000Z",
           range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
           identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
           rawEvents: [],
           weeklySummary: {
-            schemaVersion: 3,
+            schemaVersion: 4,
             generatedAt: "2026-05-27T08:00:00.000Z",
             range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
             identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
             counts: { userMessageCount: 0, apiRequestCount: 0 },
             tokens: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0 },
-            statusline: { sampleCount: 0, uniqueSessions: 0, uniqueWorkspaces: 0, fiveHourLatestUsagePct: null, fiveHourPeakUsagePct: null, weeklyUsagePct: null },
+            statusline: { sampleCount: 0, uniqueSessions: 0, uniqueWorkspaces: 0, fiveHourLatestUsagePct: null, fiveHourPeakUsagePct: null, sevenDayUsagePct: null },
             sources: {
               ccusDataDir: "D:/ccus",
               claudeDataDir: "C:/Users/test/.claude",
@@ -202,7 +202,7 @@ test("loadWeeklyExportBundles rejects old schema bundles explicitly", async () =
 
     await assert.rejects(
       () => loadWeeklyExportBundles(root),
-      /schemaVersion 4 bundles/,
+      /schemaVersion 5 bundles/,
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });

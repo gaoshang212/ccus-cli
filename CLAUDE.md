@@ -62,16 +62,16 @@
 
 当前导出契约版本：
 
-- `schemaVersion: 4`
+- `schemaVersion: 5`
 
 当前对外 usage 字段：
 
 - `weeklySummary.statusline.fiveHourLatestUsagePct`
 - `weeklySummary.statusline.fiveHourPeakUsagePct`
-- `weeklySummary.statusline.weeklyUsagePct`
+- `weeklySummary.statusline.sevenDayUsagePct`
 - `dailySummaries[].fiveHourLatestUsagePct`
 - `dailySummaries[].fiveHourPeakUsagePct`
-- `dailySummaries[].weeklyUsagePct`
+- `dailySummaries[].sevenDayUsagePct`
 
 `averageUsagePct` 已从对外汇总/导出契约中移除。
 
@@ -81,7 +81,7 @@
 
 `ccus aggregate` 当前只接受：
 
-- `schemaVersion: 4` 的 bundle JSON
+- `schemaVersion: 5` 的 bundle JSON
 - 通过 `ccus export` 导出的 `.json` 文件
 
 旧 schema bundle 现在会被明确拒绝，不再静默读取。
@@ -126,7 +126,7 @@
 - `src/lib/aggregate.ts`
   - 读取 bundle JSON
   - 从 bundle 展开 detail/daily/weekly 行
-  - 当前会校验 `schemaVersion: 4`
+  - 当前会校验 `schemaVersion: 5`
 
 - `src/lib/claude.ts`
   - 从 `~/.claude/projects/**/*.jsonl` 统计：
@@ -235,7 +235,7 @@ node dist/cli.js aggregate --input-dir "$env:LOCALAPPDATA\ccus\exports" --out-di
 
 当前策略是 fail-fast：
 
-- 只接受 `schemaVersion: 4`
+- 只接受 `schemaVersion: 5`
 - 旧 bundle 直接报错，让用户重新导出
 
 如果你要改成向后兼容，请显式实现映射，不要默默放宽校验。

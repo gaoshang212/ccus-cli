@@ -51,7 +51,7 @@ test("buildRawJsonl exports persisted raw records", () => {
 /** 默认导出已切到周汇总 JSON，需要稳定输出关键统计字段。 */
 test("buildWeeklySummaryJson renders weekly summary document", () => {
   const summary: WeeklyExportSummary = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     generatedAt: "2026-05-27T08:00:00.000Z",
     range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
     identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
@@ -63,7 +63,7 @@ test("buildWeeklySummaryJson renders weekly summary document", () => {
         uniqueWorkspaces: 1,
         fiveHourLatestUsagePct: 28,
         fiveHourPeakUsagePct: 31,
-        weeklyUsagePct: 62,
+        sevenDayUsagePct: 62,
       },
     sources: {
       ccusDataDir: "D:/ccus",
@@ -83,19 +83,19 @@ test("buildWeeklySummaryJson renders weekly summary document", () => {
   assert.match(json, /"apiRequestCountSource": "claude-projects:assistant-usage-events"/);
   assert.match(json, /"fiveHourLatestUsagePct": 28/);
   assert.match(json, /"fiveHourPeakUsagePct": 31/);
-  assert.match(json, /"weeklyUsagePct": 62/);
+  assert.match(json, /"sevenDayUsagePct": 62/);
 });
 
 /** 默认导出文件要同时包含原始事件和按天汇总，避免丢掉明细。 */
 test("buildWeeklyExportBundleJson includes raw events and daily summaries", () => {
   const bundle: WeeklyExportBundle = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     generatedAt: "2026-05-27T08:00:00.000Z",
     range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
     identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
     rawEvents: records,
     weeklySummary: {
-      schemaVersion: 4,
+      schemaVersion: 5,
       generatedAt: "2026-05-27T08:00:00.000Z",
       range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
       identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
@@ -107,7 +107,7 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
         uniqueWorkspaces: 1,
         fiveHourLatestUsagePct: 28,
         fiveHourPeakUsagePct: 31,
-        weeklyUsagePct: 62,
+        sevenDayUsagePct: 62,
       },
       sources: {
         ccusDataDir: "D:/ccus",
@@ -129,7 +129,7 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
         sampleCount: 2,
         fiveHourLatestUsagePct: 28,
         fiveHourPeakUsagePct: 31,
-        weeklyUsagePct: 62,
+        sevenDayUsagePct: 62,
         uniqueSessions: 2,
         uniqueWorkspaces: 1,
       },
@@ -144,7 +144,7 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
   assert.match(json, /"uniqueSessions": 2/);
   assert.match(json, /"fiveHourLatestUsagePct": 28/);
   assert.match(json, /"fiveHourPeakUsagePct": 31/);
-  assert.match(json, /"weeklyUsagePct": 62/);
+  assert.match(json, /"sevenDayUsagePct": 62/);
 });
 
 /** 周导出里的 dailySummaries 应该覆盖整个周范围，而不只是有 statusline 样本的日期。 */

@@ -19,7 +19,7 @@ function hasWeeklyStatuslineShape(value: unknown): boolean {
     typeof value.uniqueWorkspaces === "number" &&
     (typeof value.fiveHourLatestUsagePct === "number" || value.fiveHourLatestUsagePct === null) &&
     (typeof value.fiveHourPeakUsagePct === "number" || value.fiveHourPeakUsagePct === null) &&
-    (typeof value.weeklyUsagePct === "number" || value.weeklyUsagePct === null)
+    (typeof value.sevenDayUsagePct === "number" || value.sevenDayUsagePct === null)
   );
 }
 
@@ -28,7 +28,7 @@ function isWeeklyExportBundle(value: unknown): value is WeeklyExportBundle {
     return false;
   }
 
-  if (value.schemaVersion !== 4) {
+  if (value.schemaVersion !== 5) {
     return false;
   }
 
@@ -99,7 +99,7 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
 
   if (invalidFiles.length > 0) {
     throw new Error(
-      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 4 bundles.`,
+      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 5 bundles.`,
     );
   }
 

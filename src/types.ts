@@ -70,7 +70,7 @@ export interface DashboardBucket {
 export interface DashboardSummary {
   fiveHourLatestUsagePct: number | null;
   fiveHourPeakUsagePct: number | null;
-  weeklyUsagePct: number | null;
+  sevenDayUsagePct: number | null;
   sampleCount: number;
   uniqueSessions: number;
   uniqueWorkspaces: number;
@@ -83,7 +83,7 @@ export interface ExportSummaryRow {
   fiveHourPeakUsagePct: number | null;
   minimumUsagePct: number | null;
   fiveHourLatestUsagePct: number | null;
-  weeklyUsagePct: number | null;
+  sevenDayUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
 }
@@ -116,7 +116,7 @@ export interface WeeklyExportSummary {
     uniqueWorkspaces: number;
     fiveHourLatestUsagePct: number | null;
     fiveHourPeakUsagePct: number | null;
-    weeklyUsagePct: number | null;
+    sevenDayUsagePct: number | null;
   };
   sources: {
     ccusDataDir: string;
@@ -139,7 +139,7 @@ export interface WeeklyExportDaySummary {
   sampleCount: number;
   fiveHourLatestUsagePct: number | null;
   fiveHourPeakUsagePct: number | null;
-  weeklyUsagePct: number | null;
+  sevenDayUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
 }

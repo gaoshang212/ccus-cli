@@ -162,7 +162,7 @@ export function buildSummaryRows(events: StatuslineEvent[]): ExportSummaryRow[] 
         fiveHourPeakUsagePct: usages.length > 0 ? roundNumber(Math.max(...usages), 1) : null,
         minimumUsagePct: usages.length > 0 ? roundNumber(Math.min(...usages), 1) : null,
         fiveHourLatestUsagePct: latestUsage,
-        weeklyUsagePct: [...items]
+        sevenDayUsagePct: [...items]
           .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
           .find((item) => item.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null,
         uniqueSessions: new Set(items.map((item) => item.sessionId).filter(Boolean)).size,
@@ -179,7 +179,7 @@ export function buildSummaryCsv(rows: ExportSummaryRow[]): string {
     "fiveHourPeakUsagePct",
     "minimumUsagePct",
     "fiveHourLatestUsagePct",
-    "weeklyUsagePct",
+    "sevenDayUsagePct",
     "uniqueSessions",
     "uniqueWorkspaces",
   ];
@@ -190,7 +190,7 @@ export function buildSummaryCsv(rows: ExportSummaryRow[]): string {
       row.fiveHourPeakUsagePct,
       row.minimumUsagePct,
       row.fiveHourLatestUsagePct,
-      row.weeklyUsagePct,
+      row.sevenDayUsagePct,
       row.uniqueSessions,
       row.uniqueWorkspaces,
     ]),

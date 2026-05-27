@@ -217,7 +217,7 @@ async function handleExport(options: CliOptions): Promise<void> {
   const claudeDailyUsage = await summarizeClaudeProjectUsageByDay(window.start, window.end);
   const latestIdentityRecord = [...records].reverse().find((record) => record.gitUserEmail || record.gitUserName);
   const weeklySummary = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     generatedAt: new Date().toISOString(),
     range: {
       label: window.label,
@@ -243,7 +243,7 @@ async function handleExport(options: CliOptions): Promise<void> {
       uniqueWorkspaces: statuslineSummary.uniqueWorkspaces,
       fiveHourLatestUsagePct: statuslineSummary.fiveHourLatestUsagePct,
       fiveHourPeakUsagePct: statuslineSummary.fiveHourPeakUsagePct,
-      weeklyUsagePct: statuslineSummary.weeklyUsagePct,
+      sevenDayUsagePct: statuslineSummary.sevenDayUsagePct,
     },
     sources: {
       ccusDataDir: dataDir,
@@ -268,13 +268,13 @@ async function handleExport(options: CliOptions): Promise<void> {
       sampleCount: row?.sampleCount ?? 0,
       fiveHourLatestUsagePct: row?.fiveHourLatestUsagePct ?? null,
       fiveHourPeakUsagePct: row?.fiveHourPeakUsagePct ?? null,
-      weeklyUsagePct: row?.weeklyUsagePct ?? null,
+      sevenDayUsagePct: row?.sevenDayUsagePct ?? null,
       uniqueSessions: row?.uniqueSessions ?? 0,
       uniqueWorkspaces: row?.uniqueWorkspaces ?? 0,
     };
   });
   const bundle = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     generatedAt: new Date().toISOString(),
     range: {
       label: window.label,

@@ -82,7 +82,7 @@ ccus aggregate --input-dir ./team-exports --out-dir ./team-report
 
 - 默认导出 `this-week`
 - 默认输出一个 `json` 数据包，里面同时包含 `rawEvents`、`weeklySummary`、`dailySummaries`
-- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `4`，用于标识已使用 `fiveHourLatestUsagePct`、`fiveHourPeakUsagePct`、`weeklyUsagePct` 字段的新导出契约
+- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `5`，用于标识已使用 `fiveHourLatestUsagePct`、`fiveHourPeakUsagePct`、`sevenDayUsagePct` 字段的新导出契约
 - 默认文件名会带 git email 的帐号名前缀和起止日期，例如：`alice_export_2026-05-26_to_2026-06-01.json`
 - `userMessageCount` 来自 `~/.claude/projects/**/*.jsonl` 的非 meta `type:user` 事件
 - `apiRequestCount` 与 token 指标来自 `~/.claude/projects/**/*.jsonl` 中带 `message.usage` 的 `type:assistant` 事件
@@ -92,7 +92,7 @@ ccus aggregate --input-dir ./team-exports --out-dir ./team-report
 多人汇总：
 
 - 输入目录放很多通过 `ccus export` 导出的 bundle `.json` 文件
-- `aggregate` 目前只接受 `schemaVersion: 4` 的 bundle；旧导出请先用当前版本重新 `ccus export`
+- `aggregate` 目前只接受 `schemaVersion: 5` 的 bundle；旧导出请先用当前版本重新 `ccus export`
 - `ccus aggregate --input-dir DIR --out-dir DIR`
 - 输出三个文件：
   - `detail.csv`：来自每个 bundle 的 `rawEvents`
