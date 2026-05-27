@@ -1,0 +1,29 @@
+{
+  "name": "ccus",
+  "version": "0.1.0",
+  "description": "Claude Code statusline usage logger and dashboard CLI",
+  "type": "commonjs",
+  "bin": {
+    "ccus": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test dist/test",
+    "test:src": "node --import tsx --test src/test/payload.test.ts src/test/dashboard.test.ts src/test/export.test.ts src/test/storage.test.ts"
+  },
+  "keywords": [
+    "claude-code",
+    "statusline",
+    "cli",
+    "dashboard"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.3"
+  }
+}
