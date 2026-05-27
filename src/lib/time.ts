@@ -70,9 +70,11 @@ export function formatRangeFileLabel(start: Date, end: Date): string {
 }
 
 /**
- * 从 git email 中提取适合放进文件名的帐号名前缀。
+ * 从 git email 中提取规范化的帐号名（@ 之前的部分，小写并清洗特殊字符）。
+ *
+ * 这是身份层使用的人类可读用户名，被持久化事件和 aggregate personKey 共用。
  */
-export function formatGitEmailFilePrefix(email: string | null): string | null {
+export function extractGitEmailAccount(email: string | null): string | null {
   if (!email) {
     return null;
   }
@@ -83,15 +85,25 @@ export function formatGitEmailFilePrefix(email: string | null): string | null {
   }
 
   const sanitized = localPart.replaceAll(/[^a-z0-9._-]+/g, "-").replaceAll(/-+/g, "-").replaceAll(/^[.-]+|[.-]+$/g, "");
-  if (sanitized.length === 0) {
+  return sanitized.length === 0 ? null : sanitized;
+}
+
+/**
+ * 从 git email 中提取适合放进文件名的帐号名前缀。
+ *
+ * 在 `extractGitEmailAccount` 基础上再排除 Windows 保留名，避免生成不可用的文件名。
+ */
+export function formatGitEmailFilePrefix(email: string | null): string | null {
+  const account = extractGitEmailAccount(email);
+  if (!account) {
     return null;
   }
 
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(sanitized)) {
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(account)) {
     return null;
   }
 
-  return sanitized;
+  return account;
 }
 
 /**

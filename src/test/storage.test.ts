@@ -16,6 +16,7 @@ function createEvent(date: Date, usagePct: number, sessionId: string): Persisted
     timestamp: date.toISOString(),
     gitUserName: "tester",
     gitUserEmail: "tester@example.com",
+    gitUserAccount: "tester",
     rawPayload: {
       session_id: sessionId,
       model: { display_name: "Opus" },

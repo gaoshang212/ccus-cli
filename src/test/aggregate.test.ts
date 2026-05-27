@@ -149,13 +149,21 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
     assert.equal(detailRows.length, 2);
     assert.equal(dailyRows.length, 2);
     assert.equal(weeklyRows.length, 2);
-    assert.match(detailCsv, /personKey,timestamp,week,date,sourceFile/);
-    assert.match(detailCsv, /alice@example.com/);
-    assert.match(dailyCsv, /personKey,date,userMessageCount,apiRequestCount,inputTokens,outputTokens,cacheReadInputTokens,sampleCount/);
+    assert.match(detailCsv, /^personKey,timestamp,week,date,sessionId,workspaceName,modelName,fiveHourUsagePct,contextWindowPct,contextUsed,contextMax$/m);
+    assert.equal(detailCsv.includes("statusLine"), false);
+    assert.equal(detailCsv.includes("workspaceDir"), false);
+    assert.equal(detailCsv.includes("sourceFile"), false);
+    assert.equal(detailCsv.includes("gitUserName"), false);
+    assert.equal(detailCsv.includes("gitUserEmail"), false);
+    assert.match(detailCsv, /^"alice","2026-05-26T01:00:00\.000Z",/m);
+    assert.match(detailCsv, /^"bob","2026-05-27T05:00:00\.000Z",/m);
+    assert.match(dailyCsv, /personKey,date,userMessageCount,apiRequestCount,inputTokens,outputTokens,cacheReadInputTokens,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayUsagePct,uniqueSessions,uniqueWorkspaces/);
     assert.match(dailyCsv, /2026-05-26/);
     assert.match(dailyCsv, /,1,1/);
-    assert.match(weeklyCsv, /personKey,week,userMessageCount,apiRequestCount,inputTokens,outputTokens,cacheReadInputTokens,sampleCount/);
+    assert.match(dailyCsv, /,10,10,30,/);
+    assert.match(weeklyCsv, /personKey,week,userMessageCount,apiRequestCount,inputTokens,outputTokens,cacheReadInputTokens,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayUsagePct,uniqueSessions,uniqueWorkspaces/);
     assert.match(weeklyCsv, /800/);
+    assert.match(weeklyCsv, /,15,15,45,/);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

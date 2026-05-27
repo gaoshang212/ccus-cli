@@ -1,6 +1,6 @@
 import path from "node:path";
 import { PersistedStatuslineEvent, RawStatuslinePayload, StatuslineEvent } from "../types";
-import { formatClock, roundNumber } from "./time";
+import { extractGitEmailAccount, formatClock, roundNumber } from "./time";
 
 /** 仅把普通对象视作可继续读取字段的记录类型。 */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -197,10 +197,11 @@ export function formatStatusLine(event: Pick<StatuslineEvent, "usagePct" | "cont
  */
 export function createPersistedStatuslineEvent(payload: RawStatuslinePayload, now = new Date()): PersistedStatuslineEvent {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     timestamp: now.toISOString(),
     gitUserName: null,
     gitUserEmail: null,
+    gitUserAccount: null,
     rawPayload: payload,
   };
 }
@@ -225,6 +226,8 @@ export function computeStatuslineEvent(record: PersistedStatuslineEvent): Status
   const contextUsed = computedContext.contextUsed ?? legacy.contextUsed ?? null;
   const contextMax = computedContext.contextMax ?? legacy.contextMax ?? null;
 
+  const gitUserAccount = record.gitUserAccount ?? extractGitEmailAccount(record.gitUserEmail ?? null);
+
   const baseEvent: StatuslineEvent = {
     timestamp: record.timestamp,
     sessionId,
@@ -233,6 +236,7 @@ export function computeStatuslineEvent(record: PersistedStatuslineEvent): Status
     modelName,
     gitUserName: record.gitUserName ?? null,
     gitUserEmail: record.gitUserEmail ?? null,
+    gitUserAccount,
     usagePct,
     sevenDayUsagePct,
     contextWindowPct,

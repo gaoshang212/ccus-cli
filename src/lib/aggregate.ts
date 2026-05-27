@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow, PersistedStatuslineEvent, WeeklyExportBundle } from "../types";
 import { computeStatuslineEvent } from "./payload";
+import { extractGitEmailAccount } from "./time";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -60,7 +61,7 @@ function weekKey(date: Date): string {
 }
 
 function toPersonKey(gitUserEmail: string | null, gitUserName: string | null): string {
-  return gitUserEmail ?? gitUserName ?? "unknown";
+  return extractGitEmailAccount(gitUserEmail) ?? gitUserName ?? "unknown";
 }
 
 async function collectBundleJsonFiles(directoryPath: string): Promise<string[]> {
@@ -110,14 +111,13 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
 export function buildAggregatedDetailRows(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): AggregatedEventRow[] {
   const rows: AggregatedEventRow[] = [];
 
-  for (const { filePath, bundle } of bundles) {
+  for (const { bundle } of bundles) {
     const personKey = toPersonKey(bundle.identity.gitUserEmail, bundle.identity.gitUserName);
     for (const record of bundle.rawEvents.filter(isPersistedStatuslineEvent)) {
       const event = computeStatuslineEvent(record);
       const ts = new Date(event.timestamp);
       rows.push({
         ...event,
-        sourceFile: filePath,
         personKey,
         weekKey: weekKey(ts),
         dateKey: localDateKey(ts),
@@ -146,6 +146,7 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
         sampleCount: item.sampleCount,
         fiveHourPeakUsagePct: item.fiveHourPeakUsagePct,
         fiveHourLatestUsagePct: item.fiveHourLatestUsagePct,
+        sevenDayUsagePct: item.sevenDayUsagePct,
         uniqueSessions: item.uniqueSessions,
         uniqueWorkspaces: item.uniqueWorkspaces,
       });
@@ -169,6 +170,7 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
       sampleCount: bundle.weeklySummary.statusline.sampleCount,
       fiveHourPeakUsagePct: bundle.weeklySummary.statusline.fiveHourPeakUsagePct,
       fiveHourLatestUsagePct: bundle.weeklySummary.statusline.fiveHourLatestUsagePct,
+      sevenDayUsagePct: bundle.weeklySummary.statusline.sevenDayUsagePct,
       uniqueSessions: bundle.weeklySummary.statusline.uniqueSessions,
       uniqueWorkspaces: bundle.weeklySummary.statusline.uniqueWorkspaces,
     }))

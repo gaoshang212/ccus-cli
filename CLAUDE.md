@@ -25,10 +25,11 @@
 
 持久化事件模型是 raw-first：
 
-- `schemaVersion`
+- `schemaVersion`（当前 statusline 事件写入版本为 `3`）
 - `timestamp`
 - `gitUserName`
 - `gitUserEmail`
+- `gitUserAccount`（email `@` 前的规范化用户名，仅在 statusline 落盘时写入；读旧日志时若缺失会从 email 派生）
 - `rawPayload`
 
 分析字段不直接持久化，而是在读时从 `rawPayload` 重新计算。
@@ -86,6 +87,14 @@
 
 旧 schema bundle 现在会被明确拒绝，不再静默读取。
 不支持把 raw-event jsonl 直接作为 `aggregate` 输入。
+
+### 2.6 aggregate 输出契约
+
+三个 CSV 共用一个 `personKey` —— 来源于 `gitUserEmail` 在 `@` 前的规范化用户名（小写、清洗特殊字符），落到不出现真实 email 的导出列里。
+
+- `detail.csv` 列：`personKey, timestamp, week, date, sessionId, workspaceName, modelName, fiveHourUsagePct, contextWindowPct, contextUsed, contextMax`
+  - 历史上有的 `sourceFile`、`workspaceDir`、`statusLine`、`gitUserName`、`gitUserEmail` 已移除，不要再加回来
+- `daily.csv` / `weekly.csv` 都包含 `fiveHourPeakUsagePct` / `fiveHourLatestUsagePct` / `sevenDayUsagePct` 三个 usage 列
 
 ## 3. 仓库结构
 

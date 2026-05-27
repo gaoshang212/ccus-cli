@@ -16,6 +16,7 @@ const records: PersistedStatuslineEvent[] = [
     timestamp: "2026-05-26T01:00:00.000Z",
     gitUserName: "alice",
     gitUserEmail: "alice@example.com",
+    gitUserAccount: "alice",
     rawPayload: {
       session_id: "a",
       model: { display_name: "Opus" },
@@ -29,6 +30,7 @@ const records: PersistedStatuslineEvent[] = [
     timestamp: "2026-05-26T05:00:00.000Z",
     gitUserName: "bob",
     gitUserEmail: "bob@example.com",
+    gitUserAccount: "bob",
     rawPayload: {
       session_id: "b",
       model: { display_name: "Sonnet" },

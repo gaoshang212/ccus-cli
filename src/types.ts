@@ -23,6 +23,7 @@ export interface PersistedStatuslineEvent {
   timestamp: string;
   gitUserName: string | null;
   gitUserEmail: string | null;
+  gitUserAccount: string | null;
   rawPayload: RawStatuslinePayload;
 }
 
@@ -39,6 +40,7 @@ export interface StatuslineEvent {
   modelName: string | null;
   gitUserName: string | null;
   gitUserEmail: string | null;
+  gitUserAccount: string | null;
   /** Claude 的 5 小时额度使用百分比。 */
   usagePct: number | null;
   /** Claude 的 7 天额度使用百分比。 */
@@ -164,7 +166,6 @@ export interface WeeklyExportBundle {
 
 /** 多人明细 / 按天 / 按周聚合时统一使用的行结构。 */
 export interface AggregatedEventRow extends StatuslineEvent {
-  sourceFile: string;
   personKey: string;
   weekKey: string;
   dateKey: string;
@@ -182,6 +183,7 @@ export interface AggregatedDailyRow {
   sampleCount: number;
   fiveHourPeakUsagePct: number | null;
   fiveHourLatestUsagePct: number | null;
+  sevenDayUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
 }
@@ -198,6 +200,7 @@ export interface AggregatedWeeklyRow {
   sampleCount: number;
   fiveHourPeakUsagePct: number | null;
   fiveHourLatestUsagePct: number | null;
+  sevenDayUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
 }

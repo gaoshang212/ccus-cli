@@ -59,10 +59,22 @@ test("createPersistedStatuslineEvent keeps only raw payload and external fields"
   const payload = parseStatuslinePayload(`{"session_id":"abc"}`);
   const record = createPersistedStatuslineEvent(payload, new Date("2026-05-26T10:32:11.000Z"));
 
-  assert.equal(record.schemaVersion, 2);
+  assert.equal(record.schemaVersion, 3);
+  assert.equal(record.gitUserAccount, null);
   assert.deepEqual(record.rawPayload, payload);
   assert.equal("usagePct" in record, false);
   assert.equal("statusLine" in record, false);
+});
+
+/** computeStatuslineEvent 在旧日志缺 gitUserAccount 时也能从 email 派生。 */
+test("computeStatuslineEvent derives gitUserAccount from email when missing", () => {
+  const payload = parseStatuslinePayload(`{"session_id":"abc"}`);
+  const record = createPersistedStatuslineEvent(payload, new Date("2026-05-26T10:32:11.000Z"));
+  record.gitUserEmail = "Alice.Dev+ops@example.com";
+
+  const event = computeStatuslineEvent(record);
+
+  assert.equal(event.gitUserAccount, "alice.dev-ops");
 });
 
 /** 即使缺字段，statusline 也应该输出可用的降级文本，而不是抛错。 */

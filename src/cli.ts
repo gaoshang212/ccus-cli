@@ -12,7 +12,7 @@ import { openInBrowser } from "./lib/open";
 import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, parseStatuslinePayload } from "./lib/payload";
 import { getDashboardDir, getDefaultDataDir } from "./lib/paths";
 import { appendEvent, readEventsForRange } from "./lib/storage";
-import { enumerateDateKeys, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
+import { enumerateDateKeys, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
 
 export interface CliOptions {
   [key: string]: string | boolean | undefined;
@@ -89,6 +89,7 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
     const gitIdentity = await readGitIdentity(extractWorkspaceDir(payload));
     record.gitUserName = gitIdentity.userName;
     record.gitUserEmail = gitIdentity.userEmail;
+    record.gitUserAccount = extractGitEmailAccount(gitIdentity.userEmail);
     await appendEvent(dataDir, record);
     const event = computeStatuslineEvent(record);
     process.stdout.write(`${event.statusLine}\n`);
