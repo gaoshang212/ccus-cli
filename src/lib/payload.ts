@@ -47,14 +47,20 @@ function readContextMetrics(payload: RawStatuslinePayload): {
   }
 
   const contextWindowPct = getNumber(payload.context_window.used_percentage);
-  const contextUsed =
+  const legacyContextUsed =
     getNumber(payload.context_window.used_tokens) ??
     getNumber(payload.context_window.current_tokens) ??
     getNumber(payload.context_window.used);
-  const contextMax =
+  const legacyContextMax =
     getNumber(payload.context_window.max_tokens) ??
     getNumber(payload.context_window.limit_tokens) ??
     getNumber(payload.context_window.max);
+  const totalInputTokens = getNumber(payload.context_window.total_input_tokens);
+  const totalOutputTokens = getNumber(payload.context_window.total_output_tokens);
+  const contextUsed =
+    legacyContextUsed ??
+    (totalInputTokens !== null || totalOutputTokens !== null ? (totalInputTokens ?? 0) + (totalOutputTokens ?? 0) : null);
+  const contextMax = legacyContextMax ?? getNumber(payload.context_window.context_window_size);
 
   if (contextWindowPct !== null) {
     return {
@@ -91,6 +97,24 @@ function readFiveHourUsagePct(payload: RawStatuslinePayload): number | null {
   }
 
   return roundNumber(getNumber(fiveHour.used_percentage), 1);
+}
+
+/**
+ * 读取 Claude 的 7 天额度使用率。
+ *
+ * 官方字段位于 `rate_limits.seven_day.used_percentage`。
+ */
+function readSevenDayUsagePct(payload: RawStatuslinePayload): number | null {
+  if (!isRecord(payload.rate_limits)) {
+    return null;
+  }
+
+  const sevenDay = payload.rate_limits.seven_day;
+  if (!isRecord(sevenDay)) {
+    return null;
+  }
+
+  return roundNumber(getNumber(sevenDay.used_percentage), 1);
 }
 
 /**
@@ -195,6 +219,7 @@ export function computeStatuslineEvent(record: PersistedStatuslineEvent): Status
   const workspaceDir = readWorkspaceDir(payload) ?? legacy.workspaceDir ?? null;
   const workspaceName = readWorkspaceName(workspaceDir) ?? legacy.workspaceName ?? null;
   const usagePct = readFiveHourUsagePct(payload) ?? legacy.usagePct ?? null;
+  const sevenDayUsagePct = readSevenDayUsagePct(payload) ?? legacy.sevenDayUsagePct ?? null;
   const computedContext = readContextMetrics(payload);
   const contextWindowPct = computedContext.contextWindowPct ?? legacy.contextWindowPct ?? null;
   const contextUsed = computedContext.contextUsed ?? legacy.contextUsed ?? null;
@@ -209,6 +234,7 @@ export function computeStatuslineEvent(record: PersistedStatuslineEvent): Status
     gitUserName: record.gitUserName ?? null,
     gitUserEmail: record.gitUserEmail ?? null,
     usagePct,
+    sevenDayUsagePct,
     contextWindowPct,
     contextUsed,
     contextMax,

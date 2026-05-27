@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { ExportSummaryRow, PersistedStatuslineEvent, StatuslineEvent } from "../types";
+import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow, ExportSummaryRow, PersistedStatuslineEvent, StatuslineEvent, WeeklyExportBundle, WeeklyExportSummary } from "../types";
 import { roundNumber } from "./time";
 
 /** CSV 字符串字段统一做转义，避免逗号和引号破坏列结构。 */
@@ -75,9 +75,64 @@ export function buildRawCsv(events: StatuslineEvent[]): string {
   return [header.join(","), ...rows].join("\n");
 }
 
+/** 多人汇总的 detail.csv。 */
+export function buildAggregatedDetailCsv(events: AggregatedEventRow[]): string {
+  const header = [
+    "personKey",
+    "timestamp",
+    "week",
+    "date",
+    "sourceFile",
+    "sessionId",
+    "workspaceDir",
+    "workspaceName",
+    "modelName",
+    "gitUserName",
+    "gitUserEmail",
+    "fiveHourUsagePct",
+    "contextWindowPct",
+    "contextUsed",
+    "contextMax",
+    "statusLine",
+  ];
+
+  const rows = events.map((event) =>
+    toCsvLine([
+      event.personKey,
+      event.timestamp,
+      event.weekKey,
+      event.dateKey,
+      event.sourceFile,
+      event.sessionId,
+      event.workspaceDir,
+      event.workspaceName,
+      event.modelName,
+      event.gitUserName,
+      event.gitUserEmail,
+      event.usagePct,
+      event.contextWindowPct,
+      event.contextUsed,
+      event.contextMax,
+      event.statusLine,
+    ]),
+  );
+
+  return [header.join(","), ...rows].join("\n");
+}
+
 /** 原始 JSONL 导出适合程序继续消费。 */
 export function buildRawJsonl(events: PersistedStatuslineEvent[]): string {
   return events.map((event) => JSON.stringify(event)).join("\n");
+}
+
+/** 默认导出把本周汇总序列化成可读 JSON。 */
+export function buildWeeklySummaryJson(summary: WeeklyExportSummary): string {
+  return `${JSON.stringify(summary, null, 2)}\n`;
+}
+
+/** 默认导出把原始事件与周汇总一起打包成一个 JSON 文件。 */
+export function buildWeeklyExportBundleJson(bundle: WeeklyExportBundle): string {
+  return `${JSON.stringify(bundle, null, 2)}\n`;
 }
 
 /** 按天汇总 usage 数据，生成 summary 模式的中间结果。 */
@@ -104,11 +159,12 @@ export function buildSummaryRows(events: StatuslineEvent[]): ExportSummaryRow[] 
       return {
         date,
         sampleCount: items.length,
-        averageUsagePct:
-          usages.length > 0 ? roundNumber(usages.reduce((sum, value) => sum + value, 0) / usages.length, 1) : null,
-        peakUsagePct: usages.length > 0 ? roundNumber(Math.max(...usages), 1) : null,
+        fiveHourPeakUsagePct: usages.length > 0 ? roundNumber(Math.max(...usages), 1) : null,
         minimumUsagePct: usages.length > 0 ? roundNumber(Math.min(...usages), 1) : null,
-        latestUsagePct: latestUsage,
+        fiveHourLatestUsagePct: latestUsage,
+        weeklyUsagePct: [...items]
+          .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+          .find((item) => item.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null,
         uniqueSessions: new Set(items.map((item) => item.sessionId).filter(Boolean)).size,
         uniqueWorkspaces: new Set(items.map((item) => item.workspaceDir).filter(Boolean)).size,
       };
@@ -120,10 +176,10 @@ export function buildSummaryCsv(rows: ExportSummaryRow[]): string {
   const header = [
     "date",
     "sampleCount",
-    "averageUsagePct",
-    "peakUsagePct",
+    "fiveHourPeakUsagePct",
     "minimumUsagePct",
-    "latestUsagePct",
+    "fiveHourLatestUsagePct",
+    "weeklyUsagePct",
     "uniqueSessions",
     "uniqueWorkspaces",
   ];
@@ -131,10 +187,80 @@ export function buildSummaryCsv(rows: ExportSummaryRow[]): string {
     toCsvLine([
       row.date,
       row.sampleCount,
-      row.averageUsagePct,
-      row.peakUsagePct,
+      row.fiveHourPeakUsagePct,
       row.minimumUsagePct,
-      row.latestUsagePct,
+      row.fiveHourLatestUsagePct,
+      row.weeklyUsagePct,
+      row.uniqueSessions,
+      row.uniqueWorkspaces,
+    ]),
+  );
+  return [header.join(","), ...lines].join("\n");
+}
+
+/** 多人汇总的 daily.csv。 */
+export function buildAggregatedDailyCsv(rows: AggregatedDailyRow[]): string {
+  const header = [
+    "personKey",
+    "date",
+    "userMessageCount",
+    "apiRequestCount",
+    "inputTokens",
+    "outputTokens",
+    "cacheReadInputTokens",
+    "sampleCount",
+    "fiveHourPeakUsagePct",
+    "fiveHourLatestUsagePct",
+    "uniqueSessions",
+    "uniqueWorkspaces",
+  ];
+  const lines = rows.map((row) =>
+    toCsvLine([
+      row.personKey,
+      row.date,
+      row.userMessageCount,
+      row.apiRequestCount,
+      row.inputTokens,
+      row.outputTokens,
+      row.cacheReadInputTokens,
+      row.sampleCount,
+      row.fiveHourPeakUsagePct,
+      row.fiveHourLatestUsagePct,
+      row.uniqueSessions,
+      row.uniqueWorkspaces,
+    ]),
+  );
+  return [header.join(","), ...lines].join("\n");
+}
+
+/** 多人汇总的 weekly.csv。 */
+export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
+  const header = [
+    "personKey",
+    "week",
+    "userMessageCount",
+    "apiRequestCount",
+    "inputTokens",
+    "outputTokens",
+    "cacheReadInputTokens",
+    "sampleCount",
+    "fiveHourPeakUsagePct",
+    "fiveHourLatestUsagePct",
+    "uniqueSessions",
+    "uniqueWorkspaces",
+  ];
+  const lines = rows.map((row) =>
+    toCsvLine([
+      row.personKey,
+      row.week,
+      row.userMessageCount,
+      row.apiRequestCount,
+      row.inputTokens,
+      row.outputTokens,
+      row.cacheReadInputTokens,
+      row.sampleCount,
+      row.fiveHourPeakUsagePct,
+      row.fiveHourLatestUsagePct,
       row.uniqueSessions,
       row.uniqueWorkspaces,
     ]),

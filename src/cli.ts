@@ -2,14 +2,17 @@
 import http from "node:http";
 import path from "node:path";
 import { buildDashboardHtml } from "./lib/dashboard";
-import { buildRawJsonl, writeTextFile } from "./lib/export";
+import { summarizeEvents } from "./lib/dashboard";
+import { summarizeClaudeProjectUsage, summarizeClaudeProjectUsageByDay } from "./lib/claude";
+import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeeklyCsv, buildSummaryRows, buildWeeklyExportBundleJson, writeTextFile } from "./lib/export";
+import { buildAggregatedDailyRows, buildAggregatedDetailRows, buildAggregatedWeeklyRows, loadWeeklyExportBundles } from "./lib/aggregate";
 import { readGitIdentity } from "./lib/git";
 import { readStdin } from "./lib/io";
 import { openInBrowser } from "./lib/open";
 import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, parseStatuslinePayload } from "./lib/payload";
 import { getDashboardDir, getDefaultDataDir } from "./lib/paths";
 import { appendEvent, readEventsForRange } from "./lib/storage";
-import { formatRangeFileLabel, resolveRange } from "./lib/time";
+import { enumerateDateKeys, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
 
 export interface CliOptions {
   [key: string]: string | boolean | undefined;
@@ -17,7 +20,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
-  process.stdout.write(`ccus\n\nCommands:\n  ccus statusline emit [--data-dir PATH] [--input FILE]\n  ccus dashboard build [--range today] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [--range this-week] [--out FILE] [--data-dir PATH]\n`);
+  process.stdout.write(`ccus\n\nCommands:\n  ccus statusline emit [--data-dir PATH] [--input FILE]\n  ccus dashboard build [--range today] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [--range this-week] [--out FILE] [--data-dir PATH]\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n`);
 }
 
 /** 一个轻量的参数解析器，当前命令面不复杂，没必要引入额外依赖。 */
@@ -190,7 +193,7 @@ async function handleDashboardServe(options: CliOptions): Promise<void> {
 /**
  * 导出原始事件。
  *
- * 当前仅支持导出 jsonl，默认导出本周数据，默认文件名带起止日期。
+ * 当前默认导出一个 JSON 包，同时包含原始事件和按天周汇总。
  */
 async function handleExport(options: CliOptions): Promise<void> {
   const dataDir = getDataDir(options);
@@ -202,16 +205,130 @@ async function handleExport(options: CliOptions): Promise<void> {
   }
 
   if (options.format !== undefined) {
-    throw new Error("--format has been removed. Export now always writes jsonl.");
+    throw new Error("--format has been removed. Export now always writes a weekly bundle json.");
   }
 
   const window = resolveRange(range);
   const records = await readEventsForRange(dataDir, range, window.end);
-  const content = buildRawJsonl(records);
+  const events = records.map((record) => computeStatuslineEvent(record));
+  const statuslineSummary = summarizeEvents(events);
+  const statuslineDailyRows = buildSummaryRows(events);
+  const claudeUsage = await summarizeClaudeProjectUsage(window.start, window.end);
+  const claudeDailyUsage = await summarizeClaudeProjectUsageByDay(window.start, window.end);
+  const latestIdentityRecord = [...records].reverse().find((record) => record.gitUserEmail || record.gitUserName);
+  const weeklySummary = {
+    schemaVersion: 4,
+    generatedAt: new Date().toISOString(),
+    range: {
+      label: window.label,
+      start: window.start.toISOString(),
+      end: window.end.toISOString(),
+    },
+    identity: {
+      gitUserName: latestIdentityRecord?.gitUserName ?? null,
+      gitUserEmail: latestIdentityRecord?.gitUserEmail ?? null,
+    },
+    counts: {
+      userMessageCount: claudeUsage.userMessageCount,
+      apiRequestCount: claudeUsage.apiRequestCount,
+    },
+    tokens: {
+      inputTokens: claudeUsage.inputTokens,
+      outputTokens: claudeUsage.outputTokens,
+      cacheReadInputTokens: claudeUsage.cacheReadInputTokens,
+    },
+    statusline: {
+      sampleCount: statuslineSummary.sampleCount,
+      uniqueSessions: statuslineSummary.uniqueSessions,
+      uniqueWorkspaces: statuslineSummary.uniqueWorkspaces,
+      fiveHourLatestUsagePct: statuslineSummary.fiveHourLatestUsagePct,
+      fiveHourPeakUsagePct: statuslineSummary.fiveHourPeakUsagePct,
+      weeklyUsagePct: statuslineSummary.weeklyUsagePct,
+    },
+    sources: {
+      ccusDataDir: dataDir,
+      claudeDataDir: claudeUsage.claudeDataDir,
+      projectFilesMatched: claudeUsage.matchedFileCount,
+      messageCountSource: "claude-projects:user-events",
+      apiRequestCountSource: "claude-projects:assistant-usage-events",
+      tokenSource: "claude-projects:assistant-usage-events",
+    },
+  };
+  const statuslineDailyMap = new Map(statuslineDailyRows.map((row) => [row.date, row]));
+  const dailySummaries = enumerateDateKeys(window.start, window.end).map((date) => {
+    const row = statuslineDailyMap.get(date);
+    const claudeDay = claudeDailyUsage.get(date);
+    return {
+      date,
+      userMessageCount: claudeDay?.userMessageCount ?? 0,
+      apiRequestCount: claudeDay?.apiRequestCount ?? 0,
+      inputTokens: claudeDay?.inputTokens ?? 0,
+      outputTokens: claudeDay?.outputTokens ?? 0,
+      cacheReadInputTokens: claudeDay?.cacheReadInputTokens ?? 0,
+      sampleCount: row?.sampleCount ?? 0,
+      fiveHourLatestUsagePct: row?.fiveHourLatestUsagePct ?? null,
+      fiveHourPeakUsagePct: row?.fiveHourPeakUsagePct ?? null,
+      weeklyUsagePct: row?.weeklyUsagePct ?? null,
+      uniqueSessions: row?.uniqueSessions ?? 0,
+      uniqueWorkspaces: row?.uniqueWorkspaces ?? 0,
+    };
+  });
+  const bundle = {
+    schemaVersion: 4,
+    generatedAt: new Date().toISOString(),
+    range: {
+      label: window.label,
+      start: window.start.toISOString(),
+      end: window.end.toISOString(),
+    },
+    identity: {
+      gitUserName: latestIdentityRecord?.gitUserName ?? null,
+      gitUserEmail: latestIdentityRecord?.gitUserEmail ?? null,
+    },
+    rawEvents: records,
+    weeklySummary,
+    dailySummaries,
+  };
+  const content = buildWeeklyExportBundleJson(bundle);
   const fileLabel = formatRangeFileLabel(window.start, window.end);
-  const outputPath = path.resolve(output ?? path.join(dataDir, "exports", `export_${fileLabel}.jsonl`));
+  const gitEmailPrefix = [...records].reverse().reduce<string | null>((prefix, record) => {
+    if (prefix !== null) {
+      return prefix;
+    }
+
+    return formatGitEmailFilePrefix(record.gitUserEmail);
+  }, null);
+  const defaultFileName = gitEmailPrefix ? `${gitEmailPrefix}_export_${fileLabel}.json` : `export_${fileLabel}.json`;
+  const outputPath = path.resolve(output ?? path.join(dataDir, "exports", defaultFileName));
   await writeTextFile(outputPath, content);
   process.stdout.write(`${outputPath}\n`);
+}
+
+/**
+ * 聚合一个目录里的多人 export bundle json，输出 detail/daily/weekly 三个 CSV。
+ */
+async function handleAggregate(options: CliOptions): Promise<void> {
+  const inputDir = getStringOption(options, "input-dir");
+  if (!inputDir) {
+    throw new Error("--input-dir is required.");
+  }
+
+  const resolvedInputDir = path.resolve(inputDir);
+  const outputDir = path.resolve(getStringOption(options, "out-dir") ?? path.join(resolvedInputDir, "aggregated"));
+  const bundles = await loadWeeklyExportBundles(resolvedInputDir);
+  const detailCsv = buildAggregatedDetailCsv(buildAggregatedDetailRows(bundles));
+  const dailyCsv = buildAggregatedDailyCsv(buildAggregatedDailyRows(bundles));
+  const weeklyCsv = buildAggregatedWeeklyCsv(buildAggregatedWeeklyRows(bundles));
+
+  const detailPath = path.join(outputDir, "detail.csv");
+  const dailyPath = path.join(outputDir, "daily.csv");
+  const weeklyPath = path.join(outputDir, "weekly.csv");
+  await Promise.all([
+    writeTextFile(detailPath, detailCsv),
+    writeTextFile(dailyPath, dailyCsv),
+    writeTextFile(weeklyPath, weeklyCsv),
+  ]);
+  process.stdout.write(`${detailPath}\n${dailyPath}\n${weeklyPath}\n`);
 }
 
 /**
@@ -264,6 +381,12 @@ async function main(args = process.argv.slice(2)): Promise<void> {
   if (group === "export") {
     const exportOptions = resolveExportOptions(action, args, rest);
     await handleExport(exportOptions);
+    return;
+  }
+
+  if (group === "aggregate") {
+    const aggregateOptions = action && !action.startsWith("--") ? parseOptions(rest) : parseOptions(args.slice(1));
+    await handleAggregate(aggregateOptions);
     return;
   }
 

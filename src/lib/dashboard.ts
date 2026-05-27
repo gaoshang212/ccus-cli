@@ -23,14 +23,18 @@ function average(values: number[]): number {
  */
 export function summarizeEvents(events: StatuslineEvent[]): DashboardSummary {
   const usages = events.map((event) => event.usagePct).filter((value): value is number => value !== null);
+  const sevenDayUsages = events.map((event) => event.sevenDayUsagePct).filter((value): value is number => value !== null);
   const latestUsagePct = [...events]
     .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
     .find((event) => event.usagePct !== null)?.usagePct ?? null;
+  const weeklyUsagePct = [...events]
+    .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+    .find((event) => event.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null;
 
   return {
-    latestUsagePct,
-    averageUsagePct: usages.length > 0 ? roundNumber(average(usages), 1) : null,
-    peakUsagePct: usages.length > 0 ? roundNumber(Math.max(...usages), 1) : null,
+    fiveHourLatestUsagePct: latestUsagePct,
+    fiveHourPeakUsagePct: usages.length > 0 ? roundNumber(Math.max(...usages), 1) : null,
+    weeklyUsagePct: sevenDayUsages.length > 0 ? weeklyUsagePct : null,
     sampleCount: events.length,
     uniqueSessions: new Set(events.map((event) => event.sessionId).filter(Boolean)).size,
     uniqueWorkspaces: new Set(events.map((event) => event.workspaceDir).filter(Boolean)).size,
@@ -376,19 +380,14 @@ export function buildDashboardHtml(events: StatuslineEvent[], rangeLabel: string
       </section>
       <section class="stats">
         <article class="panel stat-card">
-          <h2>Latest usage</h2>
-          <p class="stat-value">${escapeHtml(statValue(summary.latestUsagePct))}</p>
-          <p class="stat-note">最后一条有效 usage 样本</p>
+          <h2>Latest 5h usage</h2>
+          <p class="stat-value">${escapeHtml(statValue(summary.fiveHourLatestUsagePct))}</p>
+          <p class="stat-note">最后一条有效 5 小时 usage 样本</p>
         </article>
         <article class="panel stat-card">
-          <h2>Average usage</h2>
-          <p class="stat-value">${escapeHtml(statValue(summary.averageUsagePct))}</p>
-          <p class="stat-note">当前窗口内的平均使用率</p>
-        </article>
-        <article class="panel stat-card">
-          <h2>Peak usage</h2>
-          <p class="stat-value">${escapeHtml(statValue(summary.peakUsagePct))}</p>
-          <p class="stat-note">窗口内观测到的峰值</p>
+          <h2>Peak 5h usage</h2>
+          <p class="stat-value">${escapeHtml(statValue(summary.fiveHourPeakUsagePct))}</p>
+          <p class="stat-note">窗口内观测到的 5 小时使用率峰值</p>
         </article>
         <article class="panel stat-card">
           <h2>Sessions</h2>

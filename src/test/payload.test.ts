@@ -8,7 +8,10 @@ test("computeStatuslineEvent reads official fields from raw payload", () => {
     "model": { "display_name": "Opus" },
     "workspace": { "current_dir": "/home/user/project" },
     "context_window": { "used_percentage": 25 },
-    "rate_limits": { "five_hour": { "used_percentage": 23.5, "resets_at": 1738425600 } },
+    "rate_limits": {
+      "five_hour": { "used_percentage": 23.5, "resets_at": 1738425600 },
+      "seven_day": { "used_percentage": 61.2, "resets_at": 1739025600 }
+    },
     "session_id": "test-session-abc"
   }`);
 
@@ -21,7 +24,34 @@ test("computeStatuslineEvent reads official fields from raw payload", () => {
   assert.equal(event.gitUserName, null);
   assert.equal(event.gitUserEmail, null);
   assert.equal(event.usagePct, 23.5);
+  assert.equal(event.sevenDayUsagePct, 61.2);
   assert.equal(event.contextWindowPct, 25);
+});
+
+/** 新版 context_window 结构下，contextUsed/contextMax 需要从 totals 与 context_window_size 推导。 */
+test("computeStatuslineEvent derives context used and max from modern context_window fields", () => {
+  const payload = parseStatuslinePayload(`{
+    "model": { "display_name": "Opus 4.7" },
+    "workspace": { "current_dir": "/repo/zentao" },
+    "context_window": {
+      "total_input_tokens": 132177,
+      "total_output_tokens": 353,
+      "context_window_size": 1000000,
+      "current_usage": {
+        "input_tokens": 66129,
+        "output_tokens": 353,
+        "cache_read_input_tokens": 66048
+      },
+      "used_percentage": 13
+    },
+    "session_id": "modern-session"
+  }`);
+
+  const event = computeStatuslineEvent(createPersistedStatuslineEvent(payload, new Date("2026-05-27T06:40:56.488Z")));
+
+  assert.equal(event.contextUsed, 132530);
+  assert.equal(event.contextMax, 1000000);
+  assert.equal(event.contextWindowPct, 13);
 });
 
 /** 新持久化事件不应该把派生分析字段直接写进日志。 */

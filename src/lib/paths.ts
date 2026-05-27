@@ -38,3 +38,13 @@ export function getEventsDir(dataDir: string): string {
 export function getDashboardDir(dataDir: string): string {
   return path.join(dataDir, "dashboard");
 }
+
+/** Claude Code 默认本地数据目录。 */
+export function getClaudeDataDir(): string {
+  const configured = process.env.CCUS_CLAUDE_DATA_DIR;
+  if (configured) {
+    return path.resolve(configured);
+  }
+
+  return path.join(os.homedir(), ".claude");
+}

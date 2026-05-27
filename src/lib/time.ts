@@ -70,6 +70,31 @@ export function formatRangeFileLabel(start: Date, end: Date): string {
 }
 
 /**
+ * 从 git email 中提取适合放进文件名的帐号名前缀。
+ */
+export function formatGitEmailFilePrefix(email: string | null): string | null {
+  if (!email) {
+    return null;
+  }
+
+  const localPart = email.split("@")[0]?.trim().toLowerCase();
+  if (!localPart) {
+    return null;
+  }
+
+  const sanitized = localPart.replaceAll(/[^a-z0-9._-]+/g, "-").replaceAll(/-+/g, "-").replaceAll(/^[.-]+|[.-]+$/g, "");
+  if (sanitized.length === 0) {
+    return null;
+  }
+
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(sanitized)) {
+    return null;
+  }
+
+  return sanitized;
+}
+
+/**
  * 生成一个时间窗口内所有涉及的日期键，供批量读取事件文件时使用。
  */
 export function enumerateDateKeys(start: Date, end: Date): string[] {

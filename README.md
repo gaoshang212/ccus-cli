@@ -6,7 +6,9 @@
 - `ccus dashboard build`：生成 Claude **5 小时使用量百分比**趋势的静态 HTML dashboard。
 - `ccus dashboard open`：生成并打开 dashboard。
 - `ccus dashboard serve`：直接启动本地 Web 页面，不用先手动生成 HTML 文件。
-- `ccus export`：默认导出当前周的原始日志为 jsonl 文件。
+- `ccus export`：默认导出当前周数据包，里面同时包含原始事件和按天维度的周汇总。
+- `ccus aggregate`：读取一个目录里的多人 raw-event jsonl，输出明细、按天、按周三个 CSV。
+- `ccus aggregate`：读取一个目录里的多人 export bundle json，输出明细、按天、按周三个 CSV。
 
 ## 安装
 
@@ -64,7 +66,8 @@ ccus dashboard open --range today
 ccus dashboard serve --range today --open
 ccus export
 ccus export --range today
-ccus export --out ./week_2026-05-26_to_2026-06-01.jsonl
+ccus export --out ./alice_export_2026-05-26_to_2026-06-01.json
+ccus aggregate --input-dir ./team-exports --out-dir ./team-report
 ```
 
 `serve` 会启动一个本地 HTTP 服务，默认监听 `127.0.0.1` 上的随机端口，并在每次请求时实时读取最新日志生成页面。
@@ -73,14 +76,28 @@ ccus export --out ./week_2026-05-26_to_2026-06-01.jsonl
 
 - `5 小时使用量百分比` 是 **展示指标**，来自 Claude 自身字段 `rate_limits.five_hour.used_percentage`
 - `--range today / this-week / 24h` 是 **你要查看的采样历史时间窗口**
-- 日志本身主要保存 `rawPayload` 与外部补充字段；分析列在导出和 dashboard 时实时从原始数据计算
+- statusline 日志本身主要保存 `rawPayload` 与外部补充字段；默认导出时会同时保留原始事件，并额外汇总 `~/.claude/projects/**/*.jsonl` 中的会话 usage
 
 导出规则：
 
 - 默认导出 `this-week`
-- 默认输出 `jsonl`
-- 默认文件名带起止日期，例如：`export_2026-05-26_to_2026-06-01.jsonl`
+- 默认输出一个 `json` 数据包，里面同时包含 `rawEvents`、`weeklySummary`、`dailySummaries`
+- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `4`，用于标识已使用 `fiveHourLatestUsagePct`、`fiveHourPeakUsagePct`、`weeklyUsagePct` 字段的新导出契约
+- 默认文件名会带 git email 的帐号名前缀和起止日期，例如：`alice_export_2026-05-26_to_2026-06-01.json`
+- `userMessageCount` 来自 `~/.claude/projects/**/*.jsonl` 的非 meta `type:user` 事件
+- `apiRequestCount` 与 token 指标来自 `~/.claude/projects/**/*.jsonl` 中带 `message.usage` 的 `type:assistant` 事件
+- `dailySummaries` 会按每天输出消息数、请求数、token 和当天 statusline usage 摘要
 - 不再支持其它导出格式
+
+多人汇总：
+
+- 输入目录放很多通过 `ccus export` 导出的 bundle `.json` 文件
+- `aggregate` 目前只接受 `schemaVersion: 4` 的 bundle；旧导出请先用当前版本重新 `ccus export`
+- `ccus aggregate --input-dir DIR --out-dir DIR`
+- 输出三个文件：
+  - `detail.csv`：来自每个 bundle 的 `rawEvents`
+  - `daily.csv`：直接来自每个 bundle 的 `dailySummaries`
+  - `weekly.csv`：直接来自每个 bundle 的 `weeklySummary`
 
 ## 默认数据目录
 

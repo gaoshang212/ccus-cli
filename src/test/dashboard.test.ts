@@ -16,7 +16,7 @@ const records: PersistedStatuslineEvent[] = [
       model: { display_name: "Opus" },
       workspace: { current_dir: "/repo/a" },
       context_window: { used_percentage: 18, used_tokens: 120, max_tokens: 1000 },
-      rate_limits: { five_hour: { used_percentage: 12 } },
+      rate_limits: { five_hour: { used_percentage: 12 }, seven_day: { used_percentage: 44 } },
     },
   },
   {
@@ -29,7 +29,7 @@ const records: PersistedStatuslineEvent[] = [
       model: { display_name: "Opus" },
       workspace: { current_dir: "/repo/a" },
       context_window: { used_percentage: 26, used_tokens: 240, max_tokens: 1000 },
-      rate_limits: { five_hour: { used_percentage: 24 } },
+      rate_limits: { five_hour: { used_percentage: 24 }, seven_day: { used_percentage: 48 } },
     },
   },
 ];
@@ -39,9 +39,9 @@ const events: StatuslineEvent[] = records.map((record) => computeStatuslineEvent
 /** 校验 dashboard 顶部卡片用到的摘要指标是否正确。 */
 test("summarizeEvents computes headline stats", () => {
   const summary = summarizeEvents(events);
-  assert.equal(summary.latestUsagePct, 24);
-  assert.equal(summary.averageUsagePct, 18);
-  assert.equal(summary.peakUsagePct, 24);
+  assert.equal(summary.fiveHourLatestUsagePct, 24);
+  assert.equal(summary.fiveHourPeakUsagePct, 24);
+  assert.equal(summary.weeklyUsagePct, 48);
 });
 
 /** 校验 5 分钟固定桶聚合是否稳定，避免曲线错位。 */
