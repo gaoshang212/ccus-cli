@@ -3,3 +3,4 @@ dist/
 .ccus/
 coverage/
 .sisyphus/*
+ccus-dashboard.html
