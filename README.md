@@ -21,12 +21,6 @@
 npm install -g ccus-cli
 ```
 
-安装后 PATH 上即可使用 `ccus` 命令。一次性命令（如 `dashboard` / `export`）也可以用 `npx`：
-
-```bash
-npx ccus-cli export
-```
-
 要求 Node.js >= 20。
 
 ## 快速开始
