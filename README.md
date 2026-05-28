@@ -4,12 +4,14 @@
 
 - `ccus install`：自动把 statusLine 命令写进 Claude Code 的 `settings.json`，省去手动改配置。
 - `ccus statusline emit`：读取 Claude Code statusline 通过 `stdin` 传入的 JSON，输出 statusline 文本，并写入本地日志。
-- `ccus dashboard build`：生成 Claude **5 小时使用量百分比**趋势的静态 HTML dashboard。
-- `ccus dashboard open`：生成并打开 dashboard。
 - `ccus dashboard serve`：直接启动本地 Web 页面，不用先手动生成 HTML 文件。
 - `ccus export`：默认导出当前周数据包，里面同时包含原始事件和按天维度的周汇总。
 - `ccus aggregate`：读取一个目录里的多人 export bundle json，输出明细、按天、按周三个 CSV。
 - `ccus aggregate serve`：同样以 bundle 目录为输入，启动本地多人 dashboard 页面，不落地任何文件。
+
+> **支持范围**：`ccus statusline emit` 依赖 Claude Code 的 statusLine 机制（从 `stdin` 读 JSON、向 `stdout` 回一行文本），**只在命令行版 Claude Code（CLI / 终端）里生效**。
+>
+> Claude **桌面版** 和 **VS Code 插件** 都不支持 statusLine，因此不会调用 `ccus statusline emit`，也就采集不到使用率数据。
 
 ## 安装
 

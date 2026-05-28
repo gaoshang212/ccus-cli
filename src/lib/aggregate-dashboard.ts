@@ -34,6 +34,9 @@ export interface AggregateOverallSummary {
   endDate: string | null;
 }
 
+/** 折线 / 图例统一的调色板，保证同一个人在不同图表里颜色一致。 */
+const CHART_PALETTE = ["#5eead4", "#f59e0b", "#a855f7", "#22c55e", "#f87171", "#60a5fa", "#fbbf24", "#34d399"];
+
 /** 所有插入到 HTML 的文本字段都要先转义，避免本地页面被注入。 */
 function escapeHtml(value: string): string {
   return value
@@ -183,7 +186,7 @@ function renderDailyUserRequestChart(people: AggregatePersonSummary[], dailyInde
     values: dateAxis.map((date) => dailyIndex.get(`${person.personKey}|${date}`)?.userMessageCount ?? 0),
   }));
   const maxValue = Math.max(1, ...seriesData.flatMap((series) => series.values));
-  const palette = ["#5eead4", "#f59e0b", "#a855f7", "#22c55e", "#f87171", "#60a5fa", "#fbbf24", "#34d399"];
+  const palette = CHART_PALETTE;
 
   const xFor = (index: number): number => paddingX + (index / Math.max(dateAxis.length - 1, 1)) * innerWidth;
   const yFor = (value: number): number => paddingY + (1 - value / maxValue) * innerHeight;
@@ -238,6 +241,187 @@ function renderDailyUserRequestChart(people: AggregatePersonSummary[], dailyInde
       </div>
       <div class="legend">${legend}</div>
       <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="每日用户请求数对比">
+        ${ticks}
+        ${xLabels}
+        ${seriesPaths}
+      </svg>
+    </section>
+  `;
+}
+
+/**
+ * 用横向条形图对比每个人的「周使用量（7 天额度）峰值」。
+ *
+ * 7 天额度是 Claude 给出的滚动周额度使用率，峰值代表这段时间里每个人最接近用满周额度的程度。
+ * 条长按当前样本里的最大峰值做归一，方便在数值都偏小时也能横向比较；右侧仍标注绝对百分比。
+ */
+function renderSevenDayPeakChart(people: AggregatePersonSummary[]): string {
+  const ranked = people
+    .filter((person) => person.sevenDayPeakUsagePct !== null)
+    .sort((left, right) => (right.sevenDayPeakUsagePct ?? 0) - (left.sevenDayPeakUsagePct ?? 0));
+
+  if (ranked.length === 0) {
+    return `
+      <section class="panel chart-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Weekly Peak Usage</p>
+            <h2>周使用量峰值对比</h2>
+          </div>
+          <p class="muted">还没有 7 天额度使用率样本。</p>
+        </div>
+      </section>
+    `;
+  }
+
+  const rowHeight = 38;
+  const paddingTop = 18;
+  const paddingBottom = 18;
+  const labelWidth = 150;
+  const valueWidth = 64;
+  const width = 920;
+  const height = paddingTop + paddingBottom + ranked.length * rowHeight;
+  const trackX = labelWidth;
+  const trackWidth = width - labelWidth - valueWidth - 16;
+  const maxValue = Math.max(...ranked.map((person) => person.sevenDayPeakUsagePct ?? 0), 1);
+
+  const bars = ranked
+    .map((person, index) => {
+      const pct = person.sevenDayPeakUsagePct ?? 0;
+      const rowTop = paddingTop + index * rowHeight;
+      const barHeight = 18;
+      const barY = rowTop + (rowHeight - barHeight) / 2;
+      const barWidth = Math.max(2, (pct / maxValue) * trackWidth);
+      const textY = barY + barHeight / 2 + 4;
+      return `
+        <g>
+          <text x="8" y="${textY}" class="bar-label">${escapeHtml(person.personKey)}</text>
+          <rect x="${trackX}" y="${barY}" width="${trackWidth}" height="${barHeight}" rx="6" class="bar-track" />
+          <rect x="${trackX}" y="${barY}" width="${barWidth.toFixed(2)}" height="${barHeight}" rx="6" class="bar-fill" />
+          <text x="${trackX + trackWidth + 10}" y="${textY}" class="bar-value">${pct.toFixed(1)}%</text>
+        </g>`;
+    })
+    .join("");
+
+  return `
+    <section class="panel chart-panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Weekly Peak Usage</p>
+          <h2>周使用量峰值对比</h2>
+        </div>
+        <p class="muted">每个人 7 天额度使用率（sevenDayPeakUsagePct）的峰值，条越长越接近用满周额度。</p>
+      </div>
+      <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="周使用量峰值对比">
+        ${bars}
+      </svg>
+    </section>
+  `;
+}
+
+/** 把时间戳格式化成图表 X 轴用的本地「MM-DD HH:mm」短标签。 */
+function formatTickTime(t: number): string {
+  const d = new Date(t);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${mm}-${dd} ${hh}:${mi}`;
+}
+
+/**
+ * 用事件级 detail 行画出 5h 额度使用率（usagePct）的详细曲线。
+ *
+ * 与按天聚合的图不同，这里直接用每条 statusline 采样的真实时间戳，粒度最细，
+ * 能看出每个人 5 小时额度在一天里的爬升与重置节奏。X 轴是连续时间，Y 轴是百分比。
+ */
+function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: AggregatedEventRow[]): string {
+  const series = people
+    .map((person, index) => ({
+      person,
+      index,
+      points: detailRows
+        .filter((row) => row.personKey === person.personKey && row.usagePct !== null)
+        .map((row) => ({ t: new Date(row.timestamp).getTime(), v: row.usagePct as number }))
+        .filter((point) => Number.isFinite(point.t))
+        .sort((left, right) => left.t - right.t),
+    }))
+    .filter((entry) => entry.points.length > 0);
+
+  const allPoints = series.flatMap((entry) => entry.points);
+  if (allPoints.length === 0) {
+    return `
+      <section class="panel chart-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">5h Usage Detail</p>
+            <h2>5h 使用率详细曲线</h2>
+          </div>
+          <p class="muted">还没有带 5h 使用率的 statusline 采样。</p>
+        </div>
+      </section>
+    `;
+  }
+
+  const width = 920;
+  const height = 320;
+  const paddingX = 56;
+  const paddingY = 32;
+  const innerWidth = width - paddingX * 2;
+  const innerHeight = height - paddingY * 2;
+
+  const minT = Math.min(...allPoints.map((point) => point.t));
+  const maxT = Math.max(...allPoints.map((point) => point.t));
+  const maxValue = Math.max(1, ...allPoints.map((point) => point.v));
+  const spanT = maxT - minT;
+
+  const xFor = (t: number): number => paddingX + (spanT === 0 ? 0.5 : (t - minT) / spanT) * innerWidth;
+  const yFor = (value: number): number => paddingY + (1 - value / maxValue) * innerHeight;
+
+  const ticks = [0, 0.25, 0.5, 0.75, 1]
+    .map((fraction) => {
+      const tickValue = maxValue * fraction;
+      const y = paddingY + (1 - fraction) * innerHeight;
+      return `<g><line x1="${paddingX}" x2="${width - paddingX}" y1="${y}" y2="${y}" class="chart-grid" /><text x="8" y="${y + 4}" class="chart-axis">${tickValue.toFixed(1)}%</text></g>`;
+    })
+    .join("");
+
+  const labelCount = spanT === 0 ? 1 : 5;
+  const xLabels = Array.from({ length: labelCount + 1 }, (_, i) => minT + (spanT * i) / labelCount)
+    .map((t) => {
+      const x = xFor(t);
+      return `<g><line x1="${x}" x2="${x}" y1="${height - paddingY}" y2="${height - paddingY + 6}" class="chart-axis-line" /><text x="${x}" y="${height - 4}" text-anchor="middle" class="chart-axis">${escapeHtml(formatTickTime(t))}</text></g>`;
+    })
+    .join("");
+
+  const seriesPaths = series
+    .map((entry) => {
+      const color = CHART_PALETTE[entry.index % CHART_PALETTE.length];
+      const path = entry.points
+        .map((point, pointIndex) => `${pointIndex === 0 ? "M" : "L"}${xFor(point.t).toFixed(2)} ${yFor(point.v).toFixed(2)}`)
+        .join(" ");
+      return `<g><path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><title>${escapeHtml(entry.person.personKey)}</title></path></g>`;
+    })
+    .join("");
+
+  const legend = series
+    .map((entry) => {
+      const color = CHART_PALETTE[entry.index % CHART_PALETTE.length];
+      return `<span class="legend-chip"><span class="legend-dot" style="background:${color}"></span>${escapeHtml(entry.person.personKey)}</span>`;
+    })
+    .join("");
+
+  return `
+    <section class="panel chart-panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">5h Usage Detail</p>
+          <h2>5h 使用率详细曲线</h2>
+        </div>
+        <p class="muted">每条 statusline 采样的 5 小时额度使用率（usagePct），按真实时间戳绘制。</p>
+      </div>
+      <div class="legend">${legend}</div>
+      <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="5h 使用率详细曲线">
         ${ticks}
         ${xLabels}
         ${seriesPaths}
@@ -444,7 +628,6 @@ export function buildAggregateDashboardHtml(
   const overall = summarizeOverall(dailyRows, people);
   const dateAxis = collectDateAxis(dailyRows);
   const dailyIndex = indexDailyRows(dailyRows);
-  void detailRows;
 
   const totalTokens = overall.totalInputTokens + overall.totalOutputTokens;
   const peakUsage = maxOrNull(people.map((person) => person.fiveHourPeakUsagePct));
@@ -583,6 +766,10 @@ export function buildAggregateDashboardHtml(
       td { font-size: 14px; }
       td.rank { color: var(--muted); width: 32px; }
       .muted-col { color: var(--muted); font-size: 12px; }
+      .bar-label { fill: var(--text); font-size: 13px; }
+      .bar-value { fill: var(--accent); font-size: 13px; font-weight: 600; }
+      .bar-track { fill: rgba(145, 160, 184, 0.14); }
+      .bar-fill { fill: var(--accent); }
       table.matrix th, table.matrix td { text-align: center; padding: 8px 10px; }
       table.matrix th.row-head { text-align: left; }
       table.matrix .cell-primary { display: block; color: var(--text); }
@@ -641,6 +828,8 @@ export function buildAggregateDashboardHtml(
         </article>
       </section>
       ${renderPeopleLeaderboard(people)}
+      ${renderSevenDayPeakChart(people)}
+      ${renderFiveHourUsageChart(people, detailRows)}
       ${renderDailyUserRequestChart(people, dailyIndex, dateAxis)}
       ${renderDailyMatrix(people, dailyIndex, dateAxis)}
       ${renderWeeklyTable(weeklyRows)}

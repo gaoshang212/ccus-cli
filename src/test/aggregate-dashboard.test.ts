@@ -90,7 +90,38 @@ const weeklyRows: AggregatedWeeklyRow[] = [
   },
 ];
 
-const detailRows: AggregatedEventRow[] = [];
+/** 构造一条事件级 detail 行，省去重复写满 StatuslineEvent 的所有字段。 */
+function makeDetailRow(personKey: string, timestamp: string, usagePct: number | null): AggregatedEventRow {
+  return {
+    timestamp,
+    sessionId: `${personKey}-session`,
+    workspaceDir: `/repo/${personKey}`,
+    workspaceName: personKey,
+    modelName: "Opus",
+    gitUserName: personKey,
+    gitUserEmail: `${personKey}@example.com`,
+    gitUserAccount: personKey,
+    usagePct,
+    sevenDayUsagePct: 30,
+    contextWindowPct: 20,
+    contextUsed: 100,
+    contextMax: 1000,
+    statusLine: "",
+    rawPayload: {},
+    personKey,
+    weekKey: "2026-05-25",
+    dateKey: timestamp.slice(0, 10),
+    inputTokens: 300,
+    outputTokens: 40,
+    cacheReadInputTokens: 20,
+  };
+}
+
+const detailRows: AggregatedEventRow[] = [
+  makeDetailRow("alice", "2026-05-27T01:00:00.000Z", 12),
+  makeDetailRow("alice", "2026-05-27T03:00:00.000Z", 18),
+  makeDetailRow("bob", "2026-05-27T02:00:00.000Z", 40),
+];
 
 test("summarizePeople rolls up daily rows per person and sorts by user messages desc", () => {
   const people = summarizePeople(dailyRows);
@@ -129,6 +160,9 @@ test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", ()
   assert.match(html, /<!doctype html>/i);
   assert.match(html, /ccus team dashboard/);
   assert.match(html, /多人对比/);
+  assert.match(html, /周使用量峰值对比/);
+  assert.match(html, /5h 使用率详细曲线/);
+  assert.match(html, /按真实时间戳绘制/);
   assert.match(html, /每日用户请求数对比/);
   assert.match(html, /按周聚合/);
   assert.match(html, />alice</);
