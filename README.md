@@ -18,13 +18,13 @@
 全局安装（statusline 每次渲染都会调用，推荐全局装好，避免 `npx` 的启动开销）：
 
 ```bash
-npm install -g ccus
+npm install -g ccus-cli
 ```
 
 安装后 PATH 上即可使用 `ccus` 命令。一次性命令（如 `dashboard` / `export`）也可以用 `npx`：
 
 ```bash
-npx ccus export
+npx ccus-cli export
 ```
 
 要求 Node.js >= 20。
