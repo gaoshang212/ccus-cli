@@ -43,7 +43,8 @@ test("summarizeEvents computes headline stats", () => {
   const summary = summarizeEvents(events);
   assert.equal(summary.fiveHourLatestUsagePct, 24);
   assert.equal(summary.fiveHourPeakUsagePct, 24);
-  assert.equal(summary.sevenDayUsagePct, 48);
+  assert.equal(summary.sevenDayLatestUsagePct, 48);
+  assert.equal(summary.sevenDayPeakUsagePct, 48);
 });
 
 /** 校验 5 分钟固定桶聚合是否稳定，避免曲线错位。 */

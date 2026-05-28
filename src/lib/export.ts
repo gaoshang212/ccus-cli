@@ -8,6 +8,11 @@ function quoteCsv(value: string): string {
   return `"${value.replaceAll("\"", "\"\"")}"`;
 }
 
+/** token / context 计数统一换算成百万（M）单位，避免 CSV 里出现长串数字。 */
+function toMillions(value: number | null): number | null {
+  return value === null ? null : roundNumber(value / 1_000_000, 6);
+}
+
 /**
  * 清理控制字符，并防止 Excel/Sheets 把值解释成公式。
  *
@@ -87,8 +92,11 @@ export function buildAggregatedDetailCsv(events: AggregatedEventRow[]): string {
     "modelName",
     "fiveHourUsagePct",
     "contextWindowPct",
-    "contextUsed",
-    "contextMax",
+    "contextUsedM",
+    "contextMaxM",
+    "inputTokensM",
+    "outputTokensM",
+    "cacheReadInputTokensM",
   ];
 
   const rows = events.map((event) =>
@@ -102,8 +110,11 @@ export function buildAggregatedDetailCsv(events: AggregatedEventRow[]): string {
       event.modelName,
       event.usagePct,
       event.contextWindowPct,
-      event.contextUsed,
-      event.contextMax,
+      toMillions(event.contextUsed),
+      toMillions(event.contextMax),
+      toMillions(event.inputTokens),
+      toMillions(event.outputTokens),
+      toMillions(event.cacheReadInputTokens),
     ]),
   );
 
@@ -142,9 +153,13 @@ export function buildSummaryRows(events: StatuslineEvent[]): ExportSummaryRow[] 
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([date, items]) => {
       const usages = items.map((item) => item.usagePct).filter((value): value is number => value !== null);
+      const sevenDayUsages = items.map((item) => item.sevenDayUsagePct).filter((value): value is number => value !== null);
       const latestUsage = [...items]
         .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
         .find((item) => item.usagePct !== null)?.usagePct ?? null;
+      const latestSevenDayUsage = [...items]
+        .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+        .find((item) => item.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null;
 
       return {
         date,
@@ -152,9 +167,8 @@ export function buildSummaryRows(events: StatuslineEvent[]): ExportSummaryRow[] 
         fiveHourPeakUsagePct: usages.length > 0 ? roundNumber(Math.max(...usages), 1) : null,
         minimumUsagePct: usages.length > 0 ? roundNumber(Math.min(...usages), 1) : null,
         fiveHourLatestUsagePct: latestUsage,
-        sevenDayUsagePct: [...items]
-          .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
-          .find((item) => item.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null,
+        sevenDayLatestUsagePct: latestSevenDayUsage,
+        sevenDayPeakUsagePct: sevenDayUsages.length > 0 ? roundNumber(Math.max(...sevenDayUsages), 1) : null,
         uniqueSessions: new Set(items.map((item) => item.sessionId).filter(Boolean)).size,
         uniqueWorkspaces: new Set(items.map((item) => item.workspaceDir).filter(Boolean)).size,
       };
@@ -169,7 +183,8 @@ export function buildSummaryCsv(rows: ExportSummaryRow[]): string {
     "fiveHourPeakUsagePct",
     "minimumUsagePct",
     "fiveHourLatestUsagePct",
-    "sevenDayUsagePct",
+    "sevenDayPeakUsagePct",
+    "sevenDayLatestUsagePct",
     "uniqueSessions",
     "uniqueWorkspaces",
   ];
@@ -180,7 +195,8 @@ export function buildSummaryCsv(rows: ExportSummaryRow[]): string {
       row.fiveHourPeakUsagePct,
       row.minimumUsagePct,
       row.fiveHourLatestUsagePct,
-      row.sevenDayUsagePct,
+      row.sevenDayPeakUsagePct,
+      row.sevenDayLatestUsagePct,
       row.uniqueSessions,
       row.uniqueWorkspaces,
     ]),
@@ -195,13 +211,14 @@ export function buildAggregatedDailyCsv(rows: AggregatedDailyRow[]): string {
     "date",
     "userMessageCount",
     "apiRequestCount",
-    "inputTokens",
-    "outputTokens",
-    "cacheReadInputTokens",
+    "inputTokensM",
+    "outputTokensM",
+    "cacheReadInputTokensM",
     "sampleCount",
     "fiveHourPeakUsagePct",
     "fiveHourLatestUsagePct",
-    "sevenDayUsagePct",
+    "sevenDayPeakUsagePct",
+    "sevenDayLatestUsagePct",
     "uniqueSessions",
     "uniqueWorkspaces",
   ];
@@ -211,13 +228,14 @@ export function buildAggregatedDailyCsv(rows: AggregatedDailyRow[]): string {
       row.date,
       row.userMessageCount,
       row.apiRequestCount,
-      row.inputTokens,
-      row.outputTokens,
-      row.cacheReadInputTokens,
+      toMillions(row.inputTokens),
+      toMillions(row.outputTokens),
+      toMillions(row.cacheReadInputTokens),
       row.sampleCount,
       row.fiveHourPeakUsagePct,
       row.fiveHourLatestUsagePct,
-      row.sevenDayUsagePct,
+      row.sevenDayPeakUsagePct,
+      row.sevenDayLatestUsagePct,
       row.uniqueSessions,
       row.uniqueWorkspaces,
     ]),
@@ -232,13 +250,14 @@ export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
     "week",
     "userMessageCount",
     "apiRequestCount",
-    "inputTokens",
-    "outputTokens",
-    "cacheReadInputTokens",
+    "inputTokensM",
+    "outputTokensM",
+    "cacheReadInputTokensM",
     "sampleCount",
     "fiveHourPeakUsagePct",
     "fiveHourLatestUsagePct",
-    "sevenDayUsagePct",
+    "sevenDayPeakUsagePct",
+    "sevenDayLatestUsagePct",
     "uniqueSessions",
     "uniqueWorkspaces",
   ];
@@ -248,13 +267,14 @@ export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
       row.week,
       row.userMessageCount,
       row.apiRequestCount,
-      row.inputTokens,
-      row.outputTokens,
-      row.cacheReadInputTokens,
+      toMillions(row.inputTokens),
+      toMillions(row.outputTokens),
+      toMillions(row.cacheReadInputTokens),
       row.sampleCount,
       row.fiveHourPeakUsagePct,
       row.fiveHourLatestUsagePct,
-      row.sevenDayUsagePct,
+      row.sevenDayPeakUsagePct,
+      row.sevenDayLatestUsagePct,
       row.uniqueSessions,
       row.uniqueWorkspaces,
     ]),

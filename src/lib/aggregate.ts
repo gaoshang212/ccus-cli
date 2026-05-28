@@ -20,7 +20,8 @@ function hasWeeklyStatuslineShape(value: unknown): boolean {
     typeof value.uniqueWorkspaces === "number" &&
     (typeof value.fiveHourLatestUsagePct === "number" || value.fiveHourLatestUsagePct === null) &&
     (typeof value.fiveHourPeakUsagePct === "number" || value.fiveHourPeakUsagePct === null) &&
-    (typeof value.sevenDayUsagePct === "number" || value.sevenDayUsagePct === null)
+    (typeof value.sevenDayLatestUsagePct === "number" || value.sevenDayLatestUsagePct === null) &&
+    (typeof value.sevenDayPeakUsagePct === "number" || value.sevenDayPeakUsagePct === null)
   );
 }
 
@@ -29,7 +30,7 @@ function isWeeklyExportBundle(value: unknown): value is WeeklyExportBundle {
     return false;
   }
 
-  if (value.schemaVersion !== 5) {
+  if (value.schemaVersion !== 6) {
     return false;
   }
 
@@ -100,7 +101,7 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
 
   if (invalidFiles.length > 0) {
     throw new Error(
-      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 5 bundles.`,
+      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 6 bundles.`,
     );
   }
 
@@ -113,14 +114,20 @@ export function buildAggregatedDetailRows(bundles: Array<{ filePath: string; bun
 
   for (const { bundle } of bundles) {
     const personKey = toPersonKey(bundle.identity.gitUserEmail, bundle.identity.gitUserName);
+    const tokensByDate = new Map(bundle.dailySummaries.map((day) => [day.date, day]));
     for (const record of bundle.rawEvents.filter(isPersistedStatuslineEvent)) {
       const event = computeStatuslineEvent(record);
       const ts = new Date(event.timestamp);
+      const dateKey = localDateKey(ts);
+      const dayTokens = tokensByDate.get(dateKey);
       rows.push({
         ...event,
         personKey,
         weekKey: weekKey(ts),
-        dateKey: localDateKey(ts),
+        dateKey,
+        inputTokens: dayTokens?.inputTokens ?? 0,
+        outputTokens: dayTokens?.outputTokens ?? 0,
+        cacheReadInputTokens: dayTokens?.cacheReadInputTokens ?? 0,
       });
     }
   }
@@ -146,7 +153,8 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
         sampleCount: item.sampleCount,
         fiveHourPeakUsagePct: item.fiveHourPeakUsagePct,
         fiveHourLatestUsagePct: item.fiveHourLatestUsagePct,
-        sevenDayUsagePct: item.sevenDayUsagePct,
+        sevenDayPeakUsagePct: item.sevenDayPeakUsagePct,
+        sevenDayLatestUsagePct: item.sevenDayLatestUsagePct,
         uniqueSessions: item.uniqueSessions,
         uniqueWorkspaces: item.uniqueWorkspaces,
       });
@@ -161,7 +169,7 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
   return bundles
     .map(({ bundle }) => ({
       personKey: toPersonKey(bundle.identity.gitUserEmail, bundle.identity.gitUserName),
-      week: bundle.range.start.slice(0, 10),
+      week: weekKey(new Date(bundle.range.start)),
       userMessageCount: bundle.weeklySummary.counts.userMessageCount,
       apiRequestCount: bundle.weeklySummary.counts.apiRequestCount,
       inputTokens: bundle.weeklySummary.tokens.inputTokens,
@@ -170,7 +178,8 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
       sampleCount: bundle.weeklySummary.statusline.sampleCount,
       fiveHourPeakUsagePct: bundle.weeklySummary.statusline.fiveHourPeakUsagePct,
       fiveHourLatestUsagePct: bundle.weeklySummary.statusline.fiveHourLatestUsagePct,
-      sevenDayUsagePct: bundle.weeklySummary.statusline.sevenDayUsagePct,
+      sevenDayPeakUsagePct: bundle.weeklySummary.statusline.sevenDayPeakUsagePct,
+      sevenDayLatestUsagePct: bundle.weeklySummary.statusline.sevenDayLatestUsagePct,
       uniqueSessions: bundle.weeklySummary.statusline.uniqueSessions,
       uniqueWorkspaces: bundle.weeklySummary.statusline.uniqueWorkspaces,
     }))

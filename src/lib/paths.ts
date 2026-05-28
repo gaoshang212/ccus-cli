@@ -48,3 +48,8 @@ export function getClaudeDataDir(): string {
 
   return path.join(os.homedir(), ".claude");
 }
+
+/** Claude Code 用户级 settings.json 路径，install 命令会往里写 statusLine 配置。 */
+export function getClaudeSettingsPath(): string {
+  return path.join(getClaudeDataDir(), "settings.json");
+}

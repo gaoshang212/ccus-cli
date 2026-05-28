@@ -72,7 +72,8 @@ export interface DashboardBucket {
 export interface DashboardSummary {
   fiveHourLatestUsagePct: number | null;
   fiveHourPeakUsagePct: number | null;
-  sevenDayUsagePct: number | null;
+  sevenDayLatestUsagePct: number | null;
+  sevenDayPeakUsagePct: number | null;
   sampleCount: number;
   uniqueSessions: number;
   uniqueWorkspaces: number;
@@ -85,7 +86,8 @@ export interface ExportSummaryRow {
   fiveHourPeakUsagePct: number | null;
   minimumUsagePct: number | null;
   fiveHourLatestUsagePct: number | null;
-  sevenDayUsagePct: number | null;
+  sevenDayLatestUsagePct: number | null;
+  sevenDayPeakUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
 }
@@ -118,7 +120,8 @@ export interface WeeklyExportSummary {
     uniqueWorkspaces: number;
     fiveHourLatestUsagePct: number | null;
     fiveHourPeakUsagePct: number | null;
-    sevenDayUsagePct: number | null;
+    sevenDayLatestUsagePct: number | null;
+    sevenDayPeakUsagePct: number | null;
   };
   sources: {
     ccusDataDir: string;
@@ -141,7 +144,8 @@ export interface WeeklyExportDaySummary {
   sampleCount: number;
   fiveHourLatestUsagePct: number | null;
   fiveHourPeakUsagePct: number | null;
-  sevenDayUsagePct: number | null;
+  sevenDayLatestUsagePct: number | null;
+  sevenDayPeakUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
 }
@@ -169,6 +173,10 @@ export interface AggregatedEventRow extends StatuslineEvent {
   personKey: string;
   weekKey: string;
   dateKey: string;
+  /** 该事件所在自然日的 token 总量，来自同一 bundle 的 dailySummaries（按天总量，非单事件）。 */
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
 }
 
 /** 多人按天汇总行。 */
@@ -183,7 +191,8 @@ export interface AggregatedDailyRow {
   sampleCount: number;
   fiveHourPeakUsagePct: number | null;
   fiveHourLatestUsagePct: number | null;
-  sevenDayUsagePct: number | null;
+  sevenDayLatestUsagePct: number | null;
+  sevenDayPeakUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
 }
@@ -200,7 +209,8 @@ export interface AggregatedWeeklyRow {
   sampleCount: number;
   fiveHourPeakUsagePct: number | null;
   fiveHourLatestUsagePct: number | null;
-  sevenDayUsagePct: number | null;
+  sevenDayLatestUsagePct: number | null;
+  sevenDayPeakUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
 }

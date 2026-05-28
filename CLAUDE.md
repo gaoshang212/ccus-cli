@@ -2,10 +2,16 @@
 
 本文件给进入 `ccus` 仓库工作的 Claude / Claude Code 使用，目标是让新会话能快速理解项目边界、数据契约和修改注意事项。
 
+## 语言要求
+
+- 所有回答、分析、计划、思考过程（thinking/reasoning）必须使用**中文**。
+- 代码标识符（变量名、方法名、类名）保持英文。
+
 ## 1. 项目是什么
 
 `ccus` 是一个本地优先的 Claude Code statusline 使用率采集 CLI，主要能力有：
 
+- 一键把 statusLine 命令写进 Claude Code 的 `settings.json`（`ccus install`）
 - 读取 Claude Code statusline 传入的 JSON payload
 - 输出一行 statusline 文本，并把原始 payload 以本地日志形式落盘
 - 基于本地日志生成 dashboard（build / open / serve）
@@ -63,18 +69,21 @@
 
 当前导出契约版本：
 
-- `schemaVersion: 5`
+- `schemaVersion: 6`
 
 当前对外 usage 字段：
 
 - `weeklySummary.statusline.fiveHourLatestUsagePct`
 - `weeklySummary.statusline.fiveHourPeakUsagePct`
-- `weeklySummary.statusline.sevenDayUsagePct`
+- `weeklySummary.statusline.sevenDayLatestUsagePct`
+- `weeklySummary.statusline.sevenDayPeakUsagePct`
 - `dailySummaries[].fiveHourLatestUsagePct`
 - `dailySummaries[].fiveHourPeakUsagePct`
-- `dailySummaries[].sevenDayUsagePct`
+- `dailySummaries[].sevenDayLatestUsagePct`
+- `dailySummaries[].sevenDayPeakUsagePct`
 
 `averageUsagePct` 已从对外汇总/导出契约中移除。
+旧的 `sevenDayUsagePct` 单字段已在 schemaVersion 6 拆成 `sevenDayPeakUsagePct` + `sevenDayLatestUsagePct`，不要再合回去。
 
 如果再改这些字段名或字段集合，必须把导出 `schemaVersion` 再往上 bump，并同步测试和 README。
 
@@ -82,7 +91,7 @@
 
 `ccus aggregate` 当前只接受：
 
-- `schemaVersion: 5` 的 bundle JSON
+- `schemaVersion: 6` 的 bundle JSON
 - 通过 `ccus export` 导出的 `.json` 文件
 
 旧 schema bundle 现在会被明确拒绝，不再静默读取。
@@ -92,9 +101,14 @@
 
 三个 CSV 共用一个 `personKey` —— 来源于 `gitUserEmail` 在 `@` 前的规范化用户名（小写、清洗特殊字符），落到不出现真实 email 的导出列里。
 
-- `detail.csv` 列：`personKey, timestamp, week, date, sessionId, workspaceName, modelName, fiveHourUsagePct, contextWindowPct, contextUsed, contextMax`
+- `detail.csv` 列：`personKey, timestamp, week, date, sessionId, workspaceName, modelName, fiveHourUsagePct, contextWindowPct, contextUsedM, contextMaxM, inputTokensM, outputTokensM, cacheReadInputTokensM`
   - 历史上有的 `sourceFile`、`workspaceDir`、`statusLine`、`gitUserName`、`gitUserEmail` 已移除，不要再加回来
-- `daily.csv` / `weekly.csv` 都包含 `fiveHourPeakUsagePct` / `fiveHourLatestUsagePct` / `sevenDayUsagePct` 三个 usage 列
+  - `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 是**该事件所在自然日**的 token 总量（从同一 bundle 的 `dailySummaries` 按 `date` join 而来），不是单条事件的 token。同一天的多条 detail 行会重复同一组日总量，所以这三列不能直接按行求和
+  - `contextUsedM` / `contextMaxM` 是单条事件的 context window token（来自 `rawPayload`），同样换算成 M；`contextWindowPct` 仍是百分比，不换算
+- `daily.csv` / `weekly.csv` 都包含 `fiveHourPeakUsagePct` / `fiveHourLatestUsagePct` / `sevenDayPeakUsagePct` / `sevenDayLatestUsagePct` 四个 usage 列，以及 `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 三个 token 列
+- 所有以 token 计的列（detail 的 `contextUsedM` / `contextMaxM` / `*TokensM`，daily/weekly 的 `*TokensM`）都以**百万（M）为单位**：原始整数除以 1_000_000 后写出（`export.ts` 的 `toMillions`，保留 6 位小数，null 仍写空）。bundle JSON 里仍是原始整数，M 换算只发生在 CSV 展示层，所以本次改动不动 `schemaVersion`。`*M` 后缀就是单位标记，不要去掉
+
+`ccus aggregate serve` 与 `ccus aggregate` 共用同一个 bundle 输入目录，但不写文件，只在内存里渲染多人 dashboard HTML 并通过本地 HTTP 端口提供页面。新增字段时，serve 路径的 HTML 也要同步更新，避免对外契约和页面展示脱节。
 
 ## 3. 仓库结构
 
@@ -104,12 +118,14 @@
 
 负责命令分发与主要编排：
 
+- `ccus install`
 - `ccus statusline emit`
 - `ccus dashboard build`
 - `ccus dashboard open`
 - `ccus dashboard serve`
 - `ccus export`
 - `ccus aggregate`
+- `ccus aggregate serve`
 
 ### 3.2 核心库
 
@@ -126,6 +142,11 @@
   - dashboard 摘要计算
   - 折线图数据桶
   - HTML 生成
+
+- `src/lib/aggregate-dashboard.ts`
+  - 多人 aggregate dashboard 摘要计算
+  - 多人 HTML 生成
+  - 仅 `ccus aggregate serve` 使用，运行时实时渲染，不落地
 
 - `src/lib/export.ts`
   - 周导出 JSON 生成
@@ -149,6 +170,16 @@
   - 读取 git 用户名/邮箱
   - local 优先，必要时回退 global
 
+- `src/lib/install.ts`
+  - 把 statusLine 命令写进 Claude Code 的 `settings.json`
+  - 只覆盖 `statusLine` 字段，保留其它顶层设置
+  - 无法解析的配置文件直接报错，不覆盖
+
+- `src/lib/debug.ts`
+  - 调试日志开关与统一出口（`--verbose` / `--debug` / `-v` 或 `CCUS_DEBUG=1` 打开）
+  - `debugLog` 一律写 **stderr**，绝不写 stdout，避免污染 statusline 的单行 stdout 契约
+  - `handleStatuslineEmit` 的兜底 catch 平时会吞掉真实错误，开启调试后会把完整 stack 打到 stderr，这是排查 statusline 不出数据的主要手段
+
 ### 3.3 类型源头
 
 - `src/types.ts`
@@ -163,6 +194,9 @@
 - `src/test/storage.test.ts`
 - `src/test/claude.test.ts`
 - `src/test/aggregate.test.ts`
+- `src/test/aggregate-dashboard.test.ts`
+- `src/test/install.test.ts`
+- `src/test/debug.test.ts`
 
 ## 4. 常用开发命令
 
@@ -274,9 +308,15 @@ node dist/cli.js aggregate --input-dir "$env:LOCALAPPDATA\ccus\exports" --out-di
 
 统计口径：
 
-- `userMessageCount`：非 meta 的 `type:user`
+- `userMessageCount`：用户请求数。`type:"user"` 但满足以下任一条件的事件都不计入：
+  - `isMeta === true`
+  - `toolUseResult` 字段存在（工具结果回填的伪 user 事件）
+  - `message.content` 是数组且全部条目都是 `tool_result`
+- sidechain（子 agent）会话里的 user 提示会被保留计入，因为它们仍代表团队让 Claude 做事，不是工具机械回填
 - `apiRequestCount`：带 `message.usage` 的 `type:assistant`
 - token 统计来自 assistant usage 事件
+
+历史上 `userMessageCount` 曾经把所有 `type:"user"` 事件都算进去，导致 tool_result 被严重高估（实测过 10× 量级）。如果再调整这套过滤，请同步 `isHumanUserMessage` 和这里的描述。
 
 ## 7. 改动后最低验证要求
 

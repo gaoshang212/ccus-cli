@@ -6,10 +6,16 @@
   "bin": {
     "ccus": "dist/cli.js"
   },
+  "files": [
+    "dist/cli.js",
+    "dist/lib/**/*.js",
+    "dist/types.js"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
     "test": "node --test dist/test",
-    "test:src": "node --import tsx --test src/test/payload.test.ts src/test/dashboard.test.ts src/test/export.test.ts src/test/storage.test.ts src/test/claude.test.ts src/test/aggregate.test.ts"
+    "test:src": "node --import tsx --test src/test/payload.test.ts src/test/dashboard.test.ts src/test/export.test.ts src/test/storage.test.ts src/test/claude.test.ts src/test/aggregate.test.ts src/test/aggregate-dashboard.test.ts src/test/install.test.ts src/test/debug.test.ts"
   },
   "keywords": [
     "claude-code",

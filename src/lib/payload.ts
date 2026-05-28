@@ -173,21 +173,15 @@ export function parseStatuslinePayload(input: string): RawStatuslinePayload {
  *
  * 这里必须保持单行、紧凑，避免污染 statusline 展示区域。
  */
-export function formatStatusLine(event: Pick<StatuslineEvent, "usagePct" | "contextWindowPct" | "contextUsed" | "contextMax" | "modelName" | "workspaceName" | "timestamp">): string {
+export function formatStatusLine(event: Pick<StatuslineEvent, "usagePct" | "sevenDayUsagePct" | "contextWindowPct" | "modelName" | "workspaceName" | "timestamp">): string {
   const timeLabel = formatClock(new Date(event.timestamp));
   const usageLabel = event.usagePct === null ? "5h --" : `5h ${event.usagePct.toFixed(1)}%`;
-  const contextLabel =
-    event.contextUsed !== null && event.contextMax !== null
-      ? `ctx ${event.contextUsed}/${event.contextMax}`
-      : event.contextWindowPct !== null
-        ? `ctx ${event.contextWindowPct.toFixed(1)}%`
-      : event.contextUsed !== null
-        ? `ctx ${event.contextUsed}`
-        : "ctx --";
+  const sevenDayLabel = event.sevenDayUsagePct === null ? "7d --" : `7d ${event.sevenDayUsagePct.toFixed(1)}%`;
+  const contextLabel = event.contextWindowPct === null ? "ctx --" : `ctx ${event.contextWindowPct.toFixed(1)}%`;
   const modelLabel = event.modelName ?? "model --";
   const workspaceLabel = event.workspaceName ?? "workspace --";
 
-  return `${usageLabel} | ${contextLabel} | ${modelLabel} | ${workspaceLabel} | ${timeLabel}`;
+  return `${usageLabel} | ${sevenDayLabel} | ${contextLabel} | ${modelLabel} | ${workspaceLabel} | ${timeLabel}`;
 }
 
 /**

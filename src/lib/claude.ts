@@ -64,6 +64,41 @@ function localDateKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+/**
+ * 判断一条 `type:"user"` 事件是否算作一次用户请求。
+ *
+ * Claude transcript 里 `type:"user"` 还会被用作 tool_result 回填——这种伪 user 事件必须排除，
+ * 否则 userMessageCount 会被高估近 10×。sidechain（子 agent）会话里的用户提示保留计入，
+ * 因为它们仍然代表团队让 Claude 做的事，不算工具机械回填。
+ */
+function isHumanUserMessage(record: Record<string, unknown>): boolean {
+  if (record.type !== "user") {
+    return false;
+  }
+
+  if (record.isMeta === true) {
+    return false;
+  }
+
+  if (record.toolUseResult !== undefined && record.toolUseResult !== null) {
+    return false;
+  }
+
+  if (!isRecord(record.message)) {
+    return false;
+  }
+
+  const content = record.message.content;
+  if (Array.isArray(content)) {
+    const hasNonToolResult = content.some((item) => isRecord(item) && item.type !== "tool_result");
+    if (!hasNonToolResult) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function summarizeProjectTranscript(content: string, start: Date, end: Date): ClaudeProjectUsageSummary {
   const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
   const summary: ClaudeProjectUsageSummary = {
@@ -81,7 +116,7 @@ function summarizeProjectTranscript(content: string, start: Date, end: Date): Cl
         continue;
       }
 
-      if (record.type === "user" && record.isMeta !== true) {
+      if (isHumanUserMessage(record)) {
         summary.userMessageCount += 1;
       }
 
@@ -176,7 +211,7 @@ export async function summarizeClaudeProjectUsageByDay(start: Date, end: Date): 
           cacheReadInputTokens: 0,
         };
 
-        if (record.type === "user" && record.isMeta !== true) {
+        if (isHumanUserMessage(record)) {
           current.userMessageCount += 1;
         }
 

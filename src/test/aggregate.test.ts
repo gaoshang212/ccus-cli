@@ -16,7 +16,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
       aliceFile,
       JSON.stringify(
         {
-          schemaVersion: 5,
+          schemaVersion: 6,
           generatedAt: "2026-05-27T08:00:00.000Z",
           range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
           identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
@@ -36,13 +36,13 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
             },
           ],
           weeklySummary: {
-            schemaVersion: 5,
+            schemaVersion: 6,
             generatedAt: "2026-05-27T08:00:00.000Z",
             range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
             identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
             counts: { userMessageCount: 5, apiRequestCount: 3 },
             tokens: { inputTokens: 1000, outputTokens: 120, cacheReadInputTokens: 50 },
-            statusline: { sampleCount: 1, uniqueSessions: 1, uniqueWorkspaces: 1, fiveHourLatestUsagePct: 10, fiveHourPeakUsagePct: 10, sevenDayUsagePct: 30 },
+            statusline: { sampleCount: 1, uniqueSessions: 1, uniqueWorkspaces: 1, fiveHourLatestUsagePct: 10, fiveHourPeakUsagePct: 10, sevenDayLatestUsagePct: 30, sevenDayPeakUsagePct: 35 },
             sources: {
               ccusDataDir: "D:/ccus",
               claudeDataDir: "C:/Users/test/.claude",
@@ -63,7 +63,8 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
               sampleCount: 1,
               fiveHourLatestUsagePct: 10,
               fiveHourPeakUsagePct: 10,
-              sevenDayUsagePct: 30,
+              sevenDayLatestUsagePct: 30,
+              sevenDayPeakUsagePct: 35,
               uniqueSessions: 1,
               uniqueWorkspaces: 1,
             },
@@ -79,7 +80,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
       bobFile,
       JSON.stringify(
         {
-          schemaVersion: 5,
+          schemaVersion: 6,
           generatedAt: "2026-05-27T08:00:00.000Z",
           range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
           identity: { gitUserName: "bob", gitUserEmail: "bob@example.com" },
@@ -99,13 +100,13 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
             },
           ],
           weeklySummary: {
-            schemaVersion: 5,
+            schemaVersion: 6,
             generatedAt: "2026-05-27T08:00:00.000Z",
             range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
             identity: { gitUserName: "bob", gitUserEmail: "bob@example.com" },
             counts: { userMessageCount: 4, apiRequestCount: 2 },
             tokens: { inputTokens: 800, outputTokens: 90, cacheReadInputTokens: 30 },
-            statusline: { sampleCount: 1, uniqueSessions: 1, uniqueWorkspaces: 1, fiveHourLatestUsagePct: 15, fiveHourPeakUsagePct: 15, sevenDayUsagePct: 45 },
+            statusline: { sampleCount: 1, uniqueSessions: 1, uniqueWorkspaces: 1, fiveHourLatestUsagePct: 15, fiveHourPeakUsagePct: 15, sevenDayLatestUsagePct: 45, sevenDayPeakUsagePct: 50 },
             sources: {
               ccusDataDir: "D:/ccus",
               claudeDataDir: "C:/Users/test/.claude",
@@ -126,7 +127,8 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
               sampleCount: 1,
               fiveHourLatestUsagePct: 15,
               fiveHourPeakUsagePct: 15,
-              sevenDayUsagePct: 45,
+              sevenDayLatestUsagePct: 45,
+              sevenDayPeakUsagePct: 50,
               uniqueSessions: 1,
               uniqueWorkspaces: 1,
             },
@@ -149,7 +151,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
     assert.equal(detailRows.length, 2);
     assert.equal(dailyRows.length, 2);
     assert.equal(weeklyRows.length, 2);
-    assert.match(detailCsv, /^personKey,timestamp,week,date,sessionId,workspaceName,modelName,fiveHourUsagePct,contextWindowPct,contextUsed,contextMax$/m);
+    assert.match(detailCsv, /^personKey,timestamp,week,date,sessionId,workspaceName,modelName,fiveHourUsagePct,contextWindowPct,contextUsedM,contextMaxM,inputTokensM,outputTokensM,cacheReadInputTokensM$/m);
     assert.equal(detailCsv.includes("statusLine"), false);
     assert.equal(detailCsv.includes("workspaceDir"), false);
     assert.equal(detailCsv.includes("sourceFile"), false);
@@ -157,13 +159,20 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
     assert.equal(detailCsv.includes("gitUserEmail"), false);
     assert.match(detailCsv, /^"alice","2026-05-26T01:00:00\.000Z",/m);
     assert.match(detailCsv, /^"bob","2026-05-27T05:00:00\.000Z",/m);
-    assert.match(dailyCsv, /personKey,date,userMessageCount,apiRequestCount,inputTokens,outputTokens,cacheReadInputTokens,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayUsagePct,uniqueSessions,uniqueWorkspaces/);
+    // detail 行尾：contextUsedM/contextMaxM 及当天 token（取自 dailySummaries）都换算成 M。
+    // alice：contextUsed 100→0.0001，contextMax 1000→0.001，token 300/40/20。
+    assert.match(detailCsv, /,0\.0001,0\.001,0\.0003,0\.00004,0\.00002$/m);
+    // bob：contextUsed 110→0.00011，contextMax 1000→0.001，token 800/90/30。
+    assert.match(detailCsv, /,0\.00011,0\.001,0\.0008,0\.00009,0\.00003$/m);
+    assert.match(dailyCsv, /personKey,date,userMessageCount,apiRequestCount,inputTokensM,outputTokensM,cacheReadInputTokensM,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayPeakUsagePct,sevenDayLatestUsagePct,uniqueSessions,uniqueWorkspaces/);
     assert.match(dailyCsv, /2026-05-26/);
-    assert.match(dailyCsv, /,1,1/);
-    assert.match(dailyCsv, /,10,10,30,/);
-    assert.match(weeklyCsv, /personKey,week,userMessageCount,apiRequestCount,inputTokens,outputTokens,cacheReadInputTokens,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayUsagePct,uniqueSessions,uniqueWorkspaces/);
-    assert.match(weeklyCsv, /800/);
-    assert.match(weeklyCsv, /,15,15,45,/);
+    // alice daily：input 300 → 0.0003，output 40 → 0.00004，cache 20 → 0.00002。
+    assert.match(dailyCsv, /,2,1,0\.0003,0\.00004,0\.00002,/);
+    assert.match(dailyCsv, /,10,10,35,30,/);
+    assert.match(weeklyCsv, /personKey,week,userMessageCount,apiRequestCount,inputTokensM,outputTokensM,cacheReadInputTokensM,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayPeakUsagePct,sevenDayLatestUsagePct,uniqueSessions,uniqueWorkspaces/);
+    // bob weekly：input 800 → 0.0008，output 90 → 0.00009，cache 30 → 0.00003。
+    assert.match(weeklyCsv, /,4,2,0\.0008,0\.00009,0\.00003,/);
+    assert.match(weeklyCsv, /,15,15,50,45,/);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -178,13 +187,13 @@ test("loadWeeklyExportBundles rejects old schema bundles explicitly", async () =
       oldFile,
       JSON.stringify(
         {
-          schemaVersion: 4,
+          schemaVersion: 5,
           generatedAt: "2026-05-27T08:00:00.000Z",
           range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
           identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
           rawEvents: [],
           weeklySummary: {
-            schemaVersion: 4,
+            schemaVersion: 5,
             generatedAt: "2026-05-27T08:00:00.000Z",
             range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
             identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
@@ -210,7 +219,7 @@ test("loadWeeklyExportBundles rejects old schema bundles explicitly", async () =
 
     await assert.rejects(
       () => loadWeeklyExportBundles(root),
-      /schemaVersion 5 bundles/,
+      /schemaVersion 6 bundles/,
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });

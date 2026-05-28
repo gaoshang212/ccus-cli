@@ -6,7 +6,7 @@ import path from "node:path";
 import { resolveExportOptions } from "../cli";
 import { buildRawJsonl, buildWeeklyExportBundleJson, buildWeeklySummaryJson, writeTextFile } from "../lib/export";
 import { computeStatuslineEvent } from "../lib/payload";
-import { enumerateDateKeys, formatGitEmailFilePrefix, formatRangeFileLabel } from "../lib/time";
+import { enumerateDateKeys, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "../lib/time";
 import { PersistedStatuslineEvent, WeeklyExportBundle, WeeklyExportSummary } from "../types";
 
 /** 导出测试使用的基础样本，覆盖两个不同时间点和 workspace。 */
@@ -53,7 +53,7 @@ test("buildRawJsonl exports persisted raw records", () => {
 /** 默认导出已切到周汇总 JSON，需要稳定输出关键统计字段。 */
 test("buildWeeklySummaryJson renders weekly summary document", () => {
   const summary: WeeklyExportSummary = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     generatedAt: "2026-05-27T08:00:00.000Z",
     range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
     identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
@@ -65,7 +65,8 @@ test("buildWeeklySummaryJson renders weekly summary document", () => {
         uniqueWorkspaces: 1,
         fiveHourLatestUsagePct: 28,
         fiveHourPeakUsagePct: 31,
-        sevenDayUsagePct: 62,
+        sevenDayLatestUsagePct: 62,
+        sevenDayPeakUsagePct: 71,
       },
     sources: {
       ccusDataDir: "D:/ccus",
@@ -85,19 +86,20 @@ test("buildWeeklySummaryJson renders weekly summary document", () => {
   assert.match(json, /"apiRequestCountSource": "claude-projects:assistant-usage-events"/);
   assert.match(json, /"fiveHourLatestUsagePct": 28/);
   assert.match(json, /"fiveHourPeakUsagePct": 31/);
-  assert.match(json, /"sevenDayUsagePct": 62/);
+  assert.match(json, /"sevenDayLatestUsagePct": 62/);
+  assert.match(json, /"sevenDayPeakUsagePct": 71/);
 });
 
 /** 默认导出文件要同时包含原始事件和按天汇总，避免丢掉明细。 */
 test("buildWeeklyExportBundleJson includes raw events and daily summaries", () => {
   const bundle: WeeklyExportBundle = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     generatedAt: "2026-05-27T08:00:00.000Z",
     range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
     identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
     rawEvents: records,
     weeklySummary: {
-      schemaVersion: 5,
+      schemaVersion: 6,
       generatedAt: "2026-05-27T08:00:00.000Z",
       range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
       identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
@@ -109,7 +111,8 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
         uniqueWorkspaces: 1,
         fiveHourLatestUsagePct: 28,
         fiveHourPeakUsagePct: 31,
-        sevenDayUsagePct: 62,
+        sevenDayLatestUsagePct: 62,
+        sevenDayPeakUsagePct: 71,
       },
       sources: {
         ccusDataDir: "D:/ccus",
@@ -131,7 +134,8 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
         sampleCount: 2,
         fiveHourLatestUsagePct: 28,
         fiveHourPeakUsagePct: 31,
-        sevenDayUsagePct: 62,
+        sevenDayLatestUsagePct: 62,
+        sevenDayPeakUsagePct: 71,
         uniqueSessions: 2,
         uniqueWorkspaces: 1,
       },
@@ -146,7 +150,27 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
   assert.match(json, /"uniqueSessions": 2/);
   assert.match(json, /"fiveHourLatestUsagePct": 28/);
   assert.match(json, /"fiveHourPeakUsagePct": 31/);
-  assert.match(json, /"sevenDayUsagePct": 62/);
+  assert.match(json, /"sevenDayLatestUsagePct": 62/);
+  assert.match(json, /"sevenDayPeakUsagePct": 71/);
+});
+
+/** last-week 应该解析成上一个完整的周一到周日，与本周不重叠。 */
+test("resolveRange resolves last-week to the previous full Mon-Sun window", () => {
+  // 2026-05-28 是周四；本周一为 2026-05-25，上一周应为 2026-05-18 ~ 2026-05-24。
+  const now = new Date(2026, 4, 28, 15, 0, 0);
+  const window = resolveRange("last-week", now);
+
+  assert.equal(window.label, "last-week");
+  assert.equal(formatRangeFileLabel(window.start, window.end), "2026-05-18_to_2026-05-24");
+  assert.deepEqual(enumerateDateKeys(window.start, window.end), [
+    "2026-05-18",
+    "2026-05-19",
+    "2026-05-20",
+    "2026-05-21",
+    "2026-05-22",
+    "2026-05-23",
+    "2026-05-24",
+  ]);
 });
 
 /** 周导出里的 dailySummaries 应该覆盖整个周范围，而不只是有 statusline 样本的日期。 */
@@ -208,5 +232,32 @@ test("resolveExportOptions rejects legacy positional export arguments", () => {
   assert.throws(
     () => resolveExportOptions("csv", ["export", "csv"], []),
     /Unsupported export argument: csv/,
+  );
+});
+
+/** 位置参数应当作 range 简写，`ccus export lw` 等价于 `--range last-week`。 */
+test("resolveExportOptions treats positional token as a range shorthand", () => {
+  assert.equal(resolveExportOptions("lw", ["export", "lw"], []).range, "lw");
+  assert.equal(resolveExportOptions("last-week", ["export", "last-week"], []).range, "last-week");
+
+  const withOut = resolveExportOptions("lw", ["export", "lw", "--out", "x.json"], ["--out", "x.json"]);
+  assert.equal(withOut.range, "lw");
+  assert.equal(withOut.out, "x.json");
+});
+
+/** 显式 --range 优先于位置参数，避免两者冲突时产生歧义。 */
+test("resolveExportOptions keeps explicit --range over positional token", () => {
+  const options = resolveExportOptions("lw", ["export", "lw", "--range", "today"], ["--range", "today"]);
+  assert.equal(options.range, "today");
+});
+
+/** lw/tw 简写应解析到对应的规范周窗口。 */
+test("resolveRange expands lw/tw short aliases to canonical week windows", () => {
+  const now = new Date(2026, 4, 28, 15, 0, 0);
+  assert.equal(resolveRange("lw", now).label, "last-week");
+  assert.equal(resolveRange("tw", now).label, "this-week");
+  assert.equal(
+    formatRangeFileLabel(resolveRange("lw", now).start, resolveRange("lw", now).end),
+    "2026-05-18_to_2026-05-24",
   );
 });

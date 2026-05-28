@@ -21,13 +21,20 @@ function startOfLocalWeek(date: Date): Date {
   return startOfLocalDay(start);
 }
 
+/** range 短别名：保持解析后的 label 仍为规范名，避免影响文件名与 bundle 契约。 */
+const RANGE_ALIASES: Record<string, string> = {
+  lw: "last-week",
+  tw: "this-week",
+};
+
 /**
  * 解析 CLI 传入的时间范围。
  *
- * 当前支持：`today`、`this-week`、`5h`、`30m` 这类相对窗口。
+ * 当前支持：`today`、`this-week`（简写 `tw`）、`last-week`（简写 `lw`）、`5h`、`30m` 这类相对窗口。
  */
 export function resolveRange(range: string | undefined, now = new Date()): RangeWindow {
-  const normalized = (range ?? "5h").trim().toLowerCase();
+  const raw = (range ?? "5h").trim().toLowerCase();
+  const normalized = RANGE_ALIASES[raw] ?? raw;
 
   if (normalized === "today") {
     return { label: "today", start: startOfLocalDay(now), end: now };
@@ -35,6 +42,14 @@ export function resolveRange(range: string | undefined, now = new Date()): Range
 
   if (normalized === "this-week") {
     return { label: "this-week", start: startOfLocalWeek(now), end: now };
+  }
+
+  if (normalized === "last-week") {
+    const thisWeekStart = startOfLocalWeek(now);
+    const start = new Date(thisWeekStart);
+    start.setDate(start.getDate() - 7);
+    const end = new Date(thisWeekStart.getTime() - 1);
+    return { label: "last-week", start, end };
   }
 
   const match = normalized.match(/^(\d+)([hm])$/);

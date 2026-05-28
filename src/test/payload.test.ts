@@ -81,14 +81,31 @@ test("computeStatuslineEvent derives gitUserAccount from email when missing", ()
 test("formatStatusLine degrades gracefully when fields are missing", () => {
   const line = formatStatusLine({
     usagePct: null,
+    sevenDayUsagePct: null,
     contextWindowPct: null,
-    contextUsed: null,
-    contextMax: null,
     modelName: null,
     workspaceName: null,
     timestamp: "2026-05-26T10:32:11.000Z",
   });
 
   assert.match(line, /5h --/);
+  assert.match(line, /7d --/);
   assert.match(line, /ctx --/);
+});
+
+/** ctx 走百分比、并带上 7 天额度使用率。 */
+test("formatStatusLine renders context as percent and includes 7d usage", () => {
+  const line = formatStatusLine({
+    usagePct: 12.3,
+    sevenDayUsagePct: 41.5,
+    contextWindowPct: 18.7,
+    modelName: "Opus",
+    workspaceName: "repo",
+    timestamp: "2026-05-26T10:32:11.000Z",
+  });
+
+  assert.match(line, /5h 12\.3%/);
+  assert.match(line, /7d 41\.5%/);
+  assert.match(line, /ctx 18\.7%/);
+  assert.equal(line.includes("/"), false);
 });

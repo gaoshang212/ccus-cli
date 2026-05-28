@@ -34,7 +34,8 @@ export function summarizeEvents(events: StatuslineEvent[]): DashboardSummary {
   return {
     fiveHourLatestUsagePct: latestUsagePct,
     fiveHourPeakUsagePct: usages.length > 0 ? roundNumber(Math.max(...usages), 1) : null,
-    sevenDayUsagePct: sevenDayUsages.length > 0 ? latestSevenDayUsagePct : null,
+    sevenDayLatestUsagePct: sevenDayUsages.length > 0 ? latestSevenDayUsagePct : null,
+    sevenDayPeakUsagePct: sevenDayUsages.length > 0 ? roundNumber(Math.max(...sevenDayUsages), 1) : null,
     sampleCount: events.length,
     uniqueSessions: new Set(events.map((event) => event.sessionId).filter(Boolean)).size,
     uniqueWorkspaces: new Set(events.map((event) => event.workspaceDir).filter(Boolean)).size,
