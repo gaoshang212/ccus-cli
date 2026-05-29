@@ -23,7 +23,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
-  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
+  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
 /** 一个轻量的参数解析器，当前命令面不复杂，没必要引入额外依赖。 */
@@ -119,10 +119,14 @@ async function handleInstall(options: CliOptions): Promise<void> {
  * statusline 主路径：读 payload、归一化、落盘、输出单行状态文本。
  *
  * 这里即使异常也要优雅降级，不能因为采样失败把 statusline 弄挂。
+ *
+ * `--no-store`（别名 `--no-log`）只渲染并输出状态行，不把事件落盘，
+ * 适合预览 statusline 输出或临时禁用采集，stdout 单行契约保持不变。
  */
 async function handleStatuslineEmit(options: CliOptions): Promise<void> {
   const dataDir = getDataDir(options);
-  debugLog("statusline", "start", { dataDir });
+  const noStore = getBooleanOption(options, "no-store") || getBooleanOption(options, "no-log");
+  debugLog("statusline", "start", { dataDir, noStore });
 
   try {
     const raw = await readInputPayload(options);
@@ -133,7 +137,11 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
     record.gitUserName = gitIdentity.userName;
     record.gitUserEmail = gitIdentity.userEmail;
     record.gitUserAccount = extractGitEmailAccount(gitIdentity.userEmail);
-    await appendEvent(dataDir, record);
+    if (noStore) {
+      debugLog("statusline", "no-store enabled, skipping appendEvent");
+    } else {
+      await appendEvent(dataDir, record);
+    }
     const event = computeStatuslineEvent(record);
     debugLog("statusline", "event computed", {
       sessionId: event.sessionId,

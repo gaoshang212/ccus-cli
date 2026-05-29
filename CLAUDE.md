@@ -27,6 +27,8 @@
 
 不要把这个命令改成读取参数或输出多行日志到 stdout。
 
+`ccus statusline emit` 支持 `--no-store`（别名 `--no-log`）：照常解析 payload 并输出单行状态文本，但**跳过事件落盘**。该选项只影响是否写本地日志，不改变 stdin/stdout 契约，也不改变状态行内容。
+
 ### 2.2 原始日志契约
 
 持久化事件模型是 raw-first：

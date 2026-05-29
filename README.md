@@ -3,7 +3,7 @@
 一个本地优先的 Claude Code statusline 使用率采集 CLI：
 
 - `ccus install`：自动把 statusLine 命令写进 Claude Code 的 `settings.json`，省去手动改配置。
-- `ccus statusline emit`：读取 Claude Code statusline 通过 `stdin` 传入的 JSON，输出 statusline 文本，并写入本地日志。
+- `ccus statusline emit`：读取 Claude Code statusline 通过 `stdin` 传入的 JSON，输出 statusline 文本，并写入本地日志（加 `--no-store` / `--no-log` 则只输出、不落盘）。
 - `ccus dashboard serve`：直接启动本地 Web 页面，不用先手动生成 HTML 文件。
 - `ccus export`：默认导出当前周数据包，里面同时包含原始事件和按天维度的周汇总。
 - `ccus aggregate`：读取一个目录里的多人 export bundle json，输出明细、按天、按周三个 CSV。
@@ -82,6 +82,7 @@ ccus install
 ccus install
 ccus install --settings ~/.claude/settings.json
 ccus statusline emit
+ccus statusline emit --no-store   # 只渲染并输出状态行，不写本地日志（别名 --no-log）
 ccus dashboard build --range today --out ./ccus-dashboard.html
 ccus dashboard open --range today
 ccus dashboard serve --range today --open
