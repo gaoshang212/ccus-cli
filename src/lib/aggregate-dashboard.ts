@@ -253,7 +253,7 @@ function renderDailyUserRequestChart(people: AggregatePersonSummary[], dailyInde
  * 用横向条形图对比每个人的「周使用量（7 天额度）峰值」。
  *
  * 7 天额度是 Claude 给出的滚动周额度使用率，峰值代表这段时间里每个人最接近用满周额度的程度。
- * 条长按当前样本里的最大峰值做归一，方便在数值都偏小时也能横向比较；右侧仍标注绝对百分比。
+ * 条长按固定的 100% 满刻度归一，直接反映绝对使用率水平；右侧仍标注绝对百分比。
  */
 function renderSevenDayPeakChart(people: AggregatePersonSummary[]): string {
   const ranked = people
@@ -283,7 +283,7 @@ function renderSevenDayPeakChart(people: AggregatePersonSummary[]): string {
   const height = paddingTop + paddingBottom + ranked.length * rowHeight;
   const trackX = labelWidth;
   const trackWidth = width - labelWidth - valueWidth - 16;
-  const maxValue = Math.max(...ranked.map((person) => person.sevenDayPeakUsagePct ?? 0), 1);
+  const maxValue = 100;
 
   const bars = ranked
     .map((person, index) => {
