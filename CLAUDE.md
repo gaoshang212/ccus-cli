@@ -169,8 +169,8 @@
     - `cacheReadInputTokens`
 
 - `src/lib/git.ts`
-  - 读取 git 用户名/邮箱
-  - local 优先，必要时回退 global
+  - 读取 git 用户名/邮箱（只读全局 git config）
+  - `readGitBranch(cwd)`：在 workspace 目录实时读取当前分支名，仅供 statusline 展示，不落盘、不进导出契约；detached HEAD / 非 git 仓库返回 null
 
 - `src/lib/install.ts`
   - 把 statusLine 命令写进 Claude Code 的 `settings.json`

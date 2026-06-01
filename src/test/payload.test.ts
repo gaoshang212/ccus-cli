@@ -109,3 +109,46 @@ test("formatStatusLine renders context as percent and includes 7d usage", () => 
   assert.match(line, /ctx 18\.7%/);
   assert.equal(line.includes("/"), false);
 });
+
+/** 拿得到分支名时，statusline 追加一段分支信息。 */
+test("formatStatusLine appends git branch segment when provided", () => {
+  const line = formatStatusLine(
+    {
+      usagePct: 12.3,
+      sevenDayUsagePct: 41.5,
+      contextWindowPct: 18.7,
+      modelName: "Opus",
+      workspaceName: "repo",
+      timestamp: "2026-05-26T10:32:11.000Z",
+    },
+    "feature/login",
+  );
+
+  assert.match(line, /⎇ feature\/login/);
+  // 分支段位于 workspace 之后、时间之前。
+  assert.ok(line.indexOf("repo") < line.indexOf("⎇ feature/login"));
+});
+
+/** 没有分支名时不应出现分支段，避免历史日志重算时多出占位。 */
+test("formatStatusLine omits branch segment when branch is null", () => {
+  const line = formatStatusLine({
+    usagePct: 12.3,
+    sevenDayUsagePct: 41.5,
+    contextWindowPct: 18.7,
+    modelName: "Opus",
+    workspaceName: "repo",
+    timestamp: "2026-05-26T10:32:11.000Z",
+  });
+
+  assert.equal(line.includes("⎇"), false);
+});
+
+/** computeStatuslineEvent 透传分支名到 statusLine。 */
+test("computeStatuslineEvent forwards gitBranch into statusLine", () => {
+  const payload = parseStatuslinePayload(`{"workspace":{"current_dir":"/repo/app"},"session_id":"s1"}`);
+  const record = createPersistedStatuslineEvent(payload, new Date("2026-05-26T10:32:11.000Z"));
+
+  const event = computeStatuslineEvent(record, { gitBranch: "main" });
+
+  assert.match(event.statusLine, /⎇ main/);
+});

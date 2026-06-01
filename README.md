@@ -31,7 +31,7 @@ npm install -g ccus-cli
 ccus install
 ```
 
-然后照常使用 Claude Code，statusline 会显示 5 小时额度使用率（`5h`）、7 天额度使用率（`7d`）和 context window 占用百分比（`ctx`），原始 payload 也会落到本地日志，供后续 dashboard / export 使用。
+然后照常使用 Claude Code，statusline 会显示 5 小时额度使用率（`5h`）、7 天额度使用率（`7d`）、context window 占用百分比（`ctx`）、模型名、工作区名，以及当前 git 分支（`⎇ <branch>`，实时读取，非 git 仓库或处于 detached HEAD 时省略该段）；原始 payload 也会落到本地日志，供后续 dashboard / export 使用。
 
 攒了一段时间数据后，最常用的几条命令：
 

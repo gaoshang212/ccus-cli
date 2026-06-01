@@ -173,7 +173,10 @@ export function parseStatuslinePayload(input: string): RawStatuslinePayload {
  *
  * 这里必须保持单行、紧凑，避免污染 statusline 展示区域。
  */
-export function formatStatusLine(event: Pick<StatuslineEvent, "usagePct" | "sevenDayUsagePct" | "contextWindowPct" | "modelName" | "workspaceName" | "timestamp">): string {
+export function formatStatusLine(
+  event: Pick<StatuslineEvent, "usagePct" | "sevenDayUsagePct" | "contextWindowPct" | "modelName" | "workspaceName" | "timestamp">,
+  gitBranch: string | null = null,
+): string {
   const timeLabel = formatClock(new Date(event.timestamp));
   const usageLabel = event.usagePct === null ? "5h --" : `5h ${event.usagePct.toFixed(1)}%`;
   const sevenDayLabel = event.sevenDayUsagePct === null ? "7d --" : `7d ${event.sevenDayUsagePct.toFixed(1)}%`;
@@ -181,7 +184,15 @@ export function formatStatusLine(event: Pick<StatuslineEvent, "usagePct" | "seve
   const modelLabel = event.modelName ?? "model --";
   const workspaceLabel = event.workspaceName ?? "workspace --";
 
-  return `${usageLabel} | ${sevenDayLabel} | ${contextLabel} | ${modelLabel} | ${workspaceLabel} | ${timeLabel}`;
+  const segments = [usageLabel, sevenDayLabel, contextLabel, modelLabel, workspaceLabel];
+  // 分支名是 statusline 实时读取的展示信息，仅在拿得到时追加一段；
+  // 历史日志重算时通常没有分支，省略该段比硬塞 "branch --" 更干净。
+  if (gitBranch) {
+    segments.push(`⎇ ${gitBranch}`);
+  }
+  segments.push(timeLabel);
+
+  return segments.join(" | ");
 }
 
 /**
@@ -205,7 +216,10 @@ export function createPersistedStatuslineEvent(payload: RawStatuslinePayload, no
  *
  * 对旧日志会优先使用 rawPayload 重新推导；若个别旧字段缺失，再回退到历史持久化字段。
  */
-export function computeStatuslineEvent(record: PersistedStatuslineEvent): StatuslineEvent {
+export function computeStatuslineEvent(
+  record: PersistedStatuslineEvent,
+  options: { gitBranch?: string | null } = {},
+): StatuslineEvent {
   const legacy = record as PersistedStatuslineEvent & Partial<StatuslineEvent>;
   const payload = record.rawPayload ?? {};
 
@@ -242,6 +256,6 @@ export function computeStatuslineEvent(record: PersistedStatuslineEvent): Status
 
   return {
     ...baseEvent,
-    statusLine: legacy.statusLine ?? formatStatusLine(baseEvent),
+    statusLine: legacy.statusLine ?? formatStatusLine(baseEvent, options.gitBranch ?? null),
   };
 }

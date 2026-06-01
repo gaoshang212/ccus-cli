@@ -8,11 +8,11 @@ import { summarizeClaudeProjectUsage, summarizeClaudeProjectUsageByDay } from ".
 import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeeklyCsv, buildSummaryRows, buildWeeklyExportBundleJson, writeTextFile } from "./lib/export";
 import { buildAggregatedDailyRows, buildAggregatedDetailRows, buildAggregatedWeeklyRows, loadWeeklyExportBundles } from "./lib/aggregate";
 import { debugLog, resolveDebugEnabled, setDebugEnabled } from "./lib/debug";
-import { readGitIdentity } from "./lib/git";
+import { readGitBranch, readGitIdentity } from "./lib/git";
 import { installStatusline } from "./lib/install";
 import { readStdin } from "./lib/io";
 import { openInBrowser } from "./lib/open";
-import { computeStatuslineEvent, createPersistedStatuslineEvent, parseStatuslinePayload } from "./lib/payload";
+import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, parseStatuslinePayload } from "./lib/payload";
 import { getClaudeSettingsPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
 import { appendEvent, readEventsForRange } from "./lib/storage";
 import { enumerateDateKeys, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
@@ -133,7 +133,8 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
     debugLog("statusline", "payload received", { length: raw.length });
     const payload = parseStatuslinePayload(raw);
     const record = createPersistedStatuslineEvent(payload);
-    const gitIdentity = await readGitIdentity();
+    const workspaceDir = extractWorkspaceDir(payload);
+    const [gitIdentity, gitBranch] = await Promise.all([readGitIdentity(), readGitBranch(workspaceDir)]);
     record.gitUserName = gitIdentity.userName;
     record.gitUserEmail = gitIdentity.userEmail;
     record.gitUserAccount = extractGitEmailAccount(gitIdentity.userEmail);
@@ -142,7 +143,7 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
     } else {
       await appendEvent(dataDir, record);
     }
-    const event = computeStatuslineEvent(record);
+    const event = computeStatuslineEvent(record, { gitBranch });
     debugLog("statusline", "event computed", {
       sessionId: event.sessionId,
       usagePct: event.usagePct,
@@ -151,6 +152,7 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
       modelName: event.modelName,
       workspaceName: event.workspaceName,
       gitUserAccount: event.gitUserAccount,
+      gitBranch,
     });
     process.stdout.write(`${event.statusLine}\n`);
   } catch (error) {
