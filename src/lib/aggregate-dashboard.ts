@@ -37,6 +37,14 @@ export interface AggregateOverallSummary {
 /** 折线 / 图例统一的调色板，保证同一个人在不同图表里颜色一致。 */
 const CHART_PALETTE = ["#5eead4", "#f59e0b", "#a855f7", "#22c55e", "#f87171", "#60a5fa", "#fbbf24", "#34d399"];
 
+/**
+ * 7d 虚线专用的配套色板，和 CHART_PALETTE 同序号但色相强反差。
+ *
+ * 5h / 7d 同图叠加时，5h 用 CHART_PALETTE 实线、7d 用这套对比色虚线，
+ * 避免两条线颜色太接近看不清；人物对应关系靠图例里的双色点维持。
+ */
+const SEVEN_DAY_PALETTE = ["#fb7185", "#38bdf8", "#facc15", "#e879f9", "#4ade80", "#fb923c", "#818cf8", "#f472b6"];
+
 /** 所有插入到 HTML 的文本字段都要先转义，避免本地页面被注入。 */
 function escapeHtml(value: string): string {
   return value
@@ -330,34 +338,40 @@ function formatTickTime(t: number): string {
 }
 
 /**
- * 用事件级 detail 行画出 5h 额度使用率（usagePct）的详细曲线。
+ * 用事件级 detail 行画出 5h 额度与 7d 周额度使用率的详细曲线。
  *
  * 与按天聚合的图不同，这里直接用每条 statusline 采样的真实时间戳，粒度最细，
- * 能看出每个人 5 小时额度在一天里的爬升与重置节奏。X 轴是连续时间，Y 轴是百分比。
+ * 能看出每个人 5 小时额度在一天里的爬升与重置节奏，同时叠加 7 天周额度的走势。
+ * X 轴是连续时间，Y 轴是百分比；同一个人 5h 用实线、7d 用虚线，共用颜色和 Y 轴。
  */
 function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: AggregatedEventRow[]): string {
   const series = people
-    .map((person, index) => ({
-      person,
-      index,
-      points: detailRows
-        .filter((row) => row.personKey === person.personKey && row.usagePct !== null)
-        .map((row) => ({ t: new Date(row.timestamp).getTime(), v: row.usagePct as number }))
+    .map((person, index) => {
+      const personRows = detailRows
+        .filter((row) => row.personKey === person.personKey)
+        .map((row) => ({ t: new Date(row.timestamp).getTime(), five: row.usagePct, seven: row.sevenDayUsagePct }))
         .filter((point) => Number.isFinite(point.t))
-        .sort((left, right) => left.t - right.t),
-    }))
-    .filter((entry) => entry.points.length > 0);
+        .sort((left, right) => left.t - right.t);
+      const fivePoints = personRows
+        .filter((point) => point.five !== null)
+        .map((point) => ({ t: point.t, v: point.five as number }));
+      const sevenPoints = personRows
+        .filter((point) => point.seven !== null)
+        .map((point) => ({ t: point.t, v: point.seven as number }));
+      return { person, index, fivePoints, sevenPoints };
+    })
+    .filter((entry) => entry.fivePoints.length > 0 || entry.sevenPoints.length > 0);
 
-  const allPoints = series.flatMap((entry) => entry.points);
+  const allPoints = series.flatMap((entry) => [...entry.fivePoints, ...entry.sevenPoints]);
   if (allPoints.length === 0) {
     return `
       <section class="panel chart-panel">
         <div class="panel-header">
           <div>
-            <p class="eyebrow">5h Usage Detail</p>
-            <h2>5h 使用率详细曲线</h2>
+            <p class="eyebrow">Usage Detail</p>
+            <h2>5h / 7d 使用率详细曲线</h2>
           </div>
-          <p class="muted">还没有带 5h 使用率的 statusline 采样。</p>
+          <p class="muted">还没有带使用率的 statusline 采样。</p>
         </div>
       </section>
     `;
@@ -394,20 +408,30 @@ function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: 
     })
     .join("");
 
+  const pathFor = (points: Array<{ t: number; v: number }>): string =>
+    points.map((point, pointIndex) => `${pointIndex === 0 ? "M" : "L"}${xFor(point.t).toFixed(2)} ${yFor(point.v).toFixed(2)}`).join(" ");
+
   const seriesPaths = series
     .map((entry) => {
       const color = CHART_PALETTE[entry.index % CHART_PALETTE.length];
-      const path = entry.points
-        .map((point, pointIndex) => `${pointIndex === 0 ? "M" : "L"}${xFor(point.t).toFixed(2)} ${yFor(point.v).toFixed(2)}`)
-        .join(" ");
-      return `<g><path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><title>${escapeHtml(entry.person.personKey)}</title></path></g>`;
+      const sevenColor = SEVEN_DAY_PALETTE[entry.index % SEVEN_DAY_PALETTE.length];
+      const fivePath =
+        entry.fivePoints.length > 0
+          ? `<path d="${pathFor(entry.fivePoints)}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><title>${escapeHtml(entry.person.personKey)} · 5h</title></path>`
+          : "";
+      const sevenPath =
+        entry.sevenPoints.length > 0
+          ? `<path d="${pathFor(entry.sevenPoints)}" fill="none" stroke="${sevenColor}" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round" stroke-linejoin="round"><title>${escapeHtml(entry.person.personKey)} · 7d</title></path>`
+          : "";
+      return `<g>${fivePath}${sevenPath}</g>`;
     })
     .join("");
 
   const legend = series
     .map((entry) => {
       const color = CHART_PALETTE[entry.index % CHART_PALETTE.length];
-      return `<span class="legend-chip"><span class="legend-dot" style="background:${color}"></span>${escapeHtml(entry.person.personKey)}</span>`;
+      const sevenColor = SEVEN_DAY_PALETTE[entry.index % SEVEN_DAY_PALETTE.length];
+      return `<span class="legend-chip"><span class="legend-dot" style="background:${color}"></span><span class="legend-dot" style="background:${sevenColor}"></span>${escapeHtml(entry.person.personKey)}</span>`;
     })
     .join("");
 
@@ -415,13 +439,17 @@ function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: 
     <section class="panel chart-panel">
       <div class="panel-header">
         <div>
-          <p class="eyebrow">5h Usage Detail</p>
-          <h2>5h 使用率详细曲线</h2>
+          <p class="eyebrow">Usage Detail</p>
+          <h2>5h / 7d 使用率详细曲线</h2>
         </div>
-        <p class="muted">每条 statusline 采样的 5 小时额度使用率（usagePct），按真实时间戳绘制。</p>
+        <p class="muted">每条 statusline 采样的 5 小时额度（实线）与 7 天周额度（对比色虚线）使用率，按真实时间戳绘制、共用 Y 轴。</p>
       </div>
-      <div class="legend">${legend}</div>
-      <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="5h 使用率详细曲线">
+      <div class="legend">
+        ${legend}
+        <span class="legend-chip"><span class="legend-line legend-line-solid"></span>5h 使用率（实线）</span>
+        <span class="legend-chip"><span class="legend-line legend-line-dashed"></span>7d 周使用量（对比色虚线）</span>
+      </div>
+      <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="5h / 7d 使用率详细曲线">
         ${ticks}
         ${xLabels}
         ${seriesPaths}
@@ -747,6 +775,8 @@ export function buildAggregateDashboardHtml(
       }
       .legend-chip { display: inline-flex; align-items: center; gap: 8px; }
       .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+      .legend-line { display: inline-block; width: 22px; height: 0; border-top-width: 2px; border-top-style: solid; border-top-color: var(--muted); }
+      .legend-line-dashed { border-top-style: dashed; }
       .table-panel { margin-top: 22px; }
       .table-wrap { overflow: auto; padding: 16px 20px 22px; }
       table { width: 100%; border-collapse: collapse; min-width: 760px; }

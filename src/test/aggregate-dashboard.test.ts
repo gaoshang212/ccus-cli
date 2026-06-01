@@ -161,8 +161,10 @@ test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", ()
   assert.match(html, /ccus team dashboard/);
   assert.match(html, /多人对比/);
   assert.match(html, /周使用量峰值对比/);
-  assert.match(html, /5h 使用率详细曲线/);
+  assert.match(html, /5h \/ 7d 使用率详细曲线/);
   assert.match(html, /按真实时间戳绘制/);
+  assert.match(html, /7d 周使用量/);
+  assert.match(html, /stroke-dasharray/);
   assert.match(html, /每日用户请求数对比/);
   assert.match(html, /按周聚合/);
   assert.match(html, />alice</);
