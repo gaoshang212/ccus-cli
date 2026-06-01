@@ -15,7 +15,7 @@ import { openInBrowser } from "./lib/open";
 import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, parseStatuslinePayload } from "./lib/payload";
 import { getClaudeSettingsPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
 import { appendEvent, readEventsForRange } from "./lib/storage";
-import { enumerateDateKeys, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
+import { enumerateDateKeys, expandToFullWeekWindow, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
 
 export interface CliOptions {
   [key: string]: string | boolean | undefined;
@@ -279,7 +279,8 @@ async function handleExport(options: CliOptions): Promise<void> {
   }
 
   const now = new Date();
-  const window = resolveRange(range, now);
+  // 周度导出固定覆盖完整一周：this-week 即使本周还没过完，文件名与 dailySummaries 也补齐到周日。
+  const window = expandToFullWeekWindow(resolveRange(range, now));
   debugLog("export", "range resolved", { range, label: window.label, start: window.start.toISOString(), end: window.end.toISOString() });
   const records = await readEventsForRange(dataDir, range, now);
   const events = records.map((record) => computeStatuslineEvent(record));

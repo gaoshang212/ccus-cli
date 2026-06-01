@@ -21,6 +21,16 @@ function startOfLocalWeek(date: Date): Date {
   return startOfLocalDay(start);
 }
 
+/**
+ * 以周日 23:59:59.999 作为一周结束（周一为起始）。
+ *
+ * 和 `startOfLocalWeek` 对称，用来把 `this-week` 补齐成完整一周。
+ */
+function endOfLocalWeek(date: Date): Date {
+  const start = startOfLocalWeek(date);
+  return new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6, 23, 59, 59, 999);
+}
+
 /** range 短别名：保持解析后的 label 仍为规范名，避免影响文件名与 bundle 契约。 */
 const RANGE_ALIASES: Record<string, string> = {
   lw: "last-week",
@@ -65,6 +75,20 @@ export function resolveRange(range: string | undefined, now = new Date()): Range
     start: new Date(now.getTime() - duration),
     end: now,
   };
+}
+
+/**
+ * 把 `this-week` 窗口补齐成完整一周（周一 ~ 周日）。
+ *
+ * export 用它保证文件名与 dailySummaries 始终覆盖整周：即使本周尚未结束、
+ * 后面几天还没有任何数据，文件名也固定是「周一_to_周日」，每天一条 daily。
+ * `last-week` 等已经是完整周的窗口原样返回，其它相对窗口不受影响。
+ */
+export function expandToFullWeekWindow(window: RangeWindow): RangeWindow {
+  if (window.label !== "this-week") {
+    return window;
+  }
+  return { ...window, end: endOfLocalWeek(window.start) };
 }
 
 /**

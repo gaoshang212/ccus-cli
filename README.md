@@ -107,6 +107,7 @@ ccus aggregate serve --input-dir ./team-exports
 ## 导出
 
 - 默认导出 `this-week`；如需导出上一个完整周（周一到周日），用 `--range last-week`，或位置参数简写 `ccus export lw`（`tw` = 本周）
+- 周度导出固定覆盖**完整一周（周一到周日）**：`this-week` 即使本周还没过完、后面几天还没有任何数据，文件名的起止日期也会补齐到本周日，`dailySummaries` 同样按整周 7 天逐日输出
 - 默认输出一个 `json` 数据包，里面同时包含 `rawEvents`、`weeklySummary`、`dailySummaries`
 - 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `6`，用于标识已使用 `fiveHourLatestUsagePct`、`fiveHourPeakUsagePct`、`sevenDayLatestUsagePct`、`sevenDayPeakUsagePct` 字段的新导出契约
 - 默认文件名会带 git email 的帐号名前缀和起止日期，例如：`alice_export_2026-05-26_to_2026-06-01.json`

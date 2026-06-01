@@ -1,6 +1,6 @@
 {
   "name": "ccus-cli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Claude Code statusline usage logger and dashboard CLI",
   "type": "commonjs",
   "bin": {
@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "npm run build",
     "test": "node --test dist/test",
-    "test:src": "node --import tsx --test src/test/payload.test.ts src/test/dashboard.test.ts src/test/export.test.ts src/test/storage.test.ts src/test/claude.test.ts src/test/aggregate.test.ts src/test/aggregate-dashboard.test.ts src/test/install.test.ts src/test/debug.test.ts"
+    "test:src": "node --import tsx --test src/test/payload.test.ts src/test/dashboard.test.ts src/test/export.test.ts src/test/storage.test.ts src/test/claude.test.ts src/test/aggregate.test.ts src/test/aggregate-dashboard.test.ts src/test/install.test.ts src/test/debug.test.ts src/test/time.test.ts"
   },
   "keywords": [
     "claude-code",
