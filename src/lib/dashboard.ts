@@ -1,5 +1,5 @@
-import { DashboardBucket, DashboardSummary, StatuslineEvent } from "../types";
-import { formatLocalTimestamp, roundNumber } from "./time";
+import { DashboardBucket, DashboardDailyMessagePoint, DashboardSummary, StatuslineEvent } from "../types";
+import { formatLocalTimestamp, localDateKey, roundNumber } from "./time";
 
 /** 所有插入到 HTML/SVG 的动态文本都先转义，避免本地页面被注入内容。 */
 function escapeHtml(value: string): string {
@@ -47,13 +47,14 @@ export function summarizeEvents(events: StatuslineEvent[]): DashboardSummary {
  */
 export function bucketizeEvents(events: StatuslineEvent[], start: Date, end: Date, bucketMinutes = 5): DashboardBucket[] {
   const bucketMs = bucketMinutes * 60 * 1000;
-  const buckets = new Map<number, number[]>();
+  // 5h 与 7d 在同一时间桶里各自独立收集：某条采样可能只带其中一项，不应互相牵连。
+  const buckets = new Map<number, { fiveHour: number[]; sevenDay: number[] }>();
   for (let cursor = start.getTime(); cursor <= end.getTime(); cursor += bucketMs) {
-    buckets.set(cursor, []);
+    buckets.set(cursor, { fiveHour: [], sevenDay: [] });
   }
 
   for (const event of events) {
-    if (event.usagePct === null) {
+    if (event.usagePct === null && event.sevenDayUsagePct === null) {
       continue;
     }
     const ts = new Date(event.timestamp).getTime();
@@ -61,18 +62,25 @@ export function bucketizeEvents(events: StatuslineEvent[], start: Date, end: Dat
       continue;
     }
     const bucketStart = start.getTime() + Math.floor((ts - start.getTime()) / bucketMs) * bucketMs;
-    const values = buckets.get(bucketStart);
-    if (values) {
-      values.push(event.usagePct);
+    const slot = buckets.get(bucketStart);
+    if (!slot) {
+      continue;
+    }
+    if (event.usagePct !== null) {
+      slot.fiveHour.push(event.usagePct);
+    }
+    if (event.sevenDayUsagePct !== null) {
+      slot.sevenDay.push(event.sevenDayUsagePct);
     }
   }
 
-  return [...buckets.entries()].map(([bucketStart, values]) => ({
+  return [...buckets.entries()].map(([bucketStart, slot]) => ({
     bucketStart: new Date(bucketStart).toISOString(),
-    avgUsagePct: values.length > 0 ? roundNumber(average(values), 1) : null,
-    maxUsagePct: values.length > 0 ? roundNumber(Math.max(...values), 1) : null,
-    minUsagePct: values.length > 0 ? roundNumber(Math.min(...values), 1) : null,
-    sampleCount: values.length,
+    avgUsagePct: slot.fiveHour.length > 0 ? roundNumber(average(slot.fiveHour), 1) : null,
+    maxUsagePct: slot.fiveHour.length > 0 ? roundNumber(Math.max(...slot.fiveHour), 1) : null,
+    minUsagePct: slot.fiveHour.length > 0 ? roundNumber(Math.min(...slot.fiveHour), 1) : null,
+    avgSevenDayUsagePct: slot.sevenDay.length > 0 ? roundNumber(average(slot.sevenDay), 1) : null,
+    sampleCount: slot.fiveHour.length,
   }));
 }
 
@@ -84,33 +92,77 @@ function renderChart(buckets: DashboardBucket[]): string {
   const paddingY = 28;
   const innerWidth = width - paddingX * 2;
   const innerHeight = height - paddingY * 2;
-  const values = buckets.map((bucket) => bucket.avgUsagePct ?? 0);
-  const points = buckets.map((bucket, index) => {
-    const x = paddingX + (index / Math.max(buckets.length - 1, 1)) * innerWidth;
-    const usage = bucket.avgUsagePct ?? 0;
-    const y = paddingY + ((100 - usage) / 100) * innerHeight;
-    return { x, y, usage, label: formatLocalTimestamp(new Date(bucket.bucketStart)) };
-  });
-  const linePath = points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
-  const areaPath = `${linePath} L${points.at(-1)?.x.toFixed(2) ?? paddingX} ${(height - paddingY).toFixed(2)} L${points[0]?.x.toFixed(2) ?? paddingX} ${(height - paddingY).toFixed(2)} Z`;
+  const xOf = (index: number): number => paddingX + (index / Math.max(buckets.length - 1, 1)) * innerWidth;
+  const yOf = (usage: number): number => paddingY + ((100 - usage) / 100) * innerHeight;
+
+  // 每条曲线只连有数据的桶，跨空桶直接相连，避免周视图里大量空桶把线拉回 0 变成锯齿。
+  const collectPoints = (accessor: (bucket: DashboardBucket) => number | null) =>
+    buckets
+      .map((bucket, index) => ({ index, value: accessor(bucket), bucket }))
+      .filter((entry): entry is { index: number; value: number; bucket: DashboardBucket } => entry.value !== null)
+      .map((entry) => ({
+        x: xOf(entry.index),
+        y: yOf(entry.value),
+        usage: entry.value,
+        label: formatLocalTimestamp(new Date(entry.bucket.bucketStart)),
+      }));
+
+  const fiveHourPoints = collectPoints((bucket) => bucket.avgUsagePct);
+  const sevenDayPoints = collectPoints((bucket) => bucket.avgSevenDayUsagePct);
+
+  const linePathOf = (points: { x: number; y: number }[]): string =>
+    points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+
+  const fiveHourLine = linePathOf(fiveHourPoints);
+  const fiveHourArea = fiveHourPoints.length > 0
+    ? `${fiveHourLine} L${fiveHourPoints.at(-1)!.x.toFixed(2)} ${(height - paddingY).toFixed(2)} L${fiveHourPoints[0].x.toFixed(2)} ${(height - paddingY).toFixed(2)} Z`
+    : "";
+  const sevenDayLine = linePathOf(sevenDayPoints);
 
   const ticks = [0, 25, 50, 75, 100].map((tick) => {
-    const y = paddingY + ((100 - tick) / 100) * innerHeight;
+    const y = yOf(tick);
     return `<g><line x1="${paddingX}" x2="${width - paddingX}" y1="${y}" y2="${y}" class="chart-grid" /><text x="8" y="${y + 4}" class="chart-axis">${tick}%</text></g>`;
   }).join("");
 
-  const markers = points
-    .filter((_, index) => index === points.length - 1 || index % Math.max(Math.floor(points.length / 6), 1) === 0)
-    .map((point) => `<g><line x1="${point.x}" x2="${point.x}" y1="${height - paddingY}" y2="${height - paddingY + 6}" class="chart-axis-line" /><text x="${point.x}" y="${height - 2}" text-anchor="middle" class="chart-axis">${escapeHtml(point.label)}</text></g>`)
+  // 跨多天的窗口（this-week / last-week）x 轴按自然日打刻度，每天一格、标签只显示月-日，
+  // 更像“周视图”；当天/短窗口仍按时间桶等距取约 6 个时:分刻度。
+  const firstTs = buckets.length > 0 ? new Date(buckets[0].bucketStart).getTime() : 0;
+  const lastTs = buckets.length > 0 ? new Date(buckets.at(-1)!.bucketStart).getTime() : 0;
+  const multiDay = lastTs - firstTs > 2 * 24 * 60 * 60 * 1000;
+
+  let markerEntries: { index: number; label: string }[];
+  if (multiDay) {
+    const seenDays = new Set<string>();
+    markerEntries = buckets
+      .map((bucket, index) => ({ index, day: localDateKey(new Date(bucket.bucketStart)) }))
+      .filter((entry) => {
+        if (seenDays.has(entry.day)) {
+          return false;
+        }
+        seenDays.add(entry.day);
+        return true;
+      })
+      .map((entry) => ({ index: entry.index, label: entry.day.slice(5) }));
+  } else {
+    markerEntries = buckets
+      .map((bucket, index) => ({ index, label: formatLocalTimestamp(new Date(bucket.bucketStart)) }))
+      .filter((_, index) => index === buckets.length - 1 || index % Math.max(Math.floor(buckets.length / 6), 1) === 0);
+  }
+
+  const markers = markerEntries
+    .map((entry) => {
+      const x = xOf(entry.index);
+      return `<g><line x1="${x}" x2="${x}" y1="${height - paddingY}" y2="${height - paddingY + 6}" class="chart-axis-line" /><text x="${x}" y="${height - 2}" text-anchor="middle" class="chart-axis">${escapeHtml(entry.label)}</text></g>`;
+    })
     .join("");
 
-  const tooltips = points
-    .filter((point) => point.usage > 0)
-    .map((point) => `<circle cx="${point.x}" cy="${point.y}" r="3.5" class="chart-point"><title>${escapeHtml(point.label)} · ${point.usage.toFixed(1)}%</title></circle>`)
-    .join("");
+  const dotsOf = (points: { x: number; y: number; usage: number; label: string }[], pointClass: string, seriesLabel: string): string =>
+    points
+      .map((point) => `<circle cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="3.5" class="${pointClass}"><title>${escapeHtml(point.label)} · ${seriesLabel} ${point.usage.toFixed(1)}%</title></circle>`)
+      .join("");
 
-  const noData = values.every((value) => value === 0)
-    ? `<div class="empty-state">当前时间窗口里还没有可绘制的 Claude 5 小时使用率样本。</div>`
+  const noData = fiveHourPoints.length === 0 && sevenDayPoints.length === 0
+    ? `<div class="empty-state">当前时间窗口里还没有可绘制的 Claude 使用率样本。</div>`
     : "";
 
   return `
@@ -118,17 +170,96 @@ function renderChart(buckets: DashboardBucket[]): string {
       <div class="panel-header">
         <div>
           <p class="eyebrow">Recent Trend</p>
-          <h2>Claude 5 小时使用率趋势</h2>
+          <h2>Claude 使用率趋势</h2>
         </div>
-        <p class="muted">按采样时间聚合，Y 轴为 rate_limits.five_hour.used_percentage</p>
+        <p class="muted">按采样时间聚合，5h 来自 rate_limits.five_hour，7d 来自 rate_limits.seven_day</p>
+      </div>
+      <div class="chart-legend">
+        <span class="legend-item"><span class="legend-swatch legend-5h"></span>5 小时使用率</span>
+        <span class="legend-item"><span class="legend-swatch legend-7d"></span>7 天使用率</span>
       </div>
       ${noData}
-      <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="Claude 5 小时使用率趋势">
+      <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="Claude 使用率趋势（5h 与 7d）">
         ${ticks}
-        <path d="${areaPath}" class="chart-area"></path>
-        <path d="${linePath}" class="chart-line"></path>
+        ${fiveHourArea ? `<path d="${fiveHourArea}" class="chart-area"></path>` : ""}
+        ${sevenDayLine ? `<path d="${sevenDayLine}" class="chart-line chart-line-7d"></path>` : ""}
+        ${fiveHourLine ? `<path d="${fiveHourLine}" class="chart-line"></path>` : ""}
         ${markers}
-        ${tooltips}
+        ${dotsOf(sevenDayPoints, "chart-point chart-point-7d", "7d")}
+        ${dotsOf(fiveHourPoints, "chart-point", "5h")}
+      </svg>
+    </section>
+  `;
+}
+
+/**
+ * 根据时间窗口跨度自适应选择曲线分桶粒度。
+ *
+ * today/5h 这类短窗口保持 5 分钟桶；this-week/last-week 这类跨多天窗口改用小时桶，
+ * 否则一周会产生上千个点，曲线既慢又糊。
+ */
+function pickBucketMinutes(start: Date, end: Date): number {
+  const spanMs = end.getTime() - start.getTime();
+  const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+  return spanMs > twoDaysMs ? 60 : 5;
+}
+
+/**
+ * 每日用户消息数柱状图。
+ *
+ * 口径与导出契约的 `userMessageCount` 一致：来自 Claude 本地 transcript 的真实用户请求数，
+ * 不是 statusline 采样数，也不是 API 请求数。
+ */
+function renderDailyMessages(points: DashboardDailyMessagePoint[]): string {
+  if (points.length === 0) {
+    return "";
+  }
+
+  const total = points.reduce((sum, point) => sum + point.userMessageCount, 0);
+  const maxCount = Math.max(...points.map((point) => point.userMessageCount), 1);
+  const width = 920;
+  const height = 280;
+  const paddingX = 36;
+  const paddingY = 28;
+  const innerWidth = width - paddingX * 2;
+  const innerHeight = height - paddingY * 2;
+  const slot = innerWidth / points.length;
+  const barWidth = Math.max(Math.min(slot * 0.62, 48), 2);
+
+  const bars = points
+    .map((point, index) => {
+      const cx = paddingX + slot * (index + 0.5);
+      const barHeight = (point.userMessageCount / maxCount) * innerHeight;
+      const y = paddingY + (innerHeight - barHeight);
+      const dayLabel = point.date.slice(5);
+      return `<g>
+        <rect x="${(cx - barWidth / 2).toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${Math.max(barHeight, 0).toFixed(2)}" rx="4" class="bar"><title>${escapeHtml(dayLabel)} · ${point.userMessageCount} 条</title></rect>
+        <text x="${cx.toFixed(2)}" y="${(y - 6).toFixed(2)}" text-anchor="middle" class="bar-value">${point.userMessageCount > 0 ? point.userMessageCount : ""}</text>
+        <text x="${cx.toFixed(2)}" y="${(height - 8).toFixed(2)}" text-anchor="middle" class="chart-axis">${escapeHtml(dayLabel)}</text>
+      </g>`;
+    })
+    .join("");
+
+  const baselineY = paddingY + innerHeight;
+  const baseline = `<line x1="${paddingX}" x2="${width - paddingX}" y1="${baselineY}" y2="${baselineY}" class="chart-axis-line" />`;
+
+  const noData = total === 0
+    ? `<div class="empty-state">当前时间窗口里还没有统计到 Claude 用户消息。</div>`
+    : "";
+
+  return `
+    <section class="panel chart-panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Daily Messages</p>
+          <h2>每日用户消息数</h2>
+        </div>
+        <p class="muted">按自然日统计的真实用户请求数（口径同导出 userMessageCount），共 ${total} 条</p>
+      </div>
+      ${noData}
+      <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="每日用户消息数">
+        ${baseline}
+        ${bars}
       </svg>
     </section>
   `;
@@ -190,9 +321,16 @@ function renderRecentEvents(events: StatuslineEvent[]): string {
  *
  * 整个 dashboard 保持“单文件可打开”，方便导出和直接分享本地结果。
  */
-export function buildDashboardHtml(events: StatuslineEvent[], rangeLabel: string, start: Date, end: Date): string {
+export function buildDashboardHtml(
+  events: StatuslineEvent[],
+  rangeLabel: string,
+  start: Date,
+  end: Date,
+  dailyUserMessages: DashboardDailyMessagePoint[] = [],
+): string {
   const summary = summarizeEvents(events);
-  const buckets = bucketizeEvents(events, start, end, 5);
+  const buckets = bucketizeEvents(events, start, end, pickBucketMinutes(start, end));
+  const totalUserMessages = dailyUserMessages.reduce((sum, point) => sum + point.userMessageCount, 0);
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -326,6 +464,22 @@ export function buildDashboardHtml(events: StatuslineEvent[], rangeLabel: string
       .chart-area { fill: rgba(94, 234, 212, 0.14); }
       .chart-line { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
       .chart-point { fill: var(--accent); }
+      .chart-line-7d { stroke: var(--warning); stroke-dasharray: 6 4; }
+      .chart-point-7d { fill: var(--warning); }
+      .chart-legend {
+        display: flex;
+        gap: 18px;
+        padding: 10px 24px 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .legend-item { display: inline-flex; align-items: center; gap: 8px; }
+      .legend-swatch { width: 18px; height: 0; border-top-width: 3px; border-top-style: solid; }
+      .legend-5h { border-top-color: var(--accent); }
+      .legend-7d { border-top-color: var(--warning); border-top-style: dashed; }
+      .bar { fill: rgba(94, 234, 212, 0.55); }
+      .bar:hover { fill: var(--accent); }
+      .bar-value { fill: var(--muted); font-size: 11px; }
       .empty-state {
         margin: 18px 24px 0;
         padding: 16px 18px;
@@ -391,17 +545,18 @@ export function buildDashboardHtml(events: StatuslineEvent[], rangeLabel: string
           <p class="stat-note">窗口内观测到的 5 小时使用率峰值</p>
         </article>
         <article class="panel stat-card">
-          <h2>Sessions</h2>
-          <p class="stat-value">${summary.uniqueSessions}</p>
-          <p class="stat-note">去重 session 数</p>
+          <h2>Latest 7d usage</h2>
+          <p class="stat-value">${escapeHtml(statValue(summary.sevenDayLatestUsagePct))}</p>
+          <p class="stat-note">最新 7 天 usage 样本，峰值 ${escapeHtml(statValue(summary.sevenDayPeakUsagePct))}</p>
         </article>
         <article class="panel stat-card">
-          <h2>Workspaces</h2>
-          <p class="stat-value">${summary.uniqueWorkspaces}</p>
-          <p class="stat-note">去重项目目录数</p>
+          <h2>用户消息数</h2>
+          <p class="stat-value">${totalUserMessages}</p>
+          <p class="stat-note">窗口内每日真实用户请求数合计</p>
         </article>
       </section>
       ${renderChart(buckets)}
+      ${renderDailyMessages(dailyUserMessages)}
       ${renderRecentEvents(events)}
     </main>
   </body>

@@ -40,7 +40,7 @@ ccus export                     # 导出当前周数据包（this-week）
 ccus export lw                  # 导出上一整周（last-week，周一到周日）
 ccus export tw                  # 导出本周（等价于默认 ccus export）
 
-ccus dashboard serve            # 启动本地页面，看自己的 5 小时使用率趋势
+ccus dashboard serve            # 启动本地页面，默认看本周（this-week）的 5 小时使用率曲线与每日用户消息数
 
 ccus aggregate --input-dir ./team-exports   # 多人的数据汇总，可以导出 detail.csv、daily.csv、weekly.csv 三个维度的文件
 ccus aggregate serve --input-dir ./team-exports #直接打开一个看板
@@ -96,11 +96,15 @@ ccus aggregate --input-dir ./team-exports --out-dir ./team-report
 ccus aggregate serve --input-dir ./team-exports
 ```
 
-`serve` 会启动一个本地 HTTP 服务，默认监听 `127.0.0.1` 上的随机端口，并在每次请求时实时读取最新日志生成页面。
+`serve` 会启动一个本地 HTTP 服务，默认监听 `127.0.0.1` 上的随机端口，并在每次请求时实时读取最新日志生成页面。`serve` 默认查看 `this-week`（整周）使用量曲线（`build` / `open` 仍默认 `today`），可用 `--range` 覆盖。
 
 其中：
 
 - `5 小时使用量百分比` 是 **展示指标**，来自 Claude 自身字段 `rate_limits.five_hour.used_percentage`
+- 使用率趋势图会在同一张图上叠加两条线：实线为 5 小时使用率（`rate_limits.five_hour`），虚线为 7 天使用率（`rate_limits.seven_day`），两者各自独立按时间桶聚合
+- 页面新增 **每日用户消息数** 柱状图：按自然日统计的真实用户请求数，口径与导出契约的 `userMessageCount` 一致（来自 `~/.claude/projects/**/*.jsonl`），不是 statusline 采样数，也仅用于页面展示、不进任何导出/聚合契约
+- 跨多天的窗口（如 `this-week` / `last-week`）使用率曲线会自动改用小时桶聚合，避免一周生成上千个点，且 x 轴改为按自然日（月-日）打刻度
+- 顶部统计卡展示 `Latest 5h usage`、`Peak 5h usage`、`Latest 7d usage`（含峰值）、`用户消息数`（窗口内每日真实用户请求数合计）
 - `--range today / this-week / last-week / 24h` 是 **你要查看的采样历史时间窗口**（`last-week` 指上一个完整周一到周日）
 - statusline 日志本身主要保存 `rawPayload` 与外部补充字段；默认导出时会同时保留原始事件，并额外汇总 `~/.claude/projects/**/*.jsonl` 中的会话 usage
 

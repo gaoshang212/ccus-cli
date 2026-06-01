@@ -164,15 +164,37 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
   }
 }
 
+/**
+ * 加载某个时间窗口内的 dashboard 渲染数据：statusline 事件 + 每日用户消息数。
+ *
+ * 每日用户消息数与导出契约同源（Claude 本地 transcript 的真实用户请求数），仅供 dashboard 展示，
+ * 不落盘、不进任何导出/聚合契约。`defaultRange` 让 build/open 与 serve 各自决定缺省窗口。
+ */
+async function loadDashboardData(
+  options: CliOptions,
+  defaultRange: string,
+): Promise<{ html: string; window: ReturnType<typeof resolveRange> }> {
+  const dataDir = getDataDir(options);
+  const range = getStringOption(options, "range") ?? defaultRange;
+  const now = new Date();
+  // this-week 固定补齐到完整一周（周一到周日），即使本周还没过完，曲线 x 轴也按 7 天逐日展示；
+  // 其它范围（today / last-week / 5h）不受影响。
+  const window = expandToFullWeekWindow(resolveRange(range, now));
+  const events = (await readEventsForRange(dataDir, range, now)).map((record) => computeStatuslineEvent(record));
+  const claudeDailyUsage = await summarizeClaudeProjectUsageByDay(window.start, window.end);
+  const dailyUserMessages = enumerateDateKeys(window.start, window.end).map((date) => ({
+    date,
+    userMessageCount: claudeDailyUsage.get(date)?.userMessageCount ?? 0,
+  }));
+  debugLog("dashboard", "events loaded", { range, label: window.label, sampleCount: events.length, days: dailyUserMessages.length });
+  const html = buildDashboardHtml(events, window.label, window.start, window.end, dailyUserMessages);
+  return { html, window };
+}
+
 /** 构建 dashboard 的公共逻辑，build/open 复用同一套生成流程。 */
 async function buildDashboard(options: CliOptions): Promise<string> {
   const dataDir = getDataDir(options);
-  const range = getStringOption(options, "range") ?? "today";
-  const now = new Date();
-  const window = resolveRange(range, now);
-  const events = (await readEventsForRange(dataDir, range, now)).map((record) => computeStatuslineEvent(record));
-  debugLog("dashboard", "events loaded", { range, label: window.label, sampleCount: events.length });
-  const html = buildDashboardHtml(events, window.label, window.start, window.end);
+  const { html, window } = await loadDashboardData(options, "today");
   const outputPath = path.resolve(
     getStringOption(options, "out") ?? path.join(getDashboardDir(dataDir), `${window.label}.html`),
   );
@@ -181,14 +203,10 @@ async function buildDashboard(options: CliOptions): Promise<string> {
   return outputPath;
 }
 
-/** 直接返回 dashboard HTML 字符串，供本地 HTTP 服务复用。 */
+/** 直接返回 dashboard HTML 字符串，供本地 HTTP 服务复用。serve 默认看整周使用量曲线。 */
 async function renderDashboardHtml(options: CliOptions): Promise<string> {
-  const dataDir = getDataDir(options);
-  const range = getStringOption(options, "range") ?? "today";
-  const now = new Date();
-  const window = resolveRange(range, now);
-  const events = (await readEventsForRange(dataDir, range, now)).map((record) => computeStatuslineEvent(record));
-  return buildDashboardHtml(events, window.label, window.start, window.end);
+  const { html } = await loadDashboardData(options, "this-week");
+  return html;
 }
 
 /** 只生成 dashboard 文件，不主动打开浏览器。 */

@@ -65,6 +65,8 @@ export interface DashboardBucket {
   avgUsagePct: number | null;
   maxUsagePct: number | null;
   minUsagePct: number | null;
+  /** 同一时间桶内的 7 天额度使用率均值，来源 rate_limits.seven_day.used_percentage，与 5h 桶独立聚合。 */
+  avgSevenDayUsagePct: number | null;
   sampleCount: number;
 }
 
@@ -77,6 +79,17 @@ export interface DashboardSummary {
   sampleCount: number;
   uniqueSessions: number;
   uniqueWorkspaces: number;
+}
+
+/**
+ * dashboard 每日用户消息数柱状图的单日数据点。
+ *
+ * `userMessageCount` 来源与导出契约一致：Claude 本地 transcript 里按自然日统计的真实用户请求数，
+ * 不是 statusline 采样数。仅供单文件 dashboard 展示，不进任何导出/聚合契约。
+ */
+export interface DashboardDailyMessagePoint {
+  date: string;
+  userMessageCount: number;
 }
 
 /** 导出 summary 模式时按天汇总的行结构。 */

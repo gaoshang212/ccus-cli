@@ -341,6 +341,14 @@ node dist/cli.js export --data-dir "$env:LOCALAPPDATA\ccus"
 node dist/cli.js aggregate --input-dir "$env:LOCALAPPDATA\ccus\exports" --out-dir "$env:LOCALAPPDATA\ccus\aggregated"
 ```
 
+## 7.1 CHANGELOG 规范
+
+写 `CHANGELOG.md` 时务必**简明扼要**：
+
+- 每条一句话，只说“做了什么 / 改了什么”，不展开实现细节、字段口径、动机推导
+- 按 `新增` / `变更` / `修复` 分组，能合并的要点就合并成一条
+- 粒度对齐已有的 `[0.1.x]` 段，不要写成提交说明或设计文档
+
 ## 8. 给后续 Claude 的建议
 
 - 先读 `src/types.ts`，再读 `src/cli.ts`
