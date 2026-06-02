@@ -8,6 +8,7 @@
 - `ccus export`：默认导出当前周数据包，里面同时包含原始事件和按天维度的周汇总。
 - `ccus aggregate`：读取一个目录里的多人 export bundle json，输出明细、按天、按周三个 CSV。
 - `ccus aggregate serve`：同样以 bundle 目录为输入，启动本地多人 dashboard 页面，不落地任何文件。
+- `ccus update`：主动检查 npm 上是否有新版本，有则提示手动升级命令；`ccus --version` 查看当前版本。
 
 > **支持范围**：`ccus statusline emit` 依赖 Claude Code 的 statusLine 机制（从 `stdin` 读 JSON、向 `stdout` 回一行文本），**只在命令行版 Claude Code（CLI / 终端）里生效**。
 >
@@ -22,6 +23,27 @@ npm install -g ccus-cli
 ```
 
 要求 Node.js >= 20。
+
+## 更新检查
+
+ccus 通过 npm 全局安装，自带一个轻量的更新检查：
+
+- statusline 渲染时会**异步、节流（每天最多一次）**地向 npm registry 查询最新版本，结果缓存到数据目录下的 `update-check.json`。检查在 detached 后台进程里完成，**不阻塞 statusline、不污染单行输出**。
+- 一旦发现有更新，statusline 行尾会追加一个小标记，例如 `… | ⏱ 11:44 | ⬆ v0.1.5`。
+- 看到标记后手动升级即可：
+
+```bash
+npm i -g ccus-cli@latest
+```
+
+也可以随时主动检查：
+
+```bash
+ccus update        # 立即查 registry，有新版本则打印升级命令
+ccus --version     # 查看当前安装的版本
+```
+
+> 出于稳妥考虑，ccus **只提示、不自动替你执行全局安装**。如需走私服或镜像（如 npmmirror），设置环境变量 `CCUS_REGISTRY` 指向对应 registry 即可。
 
 ## 快速开始
 

@@ -128,6 +128,9 @@
 - `ccus export`
 - `ccus aggregate`
 - `ccus aggregate serve`
+- `ccus update`（主动检查更新，仅提示不自动安装）
+- `ccus --version`
+- `ccus __check-update`（隐藏命令，statusline 路径 spawn 的 detached 后台进程，只刷新更新缓存，不输出 stdout）
 
 ### 3.2 核心库
 
@@ -176,6 +179,16 @@
   - 把 statusLine 命令写进 Claude Code 的 `settings.json`
   - 只覆盖 `statusLine` 字段，保留其它顶层设置
   - 无法解析的配置文件直接报错，不覆盖
+
+- `src/lib/version.ts`
+  - 读取 ccus 自身版本号（运行时读 `package.json`，dist 与源码都用 `../../package.json` 定位）
+  - `isNewerVersion(latest, current)`：只比较 `major.minor.patch`，忽略预发布后缀
+
+- `src/lib/update-check.ts`
+  - npm 更新检查：查 registry（`ccus-cli/latest`，可用 `CCUS_REGISTRY` 覆盖）、本地缓存 `update-check.json`、24h 节流
+  - statusline 路径只做两件无侵入的事：`maybeSpawnBackgroundCheck`（缓存过期则 spawn detached 后台进程刷新，不等待）+ `computeUpdateNotice`（同步读缓存，决定行尾是否追加 `⬆ vX.Y.Z`）
+  - `performUpdateCheck` 供 `ccus update` 和隐藏命令 `__check-update` 复用；**绝不写 stdout**，失败一律静默
+  - 当前更新行为：只提示、不自动执行 `npm i -g`
 
 - `src/lib/debug.ts`
   - 调试日志开关与统一出口（`--verbose` / `--debug` / `-v` 或 `CCUS_DEBUG=1` 打开）

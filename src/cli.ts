@@ -16,6 +16,8 @@ import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspac
 import { getClaudeSettingsPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
 import { appendEvent, readEventsForRange } from "./lib/storage";
 import { enumerateDateKeys, expandToFullWeekWindow, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
+import { computeUpdateNotice, fetchLatestVersion, maybeSpawnBackgroundCheck, performUpdateCheck } from "./lib/update-check";
+import { getCurrentVersion, isNewerVersion } from "./lib/version";
 
 export interface CliOptions {
   [key: string]: string | boolean | undefined;
@@ -23,7 +25,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
-  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
+  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
 /** 一个轻量的参数解析器，当前命令面不复杂，没必要引入额外依赖。 */
@@ -154,7 +156,12 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
       gitUserAccount: event.gitUserAccount,
       gitBranch,
     });
-    process.stdout.write(`${event.statusLine}\n`);
+    // 更新检查必须对 statusline 完全无侵入：同步读旧缓存决定是否在行尾追加小标记，
+    // 把网络请求甩给 detached 后台进程，主进程不等待、失败静默。
+    maybeSpawnBackgroundCheck(dataDir);
+    const notice = computeUpdateNotice(dataDir);
+    const statusLine = notice ? `${event.statusLine} | ${notice}` : event.statusLine;
+    process.stdout.write(`${statusLine}\n`);
   } catch (error) {
     // 正常路径不能因为采样失败把 statusline 弄挂，所以这里仍然降级输出兜底文本；
     // 但默认会吞掉真实错误，排查极其困难。开启调试时把完整错误打到 stderr。
@@ -540,6 +547,48 @@ export function resolveExportOptions(action: string | undefined, args: string[],
   return options;
 }
 
+/**
+ * `ccus update`：用户主动检查更新（绕过 24h 节流）。
+ *
+ * 根据当前的产品选择，这里只做「检查 + 提示」，不替用户执行全局安装。
+ * 有新版本时打印应当手动运行的 `npm i -g` 命令。
+ */
+async function handleUpdate(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  const current = getCurrentVersion();
+
+  let latest: string;
+  try {
+    latest = await fetchLatestVersion();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stdout.write(`无法检查更新：${message}\n当前版本 v${current}\n`);
+    return;
+  }
+
+  // 顺手刷新缓存，让 statusline 标记和这次检查结果保持一致。
+  await performUpdateCheck(dataDir);
+
+  if (isNewerVersion(latest, current)) {
+    process.stdout.write(
+      `发现新版本：v${current} -> v${latest}\n运行以下命令升级：\n  npm i -g ccus-cli@latest\n`,
+    );
+  } else {
+    process.stdout.write(`已是最新版本 v${current}\n`);
+  }
+}
+
+/**
+ * 隐藏命令 `__check-update`：由 statusline 路径以 detached 后台进程触发。
+ *
+ * 只做一件事：查 registry 并写缓存。不输出任何东西到 stdout（它不是被人看的），
+ * 失败也静默，绝不影响触发它的 statusline 主进程。
+ */
+async function handleBackgroundCheckUpdate(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  await performUpdateCheck(dataDir);
+}
+
 /** 顶层命令分发入口。 */
 async function main(args = process.argv.slice(2)): Promise<void> {
   setDebugEnabled(resolveDebugEnabled(args));
@@ -551,6 +600,21 @@ async function main(args = process.argv.slice(2)): Promise<void> {
 
   if (!group) {
     printHelp();
+    return;
+  }
+
+  if (group === "--version" || group === "-V" || group === "version") {
+    process.stdout.write(`${getCurrentVersion()}\n`);
+    return;
+  }
+
+  if (group === "update") {
+    await handleUpdate(parseOptions(args.slice(1)));
+    return;
+  }
+
+  if (group === "__check-update") {
+    await handleBackgroundCheckUpdate(parseOptions(args.slice(1)));
     return;
   }
 

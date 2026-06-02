@@ -39,6 +39,11 @@ export function getDashboardDir(dataDir: string): string {
   return path.join(dataDir, "dashboard");
 }
 
+/** 版本更新检查的本地缓存文件，记录上次检查时间与拿到的最新版本。 */
+export function getUpdateCachePath(dataDir: string): string {
+  return path.join(dataDir, "update-check.json");
+}
+
 /** Claude Code 默认本地数据目录。 */
 export function getClaudeDataDir(): string {
   const configured = process.env.CCUS_CLAUDE_DATA_DIR;
