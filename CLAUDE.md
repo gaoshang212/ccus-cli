@@ -29,6 +29,8 @@
 
 `ccus statusline emit` 支持 `--no-store`（别名 `--no-log`）：照常解析 payload 并输出单行状态文本，但**跳过事件落盘**。该选项只影响是否写本地日志，不改变 stdin/stdout 契约，也不改变状态行内容。
 
+导出（`ccus export`）默认输出**紧凑 JSON**（无缩进），仅展示层格式变化，字段集合不变、不 bump schemaVersion，`ccus aggregate` 用 `JSON.parse` 读取不受影响。
+
 ### 2.2 原始日志契约
 
 持久化事件模型是 raw-first：

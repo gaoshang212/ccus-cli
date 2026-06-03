@@ -131,9 +131,9 @@ export function buildWeeklySummaryJson(summary: WeeklyExportSummary): string {
   return `${JSON.stringify(summary, null, 2)}\n`;
 }
 
-/** 默认导出把原始事件与周汇总一起打包成一个 JSON 文件。 */
+/** 默认导出把原始事件与周汇总一起打包成一个 JSON 文件，用紧凑序列化避免缩进空白撑大体积。 */
 export function buildWeeklyExportBundleJson(bundle: WeeklyExportBundle): string {
-  return `${JSON.stringify(bundle, null, 2)}\n`;
+  return `${JSON.stringify(bundle)}\n`;
 }
 
 /** 按天汇总 usage 数据，生成 summary 模式的中间结果。 */

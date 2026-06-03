@@ -144,14 +144,16 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
 
   const json = buildWeeklyExportBundleJson(bundle);
 
-  assert.match(json, /"rawEvents": \[/);
-  assert.match(json, /"dailySummaries": \[/);
-  assert.match(json, /"date": "2026-05-26"/);
-  assert.match(json, /"uniqueSessions": 2/);
-  assert.match(json, /"fiveHourLatestUsagePct": 28/);
-  assert.match(json, /"fiveHourPeakUsagePct": 31/);
-  assert.match(json, /"sevenDayLatestUsagePct": 62/);
-  assert.match(json, /"sevenDayPeakUsagePct": 71/);
+  // 导出已改紧凑格式（无缩进），断言改为解析后比较，不依赖空白。
+  assert.equal(json.includes("\n  "), false);
+  const parsed = JSON.parse(json) as WeeklyExportBundle;
+  assert.equal(parsed.rawEvents.length, records.length);
+  assert.equal(parsed.dailySummaries[0].date, "2026-05-26");
+  assert.equal(parsed.dailySummaries[0].uniqueSessions, 2);
+  assert.equal(parsed.dailySummaries[0].fiveHourLatestUsagePct, 28);
+  assert.equal(parsed.dailySummaries[0].fiveHourPeakUsagePct, 31);
+  assert.equal(parsed.dailySummaries[0].sevenDayLatestUsagePct, 62);
+  assert.equal(parsed.dailySummaries[0].sevenDayPeakUsagePct, 71);
 });
 
 /** last-week 应该解析成上一个完整的周一到周日，与本周不重叠。 */
