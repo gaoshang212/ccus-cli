@@ -4,6 +4,7 @@
 
 ### 变更
 - `export` bundle 改为紧凑 JSON,体积约降三分之一。
+- `export` 默认输出 gzip 压缩的 `.json.gz`,`aggregate` 读取时兼容 `.json.gz` 与明文 `.json`。
 
 ## [0.1.5] - 2026-06-02
 

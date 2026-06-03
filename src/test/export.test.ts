@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { resolveExportOptions } from "../cli";
-import { buildRawJsonl, buildWeeklyExportBundleJson, buildWeeklySummaryJson, writeTextFile } from "../lib/export";
+import { gunzipSync } from "node:zlib";
+import { buildRawJsonl, buildWeeklyExportBundleJson, buildWeeklySummaryJson, writeGzipFile, writeTextFile } from "../lib/export";
 import { computeStatuslineEvent } from "../lib/payload";
 import { enumerateDateKeys, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "../lib/time";
 import { PersistedStatuslineEvent, WeeklyExportBundle, WeeklyExportSummary } from "../types";
@@ -40,6 +41,24 @@ const records: PersistedStatuslineEvent[] = [
     },
   },
 ];
+
+/** writeGzipFile 写出的字节解压后应与原始内容完全一致，仅做存储层压缩。 */
+test("writeGzipFile writes gzip bytes that round-trip to the original content", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-export-gz-"));
+  const outputPath = path.join(root, "nested", "bundle.json.gz");
+  const content = `${JSON.stringify({ schemaVersion: 6, hello: "世界" })}\n`;
+
+  try {
+    await writeGzipFile(outputPath, content);
+    const raw = await fs.readFile(outputPath);
+    // gzip 魔数 0x1f 0x8b，确认写出的确实是压缩字节而非明文。
+    assert.equal(raw[0], 0x1f);
+    assert.equal(raw[1], 0x8b);
+    assert.equal(gunzipSync(raw).toString("utf8"), content);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 /** 原始 JSONL 导出应该保留持久化记录本身，而不是把分析字段再写回去。 */
 test("buildRawJsonl exports persisted raw records", () => {

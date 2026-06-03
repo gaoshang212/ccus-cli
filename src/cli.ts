@@ -5,7 +5,7 @@ import { buildDashboardHtml } from "./lib/dashboard";
 import { summarizeEvents } from "./lib/dashboard";
 import { buildAggregateDashboardHtml } from "./lib/aggregate-dashboard";
 import { summarizeClaudeProjectUsage, summarizeClaudeProjectUsageByDay } from "./lib/claude";
-import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeeklyCsv, buildSummaryRows, buildWeeklyExportBundleJson, writeTextFile } from "./lib/export";
+import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeeklyCsv, buildSummaryRows, buildWeeklyExportBundleJson, writeGzipFile, writeTextFile } from "./lib/export";
 import { buildAggregatedDailyRows, buildAggregatedDetailRows, buildAggregatedWeeklyRows, loadWeeklyExportBundles } from "./lib/aggregate";
 import { debugLog, resolveDebugEnabled, setDebugEnabled } from "./lib/debug";
 import { readGitBranch, readGitIdentity } from "./lib/git";
@@ -407,10 +407,16 @@ async function handleExport(options: CliOptions): Promise<void> {
   const content = buildWeeklyExportBundleJson(bundle);
   const fileLabel = formatRangeFileLabel(window.start, window.end);
   const gitEmailPrefix = formatGitEmailFilePrefix(exportUserEmail);
-  const defaultFileName = gitEmailPrefix ? `${gitEmailPrefix}_export_${fileLabel}.json` : `export_${fileLabel}.json`;
+  // 默认导出 gzip 压缩的 bundle（.json.gz）以缩减体积；用户用 --out 指定非 .gz 路径时仍写明文 JSON。
+  const defaultFileName = gitEmailPrefix ? `${gitEmailPrefix}_export_${fileLabel}.json.gz` : `export_${fileLabel}.json.gz`;
   const outputPath = path.resolve(output ?? path.join(dataDir, "exports", defaultFileName));
-  await writeTextFile(outputPath, content);
-  debugLog("export", "bundle written", { outputPath, bytes: content.length });
+  const compressed = outputPath.endsWith(".gz");
+  if (compressed) {
+    await writeGzipFile(outputPath, content);
+  } else {
+    await writeTextFile(outputPath, content);
+  }
+  debugLog("export", "bundle written", { outputPath, rawBytes: content.length, compressed });
   process.stdout.write(`${outputPath}\n`);
 }
 

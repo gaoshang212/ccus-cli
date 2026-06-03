@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
 import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow, ExportSummaryRow, PersistedStatuslineEvent, StatuslineEvent, WeeklyExportBundle, WeeklyExportSummary } from "../types";
 import { roundNumber } from "./time";
+
+const gzipAsync = promisify(gzip);
 
 /** CSV 字符串字段统一做转义，避免逗号和引号破坏列结构。 */
 function quoteCsv(value: string): string {
@@ -286,4 +290,16 @@ export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
 export async function writeTextFile(outputPath: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, content, "utf8");
+}
+
+/**
+ * 把内容 gzip 压缩后写文件，父目录不存在时自动创建。
+ *
+ * 仅压缩存储/传输层，写入的字节解压后与 `writeTextFile` 完全一致，
+ * 不改变 bundle 字段集合，也不影响 schemaVersion。
+ */
+export async function writeGzipFile(outputPath: string, content: string): Promise<void> {
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  const compressed = await gzipAsync(content);
+  await fs.writeFile(outputPath, compressed);
 }

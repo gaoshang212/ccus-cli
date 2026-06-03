@@ -1,8 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
+import { gunzip } from "node:zlib";
 import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow, PersistedStatuslineEvent, WeeklyExportBundle } from "../types";
 import { computeStatuslineEvent } from "./payload";
 import { extractGitEmailAccount } from "./time";
+
+const gunzipAsync = promisify(gunzip);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -65,6 +69,11 @@ function toPersonKey(gitUserEmail: string | null, gitUserName: string | null): s
   return extractGitEmailAccount(gitUserEmail) ?? gitUserName ?? "unknown";
 }
 
+/** bundle 文件可以是明文 `.json`，也可以是 `ccus export` 默认输出的 gzip 压缩 `.json.gz`。 */
+function isBundleFileName(name: string): boolean {
+  return name.endsWith(".json") || name.endsWith(".json.gz");
+}
+
 async function collectBundleJsonFiles(directoryPath: string): Promise<string[]> {
   const entries = await fs.readdir(directoryPath, { withFileTypes: true });
   const nested = await Promise.all(
@@ -73,10 +82,20 @@ async function collectBundleJsonFiles(directoryPath: string): Promise<string[]> 
       if (entry.isDirectory()) {
         return collectBundleJsonFiles(fullPath);
       }
-      return entry.isFile() && entry.name.endsWith(".json") ? [fullPath] : [];
+      return entry.isFile() && isBundleFileName(entry.name) ? [fullPath] : [];
     }),
   );
   return nested.flat();
+}
+
+/** 读取 bundle 文件内容：`.gz` 结尾的先 gunzip 再按 UTF-8 解码，其它按明文读取。 */
+async function readBundleFileContent(filePath: string): Promise<string> {
+  if (filePath.endsWith(".gz")) {
+    const compressed = await fs.readFile(filePath);
+    const decompressed = await gunzipAsync(compressed);
+    return decompressed.toString("utf8");
+  }
+  return fs.readFile(filePath, "utf8");
 }
 
 /** 读取目录里的 export bundle json 文件。 */
@@ -87,7 +106,7 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
 
   for (const filePath of files) {
     try {
-      const content = await fs.readFile(filePath, "utf8");
+      const content = await readBundleFileContent(filePath);
       const parsed = JSON.parse(content) as unknown;
       if (isWeeklyExportBundle(parsed)) {
         bundles.push({ filePath, bundle: parsed });

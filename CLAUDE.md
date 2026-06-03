@@ -31,6 +31,8 @@
 
 导出（`ccus export`）默认输出**紧凑 JSON**（无缩进），仅展示层格式变化，字段集合不变、不 bump schemaVersion，`ccus aggregate` 用 `JSON.parse` 读取不受影响。
 
+导出默认还会把这份紧凑 JSON **gzip 压缩**后写成 `.json.gz`（`src/lib/export.ts` 的 `writeGzipFile`）。gzip 只是存储/传输层压缩，解压后字节与未压缩导出完全一致，字段集合不变、**不 bump schemaVersion**。用 `--out` 指定一个非 `.gz` 结尾的路径时退回明文 JSON（`writeTextFile`）。`ccus aggregate` / `aggregate serve` 读取时按扩展名判断：`.gz` 先 gunzip 再 `JSON.parse`，明文 `.json` 照旧，两者都接受。
+
 ### 2.2 原始日志契约
 
 持久化事件模型是 raw-first：
@@ -96,7 +98,7 @@
 `ccus aggregate` 当前只接受：
 
 - `schemaVersion: 6` 的 bundle JSON
-- 通过 `ccus export` 导出的 `.json` 文件
+- 通过 `ccus export` 导出的 `.json.gz`（gzip 压缩，默认）或明文 `.json` 文件，`.gz` 读取时自动 gunzip
 
 旧 schema bundle 现在会被明确拒绝，不再静默读取。
 不支持把 raw-event jsonl 直接作为 `aggregate` 输入。

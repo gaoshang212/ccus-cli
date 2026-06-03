@@ -5,8 +5,8 @@
 - `ccus install`：自动把 statusLine 命令写进 Claude Code 的 `settings.json`，省去手动改配置。
 - `ccus statusline emit`：读取 Claude Code statusline 通过 `stdin` 传入的 JSON，输出 statusline 文本，并写入本地日志（加 `--no-store` / `--no-log` 则只输出、不落盘）。
 - `ccus dashboard serve`：直接启动本地 Web 页面，不用先手动生成 HTML 文件。
-- `ccus export`：默认导出当前周数据包，里面同时包含原始事件和按天维度的周汇总。
-- `ccus aggregate`：读取一个目录里的多人 export bundle json，输出明细、按天、按周三个 CSV。
+- `ccus export`：默认导出当前周数据包（gzip 压缩的 `.json.gz`），里面同时包含原始事件和按天维度的周汇总。
+- `ccus aggregate`：读取一个目录里的多人 export bundle（`.json.gz` 或 `.json`），输出明细、按天、按周三个 CSV。
 - `ccus aggregate serve`：同样以 bundle 目录为输入，启动本地多人 dashboard 页面，不落地任何文件。
 - `ccus update`：主动检查 npm 上是否有新版本，有则提示手动升级命令；`ccus --version` 查看当前版本。
 
@@ -113,7 +113,7 @@ ccus export --range today
 ccus export --range last-week
 ccus export lw                 # 位置参数简写，等价于 --range last-week
 ccus export tw                 # 等价于 --range this-week
-ccus export --out ./alice_export_2026-05-26_to_2026-06-01.json
+ccus export --out ./alice_export_2026-05-26_to_2026-06-01.json   # --out 指定非 .gz 路径时写明文 JSON
 ccus aggregate --input-dir ./team-exports --out-dir ./team-report
 ccus aggregate serve --input-dir ./team-exports
 ```
@@ -135,9 +135,10 @@ ccus aggregate serve --input-dir ./team-exports
 - 默认导出 `this-week`；如需导出上一个完整周（周一到周日），用 `--range last-week`，或位置参数简写 `ccus export lw`（`tw` = 本周）
 - 周度导出固定覆盖**完整一周（周一到周日）**：`this-week` 即使本周还没过完、后面几天还没有任何数据，文件名的起止日期也会补齐到本周日，`dailySummaries` 同样按整周 7 天逐日输出
 - 默认输出一个 `json` 数据包，里面同时包含 `rawEvents`、`weeklySummary`、`dailySummaries`
-- 导出文件为**紧凑 JSON**（无缩进），仅展示层格式变化，字段集合与 `schemaVersion` 不变，体积约比缩进格式小三分之一
+- 导出文件内容为**紧凑 JSON**（无缩进），并默认 **gzip 压缩**后写成 `.json.gz`；gzip 与紧凑化都只是存储/展示层变化，解压后的字段集合与 `schemaVersion` 不变
+- 默认写 `.json.gz`；若用 `--out` 指定一个非 `.gz` 结尾的路径，则按明文 JSON 写出（不压缩）
 - 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `6`，用于标识已使用 `fiveHourLatestUsagePct`、`fiveHourPeakUsagePct`、`sevenDayLatestUsagePct`、`sevenDayPeakUsagePct` 字段的新导出契约
-- 默认文件名会带 git email 的帐号名前缀和起止日期，例如：`alice_export_2026-05-26_to_2026-06-01.json`
+- 默认文件名会带 git email 的帐号名前缀和起止日期，例如：`alice_export_2026-05-26_to_2026-06-01.json.gz`
 - `userMessageCount` 来自 `~/.claude/projects/**/*.jsonl` 的非 meta `type:user` 事件
 - `apiRequestCount` 与 token 指标来自 `~/.claude/projects/**/*.jsonl` 中带 `message.usage` 的 `type:assistant` 事件
 - `dailySummaries` 会按每天输出消息数、请求数、token 和当天 statusline usage 摘要
@@ -145,7 +146,7 @@ ccus aggregate serve --input-dir ./team-exports
 
 ## 多人汇总
 
-- 输入目录放很多通过 `ccus export` 导出的 bundle `.json` 文件
+- 输入目录放很多通过 `ccus export` 导出的 bundle 文件，`.json.gz`（gzip 压缩）与明文 `.json` 都能识别，gzip 文件读取时自动解压
 - `aggregate` 目前只接受 `schemaVersion: 6` 的 bundle；旧导出请先用当前版本重新 `ccus export`
 - `ccus aggregate --input-dir DIR --out-dir DIR`
 - 输出三个文件：
