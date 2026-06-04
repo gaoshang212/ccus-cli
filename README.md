@@ -55,6 +55,23 @@ ccus install
 
 然后照常使用 Claude Code，statusline 会显示 5 小时额度使用率（`5h`）、7 天额度使用率（`7d`）、context window 占用百分比（`ctx`）、模型名、工作区名，以及当前 git 分支（`⎇ <branch>`，实时读取，非 git 仓库或处于 detached HEAD 时省略该段）；原始 payload 也会落到本地日志，供后续 dashboard / export 使用。
 
+> **ctx 高占用标红（按窗口大小分档）**：当 context 占用偏高时，`ctx` 段会整段标红提醒。触发条件为「百分比超阈值」或「已用 token 超阈值」任一满足。
+>
+> ccus 会根据 `contextMax` 自动判断当前是哪种上下文窗口，并套用各自独立的挡位（`contextMax > 400K` 视为 1M 档，否则按 200K 档）：
+>
+> | 档位 | 默认百分比阈值 | 默认 token 阈值 | 百分比环境变量 | token 环境变量 |
+> | --- | --- | --- | --- | --- |
+> | 200K 窗口 | `80`（约 160K 标红） | 不启用 | `CCUS_CTX_RED_PCT_200K` | `CCUS_CTX_RED_TOKENS_200K` |
+> | 1M 窗口 | `50`（约 500K 标红） | 不启用 | `CCUS_CTX_RED_PCT_1M` | `CCUS_CTX_RED_TOKENS_1M` |
+>
+> 阈值优先级：**档位专属环境变量 > 通用环境变量（`CCUS_CTX_RED_PCT` / `CCUS_CTX_RED_TOKENS`）> 档位内置默认**。token 阈值支持 `120000` / `120k` / `0.5m` 写法。例如：
+>
+> - 只想让 200K 窗口在 70% 标红：设 `CCUS_CTX_RED_PCT_200K=70`。
+> - 让 1M 窗口已用 token 超过 600K 就标红：设 `CCUS_CTX_RED_TOKENS_1M=600k`。
+> - 两档统一用同一个百分比阈值：设通用 `CCUS_CTX_RED_PCT`（不设专属变量时生效）。
+>
+> 标红只是 statusline 的颜色展示，不改变 stdin/stdout 文本契约，也不落盘、不进任何导出/聚合契约。
+
 攒了一段时间数据后，最常用的几条命令：
 
 ```bash

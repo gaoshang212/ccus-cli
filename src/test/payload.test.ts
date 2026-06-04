@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { computeStatuslineEvent, createPersistedStatuslineEvent, formatStatusLine, parseStatuslinePayload } from "../lib/payload";
+import { computeStatuslineEvent, createPersistedStatuslineEvent, formatStatusLine, parseStatuslinePayload, resolveCtxRedThresholds } from "../lib/payload";
+
+/** ctx 段标红用的 ANSI 红色控制码，测试里用来断言是否标红。 */
+const ANSI_RED = "\x1b[31m";
 
 /** 验证我们能正确读取官方文档里给出的核心字段。 */
 test("computeStatuslineEvent reads official fields from raw payload", () => {
@@ -108,6 +111,106 @@ test("formatStatusLine renders context as percent and includes 7d usage", () => 
   assert.match(line, /7d 41\.5%/);
   assert.match(line, /ctx 18\.7%/);
   assert.equal(line.includes("/"), false);
+  // 占用低于 200K 档默认 80% 阈值时不应标红。
+  assert.equal(line.includes(ANSI_RED), false);
+});
+
+/** 200K 档默认 80%：73.4% 不红，85% 红。 */
+test("formatStatusLine uses 200K-tier default threshold (80%)", () => {
+  const base = {
+    usagePct: 12.3,
+    sevenDayUsagePct: 41.5,
+    modelName: "Opus",
+    workspaceName: "repo",
+    timestamp: "2026-05-26T10:32:11.000Z",
+    contextMax: 200_000,
+  };
+
+  // 73.4% 低于 200K 档默认 80%，不标红。
+  assert.equal(formatStatusLine({ ...base, contextWindowPct: 73.4 }, null, {}).includes(ANSI_RED), false);
+  // 85% 超过 80%，标红。
+  assert.equal(formatStatusLine({ ...base, contextWindowPct: 85 }, null, {}).includes(ANSI_RED), true);
+});
+
+/** 1M 档默认 50%：40% 不红，60% 红（同样 60% 在 200K 档反而不红）。 */
+test("formatStatusLine uses 1M-tier default threshold (50%)", () => {
+  const base = {
+    usagePct: 12.3,
+    sevenDayUsagePct: 41.5,
+    modelName: "Opus",
+    workspaceName: "repo",
+    timestamp: "2026-05-26T10:32:11.000Z",
+    contextMax: 1_000_000,
+  };
+
+  assert.equal(formatStatusLine({ ...base, contextWindowPct: 40 }, null, {}).includes(ANSI_RED), false);
+  assert.equal(formatStatusLine({ ...base, contextWindowPct: 60 }, null, {}).includes(ANSI_RED), true);
+  // 同样 60% 占用，换到 200K 档（默认 80%）就不标红，体现分档。
+  assert.equal(
+    formatStatusLine({ ...base, contextMax: 200_000, contextWindowPct: 60 }, null, {}).includes(ANSI_RED),
+    false,
+  );
+});
+
+/** 档位专属环境变量覆盖通用变量与档位默认。 */
+test("formatStatusLine prefers tier-specific env over generic env", () => {
+  const event = {
+    usagePct: 12.3,
+    sevenDayUsagePct: 41.5,
+    contextWindowPct: 65,
+    modelName: "Opus",
+    workspaceName: "repo",
+    timestamp: "2026-05-26T10:32:11.000Z",
+    contextMax: 200_000,
+  };
+
+  // 通用阈值设 60（65% 会红），但 200K 专属阈值设 90 应优先生效，65% 不红。
+  assert.equal(
+    formatStatusLine(event, null, { CCUS_CTX_RED_PCT: "60", CCUS_CTX_RED_PCT_200K: "90" }).includes(ANSI_RED),
+    false,
+  );
+  // 只设通用阈值 60 时回退到通用值，65% 标红。
+  assert.equal(formatStatusLine(event, null, { CCUS_CTX_RED_PCT: "60" }).includes(ANSI_RED), true);
+});
+
+/** token 绝对值阈值（支持 k 写法）也能触发标红，且按档位区分。 */
+test("formatStatusLine marks ctx red when used tokens exceed tier token threshold", () => {
+  const event = {
+    usagePct: 12.3,
+    sevenDayUsagePct: 41.5,
+    contextWindowPct: 40,
+    contextUsed: 600_000,
+    modelName: "Opus",
+    workspaceName: "repo",
+    timestamp: "2026-05-26T10:32:11.000Z",
+    contextMax: 1_000_000,
+  };
+
+  // 百分比 40% 低于 1M 档默认 50%，但已用 token 超过 1M 档 token 阈值 500k，应标红。
+  assert.equal(formatStatusLine(event, null, { CCUS_CTX_RED_TOKENS_1M: "500k" }).includes(ANSI_RED), true);
+  assert.equal(formatStatusLine(event, null, { CCUS_CTX_RED_TOKENS_1M: "0.7m" }).includes(ANSI_RED), false);
+});
+
+/** 阈值解析：分档默认、专属/通用优先级、token 各种写法。 */
+test("resolveCtxRedThresholds resolves per-tier thresholds", () => {
+  // 默认档位：拿不到 contextMax → 200K 档默认 80%；1M 档默认 50%。
+  assert.deepEqual(resolveCtxRedThresholds(null, {}), { tier: "200k", pct: 80, tokens: null });
+  assert.deepEqual(resolveCtxRedThresholds(200_000, {}), { tier: "200k", pct: 80, tokens: null });
+  assert.deepEqual(resolveCtxRedThresholds(1_000_000, {}), { tier: "1m", pct: 50, tokens: null });
+
+  // 专属变量优先于通用变量。
+  assert.deepEqual(
+    resolveCtxRedThresholds(200_000, { CCUS_CTX_RED_PCT: "60", CCUS_CTX_RED_PCT_200K: "90" }),
+    { tier: "200k", pct: 90, tokens: null },
+  );
+  // 无专属变量时回退通用变量。
+  assert.deepEqual(resolveCtxRedThresholds(1_000_000, { CCUS_CTX_RED_PCT: "55" }), { tier: "1m", pct: 55, tokens: null });
+
+  // token 写法：k / m / 纯数字，非法回退默认 null。
+  assert.deepEqual(resolveCtxRedThresholds(200_000, { CCUS_CTX_RED_TOKENS_200K: "120k" }).tokens, 120_000);
+  assert.deepEqual(resolveCtxRedThresholds(1_000_000, { CCUS_CTX_RED_TOKENS_1M: "0.5m" }).tokens, 500_000);
+  assert.deepEqual(resolveCtxRedThresholds(200_000, { CCUS_CTX_RED_TOKENS: "150000" }).tokens, 150_000);
+  assert.deepEqual(resolveCtxRedThresholds(200_000, { CCUS_CTX_RED_TOKENS: "bad" }).tokens, null);
 });
 
 /** 拿得到分支名时，statusline 追加一段分支信息。 */

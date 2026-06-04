@@ -168,19 +168,140 @@ export function parseStatuslinePayload(input: string): RawStatuslinePayload {
   return isRecord(parsed) ? (parsed as RawStatuslinePayload) : {};
 }
 
+/** statusline 里 ctx 段标红用的 ANSI 颜色码，仅作用于展示，不进任何落盘/导出契约。 */
+const ANSI_RED = "\x1b[31m";
+const ANSI_RESET = "\x1b[0m";
+
+/**
+ * ctx 标红的「档位」：不同大小的上下文窗口余量差很多，标红挡位也应不同。
+ *
+ * - `200k`：约 200K token 的常规窗口。
+ * - `1m`：约 1M token 的长上下文窗口。
+ *
+ * 档位由 contextMax 自动判断（见 resolveCtxTier），拿不到 contextMax 时按 `200k` 处理。
+ */
+export type CtxTier = "200k" | "1m";
+
+/** contextMax 超过该值就当作 1M 长上下文窗口，否则按 200K 档。 */
+const CTX_TIER_1M_MIN_MAX = 400_000;
+
+/**
+ * 各档位的内置默认阈值（百分比超阈值或已用 token 超阈值，任一满足即标红）。
+ *
+ * 200K 窗口余量小、到 80%（约 160K）才提醒；1M 窗口虽大但 50%（约 500K）已用很多，提前提醒。
+ */
+const CTX_TIER_DEFAULTS: Record<CtxTier, { pct: number; tokens: number | null }> = {
+  "200k": { pct: 80, tokens: null },
+  "1m": { pct: 50, tokens: null },
+};
+
+/** 根据 contextMax 判断当前上下文窗口档位；拿不到 contextMax 时回退到 200K 档。 */
+export function resolveCtxTier(contextMax: number | null): CtxTier {
+  return contextMax !== null && contextMax > CTX_TIER_1M_MIN_MAX ? "1m" : "200k";
+}
+
+/** 把 `120000` / `120k` / `0.5m` 这类写法解析成整数 token；非法或空返回 null。 */
+function parseTokenThreshold(raw: string): number | null {
+  const text = raw.trim().toLowerCase();
+  if (text === "") {
+    return null;
+  }
+  const multiplier = text.endsWith("m") ? 1_000_000 : text.endsWith("k") ? 1_000 : 1;
+  const numericPart = multiplier === 1 ? text : text.slice(0, -1);
+  const parsed = Number(numericPart) * multiplier;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+/** 按顺序读第一个能解析成非负数的百分比环境变量；全部缺失/非法时返回 fallback。 */
+function readPctEnv(env: NodeJS.ProcessEnv, keys: string[], fallback: number): number {
+  for (const key of keys) {
+    const raw = (env[key] ?? "").trim();
+    if (raw === "") {
+      continue;
+    }
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+
+/** 按顺序读第一个非空的 token 阈值环境变量；全部缺失时返回 fallback。 */
+function readTokensEnv(env: NodeJS.ProcessEnv, keys: string[], fallback: number | null): number | null {
+  for (const key of keys) {
+    const raw = env[key] ?? "";
+    if (raw.trim() === "") {
+      continue;
+    }
+    return parseTokenThreshold(raw);
+  }
+  return fallback;
+}
+
+/**
+ * 解析某个上下文档位的 ctx 标红阈值，两个条件取「或」：百分比超阈值，或已用 token 超阈值。
+ *
+ * 优先级：档位专属环境变量 > 通用环境变量 > 档位内置默认。
+ *
+ * - 百分比：`CCUS_CTX_RED_PCT_200K` / `CCUS_CTX_RED_PCT_1M` → `CCUS_CTX_RED_PCT` → 档位默认（200K=80，1M=50）。
+ * - token：`CCUS_CTX_RED_TOKENS_200K` / `CCUS_CTX_RED_TOKENS_1M` → `CCUS_CTX_RED_TOKENS` → 档位默认（默认不启用）。
+ *   token 支持 `120000` / `120k` / `0.5m` 写法。
+ *
+ * 阈值只影响 statusline 颜色展示，不改变 stdin/stdout 文本契约，也不落盘。
+ */
+export function resolveCtxRedThresholds(
+  contextMax: number | null,
+  env: NodeJS.ProcessEnv = process.env,
+): { tier: CtxTier; pct: number; tokens: number | null } {
+  const tier = resolveCtxTier(contextMax);
+  const defaults = CTX_TIER_DEFAULTS[tier];
+  const tierSuffix = tier === "1m" ? "1M" : "200K";
+  const pct = readPctEnv(env, [`CCUS_CTX_RED_PCT_${tierSuffix}`, "CCUS_CTX_RED_PCT"], defaults.pct);
+  const tokens = readTokensEnv(env, [`CCUS_CTX_RED_TOKENS_${tierSuffix}`, "CCUS_CTX_RED_TOKENS"], defaults.tokens);
+  return { tier, pct, tokens };
+}
+
+/** 判断 ctx 是否达到标红条件：百分比超阈值，或已用 token 超阈值，任一满足即标红。 */
+function isContextHot(
+  contextWindowPct: number | null,
+  contextUsed: number | null,
+  thresholds: { pct: number; tokens: number | null },
+): boolean {
+  if (contextWindowPct !== null && contextWindowPct > thresholds.pct) {
+    return true;
+  }
+  if (thresholds.tokens !== null && contextUsed !== null && contextUsed >= thresholds.tokens) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * 生成真正显示在 Claude Code statusline 上的短文本。
  *
  * 这里必须保持单行、紧凑，避免污染 statusline 展示区域。
  */
 export function formatStatusLine(
-  event: Pick<StatuslineEvent, "usagePct" | "sevenDayUsagePct" | "contextWindowPct" | "modelName" | "workspaceName" | "timestamp">,
+  event: Pick<StatuslineEvent, "usagePct" | "sevenDayUsagePct" | "contextWindowPct" | "modelName" | "workspaceName" | "timestamp"> & {
+    contextUsed?: number | null;
+    contextMax?: number | null;
+  },
   gitBranch: string | null = null,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
   const timeLabel = formatClock(new Date(event.timestamp));
   const usageLabel = event.usagePct === null ? "5h --" : `5h ${event.usagePct.toFixed(1)}%`;
   const sevenDayLabel = event.sevenDayUsagePct === null ? "7d --" : `7d ${event.sevenDayUsagePct.toFixed(1)}%`;
-  const contextLabel = event.contextWindowPct === null ? "ctx --" : `ctx ${event.contextWindowPct.toFixed(1)}%`;
+  const contextText = event.contextWindowPct === null ? "ctx --" : `ctx ${event.contextWindowPct.toFixed(1)}%`;
+  // ctx 占用超阈值时整段标红，提醒上下文快满；阈值按窗口大小（200K / 1M）分档，由 resolveCtxRedThresholds 决定。
+  const contextLabel = isContextHot(
+    event.contextWindowPct,
+    event.contextUsed ?? null,
+    resolveCtxRedThresholds(event.contextMax ?? null, env),
+  )
+    ? `${ANSI_RED}${contextText}${ANSI_RESET}`
+    : contextText;
   const modelLabel = event.modelName ?? "model --";
   const workspaceLabel = event.workspaceName ?? "workspace --";
 
