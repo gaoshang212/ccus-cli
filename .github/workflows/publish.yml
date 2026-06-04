@@ -1,0 +1,50 @@
+name: Publish to npm
+
+# 推送形如 v0.1.8 的 tag 时自动构建并发布到 npmjs.com
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC Trusted Publishing 所需
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: 升级 npm 到支持 OIDC 的版本
+        run: npm install -g npm@latest
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 校验 tag 与 package.json 版本一致
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "tag 版本 ($TAG_VERSION) 与 package.json 版本 ($PKG_VERSION) 不一致"
+            exit 1
+          fi
+
+      - name: 构建
+        run: npm run build
+
+      - name: 测试
+        run: npm test
+
+      - name: 发布
+        # Trusted Publishing 通过 OIDC 自动鉴权，无需 NODE_AUTH_TOKEN
+        # 也会自动生成 provenance
+        run: npm publish --access public

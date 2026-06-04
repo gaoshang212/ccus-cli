@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.8] - 2026-06-04
+
+### 新增
+- 新增 GitHub Actions 发布流程,推送 `v*` tag 时经 OIDC Trusted Publishing 自动构建并发布到 npm。
+
 ## [0.1.7] - 2026-06-04
 
 ### 新增
