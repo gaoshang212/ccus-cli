@@ -553,11 +553,24 @@ export function resolveExportOptions(action: string | undefined, args: string[],
   return options;
 }
 
+/** 用 readline 向用户提问，返回用户输入的一行文本。 */
+async function prompt(question: string): Promise<string> {
+  const rl = (await import("node:readline")).createInterface({
+    input: process.stdin,
+    output: process.stderr,
+  });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
 /**
  * `ccus update`：用户主动检查更新（绕过 24h 节流）。
  *
- * 根据当前的产品选择，这里只做「检查 + 提示」，不替用户执行全局安装。
- * 有新版本时打印应当手动运行的 `npm i -g` 命令。
+ * 发现新版本时交互式询问用户是否立即安装；输入 y/Y 则执行 `npm i -g ccus-cli@latest`。
  */
 async function handleUpdate(options: CliOptions): Promise<void> {
   const dataDir = getDataDir(options);
@@ -575,12 +588,33 @@ async function handleUpdate(options: CliOptions): Promise<void> {
   // 顺手刷新缓存，让 statusline 标记和这次检查结果保持一致。
   await performUpdateCheck(dataDir);
 
-  if (isNewerVersion(latest, current)) {
-    process.stdout.write(
-      `发现新版本：v${current} -> v${latest}\n运行以下命令升级：\n  npm i -g ccus-cli@latest\n`,
-    );
-  } else {
+  if (!isNewerVersion(latest, current)) {
     process.stdout.write(`已是最新版本 v${current}\n`);
+    return;
+  }
+
+  process.stdout.write(`发现新版本：v${current} -> v${latest}\n`);
+
+  let answer: string;
+  try {
+    answer = await prompt("立即升级？[y/N] ");
+  } catch {
+    // stdin 不可交互（如管道），退回纯提示。
+    process.stdout.write(`运行以下命令升级：\n  npm i -g ccus-cli@latest\n`);
+    return;
+  }
+
+  if (answer.toLowerCase() !== "y") {
+    process.stdout.write(`已取消。如需手动升级：\n  npm i -g ccus-cli@latest\n`);
+    return;
+  }
+
+  process.stdout.write("正在升级…\n");
+  const { spawnSync } = await import("node:child_process");
+  const result = spawnSync("npm", ["i", "-g", "ccus-cli@latest"], { stdio: "inherit", shell: true });
+  if (result.status !== 0) {
+    process.stdout.write("升级失败，请手动运行：\n  npm i -g ccus-cli@latest\n");
+    process.exitCode = 1;
   }
 }
 
