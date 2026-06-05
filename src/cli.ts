@@ -14,6 +14,8 @@ import { readStdin } from "./lib/io";
 import { openInBrowser, openPath } from "./lib/open";
 import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, parseStatuslinePayload } from "./lib/payload";
 import { getClaudeSettingsPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
+import { installScheduler, uninstallScheduler } from "./lib/scheduler";
+import { isSyncDue, maybeSpawnBackgroundSync, performSync, readSyncConfig, readSyncStateSync, writeSyncConfig } from "./lib/sync";
 import { appendEvent, readEventsForRange } from "./lib/storage";
 import { enumerateDateKeys, expandToFullWeekWindow, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
 import { computeUpdateNotice, fetchLatestVersion, maybeSpawnBackgroundCheck, performUpdateCheck } from "./lib/update-check";
@@ -25,7 +27,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
-  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
+  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
 /** 一个轻量的参数解析器，当前命令面不复杂，没必要引入额外依赖。 */
@@ -159,6 +161,8 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
     // 更新检查必须对 statusline 完全无侵入：同步读旧缓存决定是否在行尾追加小标记，
     // 把网络请求甩给 detached 后台进程，主进程不等待、失败静默。
     maybeSpawnBackgroundCheck(dataDir);
+    // 定时同步同样对 statusline 无侵入：到周期才 spawn detached 后台进程执行 export+复制，主进程不等待。
+    maybeSpawnBackgroundSync(dataDir);
     const notice = computeUpdateNotice(dataDir);
     const statusLine = notice ? `${event.statusLine} | ${notice}` : event.statusLine;
     process.stdout.write(`${statusLine}\n`);
@@ -286,11 +290,12 @@ async function handleDashboardServe(options: CliOptions): Promise<void> {
 }
 
 /**
- * 导出原始事件。
+ * 导出原始事件：生成 bundle 并写入本地 exports，返回输出路径与时间窗口。
  *
  * 当前默认导出一个 JSON 包，同时包含原始事件和按天周汇总。
+ * 抽成独立函数供 `ccus export` 与 `ccus sync` 复用，行为完全一致。
  */
-async function handleExport(options: CliOptions): Promise<void> {
+async function runExport(options: CliOptions): Promise<{ outputPath: string; window: ReturnType<typeof resolveRange> }> {
   const dataDir = getDataDir(options);
   const range = getStringOption(options, "range") ?? "this-week";
   const output = getStringOption(options, "out");
@@ -417,6 +422,14 @@ async function handleExport(options: CliOptions): Promise<void> {
     await writeTextFile(outputPath, content);
   }
   debugLog("export", "bundle written", { outputPath, rawBytes: content.length, compressed });
+  return { outputPath, window };
+}
+
+/**
+ * `ccus export` 入口：执行 runExport 并把输出路径打到 stdout。
+ */
+async function handleExport(options: CliOptions): Promise<void> {
+  const { outputPath } = await runExport(options);
   process.stdout.write(`${outputPath}\n`);
 }
 
@@ -651,6 +664,162 @@ async function handleBackgroundCheckUpdate(options: CliOptions): Promise<void> {
   await performUpdateCheck(dataDir);
 }
 
+/**
+ * `ccus sync`：执行一次定时同步（导出当前周 bundle 并复制到目标目录的按周子目录）。
+ *
+ * 带 `--target` / `--interval` / `--range` 时先合并并持久化配置，再立即同步一次；
+ * 不带参数则用已存配置同步。最终仍无目标目录则报错引导用户先配置。
+ */
+async function handleSync(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  const target = getStringOption(options, "target");
+  const interval = getStringOption(options, "interval");
+  const range = getStringOption(options, "range");
+
+  if (target !== undefined || interval !== undefined || range !== undefined) {
+    const current = readSyncConfig(dataDir);
+    const next = {
+      targetDir: target !== undefined ? path.resolve(target) : current.targetDir,
+      intervalLabel: interval ?? current.intervalLabel,
+      range: range ?? current.range,
+    };
+    await writeSyncConfig(dataDir, next);
+    debugLog("sync", "config updated", next);
+  }
+
+  const config = readSyncConfig(dataDir);
+  if (!config.targetDir) {
+    throw new Error("未配置同步目标目录。请先运行 `ccus sync config --target DIR`。");
+  }
+
+  const result = await performSync(dataDir, runExport);
+  process.stdout.write(`已同步到 ${result.destPath}\n`);
+  if (result.archivedLastWeekDest) {
+    process.stdout.write(`已归档上一周到 ${result.archivedLastWeekDest}\n`);
+  }
+}
+
+/**
+ * `ccus sync status`：打印当前同步配置、上次同步时间与是否到期。
+ */
+async function handleSyncStatus(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  const config = readSyncConfig(dataDir);
+  const state = readSyncStateSync(dataDir);
+  const due = isSyncDue(config, state);
+
+  const lines = [
+    `目标目录: ${config.targetDir ?? "(未配置)"}`,
+    `同步周期: ${config.intervalLabel}`,
+    `导出范围: ${config.range}`,
+    `上次同步: ${state?.lastSyncedAt ?? "(从未)"}${state?.lastResult ? ` [${state.lastResult}]` : ""}`,
+    state?.lastArchivedWeek ? `已归档上一周: ${state.lastArchivedWeek}` : null,
+    state?.lastError ? `上次错误: ${state.lastError}` : null,
+    `现在是否到期: ${config.targetDir ? (due ? "是" : "否") : "(未配置目标目录)"}`,
+  ].filter((line): line is string => line !== null);
+  process.stdout.write(`${lines.join("\n")}\n`);
+}
+
+/**
+ * `ccus sync config`：只读写同步配置，不触发同步。
+ *
+ * 带 `--target` / `--interval` / `--range` 时合并并持久化到 `sync-config.json`；
+ * 不带任何参数时仅打印当前配置，方便确认。
+ */
+async function handleSyncConfig(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  const target = getStringOption(options, "target");
+  const interval = getStringOption(options, "interval");
+  const range = getStringOption(options, "range");
+  const current = readSyncConfig(dataDir);
+
+  const changed = target !== undefined || interval !== undefined || range !== undefined;
+  const next = {
+    targetDir: target !== undefined ? path.resolve(target) : current.targetDir,
+    intervalLabel: interval ?? current.intervalLabel,
+    range: range ?? current.range,
+  };
+
+  if (changed) {
+    await writeSyncConfig(dataDir, next);
+    debugLog("sync", "config updated", next);
+  }
+
+  const header = changed ? "同步配置已更新：" : "当前同步配置：";
+  process.stdout.write(
+    `${header}\n  目标目录: ${next.targetDir ?? "(未配置)"}\n  同步周期: ${next.intervalLabel}\n  导出范围: ${next.range}\n`,
+  );
+}
+
+/**
+ * `ccus sync install`：安装一个系统调度器，每周五 18:00 跑一次 `ccus sync`。
+ *
+ * Windows 用 schtasks 真正创建计划任务；macOS / Linux 打印 cron 命令交由用户手动安装。
+ * 加 `--print` 只打印将执行的调度器命令、不真正安装。
+ */
+async function handleSyncInstall(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  const print = getBooleanOption(options, "print");
+  const scriptPath = process.argv[1];
+  const result = installScheduler(process.execPath, scriptPath, dataDir, { print });
+  const { plan } = result;
+
+  if (print) {
+    process.stdout.write(`将安装的调度器命令（每周五 18:00 同步）：\n  ${plan.displayCommand}\n`);
+    return;
+  }
+
+  if (result.installed) {
+    process.stdout.write(`已安装系统调度器「ccus-sync」：每周五 18:00 运行一次 ccus sync。\n卸载：\n  ${plan.uninstallHint}\n`);
+    return;
+  }
+
+  // 非 Windows：不自动改系统，打印命令引导用户手动安装。
+  process.stdout.write(
+    `当前平台（${plan.platform}）不自动安装，请手动运行以下命令注册每周五 18:00 的 cron 任务：\n  ${plan.displayCommand}\n卸载：\n  ${plan.uninstallHint}\n`,
+  );
+}
+
+/**
+ * `ccus sync uninstall`：卸载每周五同步的系统调度器。
+ *
+ * Windows 用 schtasks 删除计划任务；macOS / Linux 打印 crontab 提示。加 `--print` 只打印命令、不执行。
+ */
+async function handleSyncUninstall(options: CliOptions): Promise<void> {
+  const print = getBooleanOption(options, "print");
+  const result = uninstallScheduler({ print });
+
+  if (print) {
+    process.stdout.write(`将执行的卸载命令：\n  ${result.displayCommand}\n`);
+    return;
+  }
+
+  if (result.autoUninstallable) {
+    if (result.uninstalled) {
+      process.stdout.write(`已卸载系统调度器「ccus-sync」。\n`);
+    } else {
+      process.stdout.write(`未能删除调度任务（可能本就未安装）。如需手动卸载：\n  ${result.displayCommand}\n`);
+    }
+    return;
+  }
+
+  process.stdout.write(`当前平台（${result.platform}）请手动卸载：\n  ${result.displayCommand}\n`);
+}
+
+/**
+ * 隐藏命令 `__sync`：由 statusline 路径以 detached 后台进程触发。
+ *
+ * 静默执行一次同步：不写 stdout，失败一律吞掉，绝不影响触发它的 statusline 主进程。
+ */
+async function handleBackgroundSync(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  try {
+    await performSync(dataDir, runExport);
+  } catch (error) {
+    debugLog("sync", "background sync failed", error instanceof Error ? (error.stack ?? error.message) : String(error));
+  }
+}
+
 /** 顶层命令分发入口。 */
 async function main(args = process.argv.slice(2)): Promise<void> {
   setDebugEnabled(resolveDebugEnabled(args));
@@ -682,6 +851,42 @@ async function main(args = process.argv.slice(2)): Promise<void> {
 
   if (group === "__check-update") {
     await handleBackgroundCheckUpdate(parseOptions(args.slice(1)));
+    return;
+  }
+
+  if (group === "sync") {
+    if (action === "config") {
+      await handleSyncConfig(parseOptions(rest));
+      return;
+    }
+
+    if (action === "status") {
+      await handleSyncStatus(parseOptions(rest));
+      return;
+    }
+
+    if (action === "install") {
+      await handleSyncInstall(parseOptions(rest));
+      return;
+    }
+
+    if (action === "uninstall") {
+      await handleSyncUninstall(parseOptions(rest));
+      return;
+    }
+
+    if (action && !action.startsWith("--")) {
+      throw new Error(
+        `Unsupported sync argument: ${action}. Use \`ccus sync\`, \`ccus sync config [--target DIR]\`, \`ccus sync install\`, \`ccus sync uninstall\` or \`ccus sync status\`.`,
+      );
+    }
+
+    await handleSync(parseOptions(args.slice(1)));
+    return;
+  }
+
+  if (group === "__sync") {
+    await handleBackgroundSync(parseOptions(args.slice(1)));
     return;
   }
 

@@ -44,6 +44,16 @@ export function getUpdateCachePath(dataDir: string): string {
   return path.join(dataDir, "update-check.json");
 }
 
+/** 定时同步的用户配置文件（目标目录、周期、范围），可手编。 */
+export function getSyncConfigPath(dataDir: string): string {
+  return path.join(dataDir, "sync-config.json");
+}
+
+/** 定时同步的运行时状态文件（上次同步时间与结果），由 ccus sync 写入。 */
+export function getSyncStatePath(dataDir: string): string {
+  return path.join(dataDir, "sync-state.json");
+}
+
 /** Claude Code 默认本地数据目录。 */
 export function getClaudeDataDir(): string {
   const configured = process.env.CCUS_CLAUDE_DATA_DIR;

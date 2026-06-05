@@ -8,6 +8,7 @@
 - `ccus export`：默认导出当前周数据包（gzip 压缩的 `.json.gz`），里面同时包含原始事件和按天维度的周汇总。
 - `ccus aggregate`：读取一个目录里的多人 export bundle（`.json.gz` 或 `.json`），输出明细、按天、按周三个 CSV。
 - `ccus aggregate serve`：同样以 bundle 目录为输入，启动本地多人 dashboard 页面，不落地任何文件。
+- `ccus sync`：定时把当前周数据包导出并复制到一个目标目录（如团队共享盘），目标目录下按周自动建子目录；日常由 statusline 兜底触发，也可挂系统计划任务做到严格每天定时。
 - `ccus open`：用系统文件管理器打开 ccus 本地存储目录（事件日志、exports、dashboard 都在里面）；加 `--print` 只输出目录路径、不打开。
 - `ccus update`：主动检查 npm 上是否有新版本，有则提示手动升级命令；`ccus --version` 查看当前版本。
 
@@ -84,6 +85,10 @@ ccus dashboard serve            # 启动本地页面，默认看本周（this-we
 
 ccus aggregate --input-dir ./team-exports   # 多人的数据汇总，可以导出 detail.csv、daily.csv、weekly.csv 三个维度的文件
 ccus aggregate serve --input-dir ./team-exports #直接打开一个看板
+
+ccus sync config --target ./team-exports    # 配置同步目标目录（之后 statusline 会兜底定时同步）
+ccus sync                                   # 立即同步一次
+ccus sync status                            # 查看同步配置与上次同步时间
 ```
 
 ### 一键安装（推荐）
@@ -174,6 +179,45 @@ ccus aggregate serve --input-dir ./team-exports
   - `weekly.csv`：同人同周取最新导出 bundle 的 `weeklySummary`，usage 从该 bundle 全部事件重算
 - CSV 里所有以 token 计的列（context 与 in/out/cache）都以百万（M）为单位（原始值除以 1,000,000），列名统一带 `M` 后缀；`contextWindowPct` 仍是百分比
 - 想直接查看团队多人 dashboard，可以用 `ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]`：默认监听 `127.0.0.1` 上的随机端口，启动后会自动用系统默认浏览器打开，每次请求实时读取目录里的 bundle，不写入任何文件
+
+## 定时同步
+
+把每个人的 `ccus export` 攒到一个共享目录（团队网盘 / 共享盘）通常是手动的，容易漏。`ccus sync` 用来自动化这一步：周期到了就 `export` 一次，并把导出文件**复制**到目标目录下**按周命名的子目录**里。
+
+```bash
+ccus sync config --target ./team-exports         # 配置同步目标目录（默认周期 3h）
+ccus sync config --interval daily                # 改周期，可写 3h（默认）/ daily / 6h / 30m
+ccus sync config                                 # 不带参数：打印当前配置
+ccus sync                                        # 用已存配置立即同步一次
+ccus sync install                                # 注册系统调度器：每周五 18:00 自动同步（Windows 直接创建计划任务）
+ccus sync uninstall                              # 卸载系统调度器
+ccus sync status                                 # 查看目标目录、周期、上次同步时间、是否到期
+```
+
+行为：
+
+- **目标目录按周建子目录**：子目录名形如 `2026_06_01_2026_06_07`（该周周一~周日，全下划线），不存在时自动创建。
+- **周一归档上一周**：周一同步时会额外把刚结束的上一整周（`last-week`）导出并归档到对应的上一周子目录（周一是第一个能拿到完整上一周数据的日子）；同一天内多次同步用 `sync-state.lastArchivedWeek` 去重，不重复归档。
+- **复制语义**：本地 `data-dir/exports` 仍保留一份，目标目录再放一份，本地照旧可 `aggregate` / `dashboard`。导出产物与 `ccus export` 完全一致，目标目录可直接喂给 `ccus aggregate`。
+- **配置与同步分离**：`ccus sync config` 只读写配置（`--target` / `--interval` / `--range` 写进数据目录下的 `sync-config.json`，可手编；不带参数则打印当前配置）；`ccus sync` 只用已存配置执行一次同步。上次同步时间记录在 `sync-state.json`。
+- **周期**：默认 `3h`（每 3 小时最多同步一次的滚动周期）；也支持 `daily`（按**自然日**判断——同一天内不重复同步，跨到下一天才再同步）与 `<N>h` / `<N>m` 的滚动周期。
+
+### 两种触发方式
+
+1. **statusline 兜底（零配置）**：配置过目标目录后，每次 statusline 渲染都会检查是否到周期，到了就 spawn 一个 detached 后台进程静默执行同步，**不阻塞 statusline、不污染单行输出**（与更新检查同款机制）。
+   - 局限：statusline 只在你**使用 Claude Code** 时触发。某天完全不开 Claude Code，则当天不会自动同步——但那天也没有新数据，下次任意一次交互都会把整周最新 bundle 重新覆盖同步，不丢数据。
+2. **系统调度器（不依赖是否开 Claude Code）**：如果要做到「哪怕一整天不碰 Claude Code，也在固定时间准时跑一次」，用 `ccus sync install` 一键注册一个**每周五 18:00** 跑 `ccus sync` 的系统调度器：
+
+   ```bash
+   ccus sync install          # Windows 用 schtasks 创建计划任务（任务名 ccus-sync）
+   ccus sync install --print  # 只打印将执行的命令、不实际安装
+   ccus sync uninstall        # 卸载该调度器（--print 只打印不执行）
+   ```
+
+   - **Windows** 会真正创建/删除计划任务；也可手动 `schtasks /delete /tn ccus-sync /f`。
+   - **macOS / Linux** 不自动改系统，`ccus sync install` 会打印一条 cron 命令（`0 18 * * 5 …`）让你手动 `crontab` 安装，避免误改已有 crontab。
+
+   > 记得先 `ccus sync config --target DIR` 配好目标目录，调度任务才有地方可同步。
 
 ## 调试
 

@@ -210,6 +210,27 @@ export interface AggregatedDailyRow {
   uniqueWorkspaces: number;
 }
 
+/**
+ * 定时同步的用户配置（写入 sync-config.json，允许手编）。
+ *
+ * `targetDir` 为同步目标根目录；`intervalLabel` 控制周期（默认 daily）；
+ * `range` 是每次同步导出的范围（默认 this-week）。
+ */
+export interface SyncConfig {
+  targetDir: string | null;
+  intervalLabel: string;
+  range: string;
+}
+
+/** 定时同步的运行时状态（写入 sync-state.json）：上次同步时间与结果。 */
+export interface SyncState {
+  lastSyncedAt: string | null;
+  lastResult: "ok" | "error" | null;
+  lastError?: string;
+  /** 已归档的上一周子目录名（如 `2026_05_25_2026_05_31`），用于周一去重，避免当天每次同步重复归档上一周。 */
+  lastArchivedWeek?: string;
+}
+
 /** 多人按周汇总行。 */
 export interface AggregatedWeeklyRow {
   personKey: string;

@@ -109,6 +109,17 @@ export function formatRangeFileLabel(start: Date, end: Date): string {
 }
 
 /**
+ * 生成定时同步目标目录下「按周」子目录名：年_月_日_年_月_日（全下划线）。
+ *
+ * 与 formatRangeFileLabel 同源（都基于 localDateKey 的周一~周日窗口），
+ * 但分隔符统一成下划线，例如 `2026_06_01_2026_06_07`。
+ */
+export function formatWeekDirName(start: Date, end: Date): string {
+  const normalize = (date: Date): string => localDateKey(date).replaceAll("-", "_");
+  return `${normalize(start)}_${normalize(end)}`;
+}
+
+/**
  * 从 git email 中提取规范化的帐号名（@ 之前的部分，小写并清洗特殊字符）。
  *
  * 这是身份层使用的人类可读用户名，被持久化事件和 aggregate personKey 共用。

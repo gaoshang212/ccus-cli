@@ -144,8 +144,14 @@
 - `ccus aggregate serve`
 - `ccus open`（用系统文件管理器打开本地存储目录，`--print` 只输出路径不打开）
 - `ccus update`（主动检查更新，仅提示不自动安装）
+- `ccus sync`（立即执行一次同步：导出当前周 bundle 并复制到目标目录的按周子目录，周一额外归档上一周）
+- `ccus sync config`（只读写同步配置 `--target` / `--interval` / `--range`，不触发同步；不带参数打印当前配置）
+- `ccus sync install`（注册系统调度器：每周五 18:00 跑一次 `ccus sync`；Windows 用 schtasks 真正创建，macOS/Linux 打印 cron 命令引导手动安装；`--print` 只打印不安装）
+- `ccus sync uninstall`（卸载系统调度器；Windows 用 schtasks 删除任务，macOS/Linux 打印 crontab 提示；`--print` 只打印不执行）
+- `ccus sync status`（查看同步配置与上次同步时间）
 - `ccus --version`
 - `ccus __check-update`（隐藏命令，statusline 路径 spawn 的 detached 后台进程，只刷新更新缓存，不输出 stdout）
+- `ccus __sync`（隐藏命令，statusline 路径 spawn 的 detached 后台进程，静默执行一次同步，不输出 stdout、失败静默）
 
 ### 3.2 核心库
 
@@ -172,6 +178,20 @@
   - 周导出 JSON 生成
   - summary rows
   - 聚合 CSV 输出
+
+- `src/lib/sync.ts`
+  - 定时同步：读写 `sync-config.json`（目标目录/周期/范围）与 `sync-state.json`（上次同步时间/结果）
+  - `performSync`：注入 `runExport`（避免与 cli.ts 循环依赖）→ 导出当前周 bundle → 在目标目录的按周子目录（`formatWeekDirName`，形如 `2026_06_01_2026_06_07`）下**复制**一份；本地 exports 仍保留
+  - 周一（`now.getDay() === 1`）额外导出 `last-week` 并归档到对应上一周子目录；用 `sync-state.lastArchivedWeek` 去重，避免周一当天每次同步重复归档
+  - `isSyncDue`：默认周期 `3h`（滚动 TTL）；`daily` 按自然日判断，`<N>h` / `<N>m` 按滚动 TTL
+
+- `src/lib/scheduler.ts`
+  - 仅 `ccus sync install` 使用：构造「每周五 18:00 跑 `ccus sync`」的系统调度器安装计划
+  - `buildSchedulerPlan` 纯函数（按平台生成 schtasks 参数 / cron 命令，便于单测）；Windows `autoInstallable`，macOS/Linux 只打印 cron 命令交用户手动
+  - `uninstallScheduler`：Windows `schtasks /delete`（任务不存在视为未卸载、不抛错），macOS/Linux 打印 crontab 提示
+  - 任务调用串用绝对 node + cli.js 路径并带显式 `--data-dir`，保证调度环境也能跑
+  - `maybeSpawnBackgroundSync`：statusline 路径调用，到周期才 spawn detached `__sync` 后台进程，对单行 stdout 契约零侵入（照搬 update-check 的范式）
+  - 本功能是新增编排层，**不改动任何导出/聚合字段，不 bump `schemaVersion`**，导出产物与 `ccus export` 完全一致
 
 - `src/lib/aggregate.ts`
   - 读取 bundle JSON

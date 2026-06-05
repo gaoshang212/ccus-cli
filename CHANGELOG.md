@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.11] - 2026-06-05
+
+### 新增
+- 新增 `ccus sync` 定时同步：周期到了就导出当前周数据包并复制到目标目录的按周子目录，默认每 3 小时一次，周一额外归档上一整周；statusline 兜底后台触发（不阻塞）。`ccus sync config` 配置目标目录/周期、`ccus sync status` 查看状态、`ccus sync install` / `ccus sync uninstall` 注册或卸载每周五 18:00 的系统调度器（Windows schtasks，macOS/Linux 打印 cron 命令）。
+
 ## [0.1.10] - 2026-06-05
 
 ### 新增
