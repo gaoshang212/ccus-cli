@@ -11,7 +11,7 @@ import { debugLog, resolveDebugEnabled, setDebugEnabled } from "./lib/debug";
 import { readGitBranch, readGitIdentity } from "./lib/git";
 import { installStatusline } from "./lib/install";
 import { readStdin } from "./lib/io";
-import { openInBrowser } from "./lib/open";
+import { openInBrowser, openPath } from "./lib/open";
 import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, parseStatuslinePayload } from "./lib/payload";
 import { getClaudeSettingsPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
 import { appendEvent, readEventsForRange } from "./lib/storage";
@@ -25,7 +25,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
-  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
+  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
 /** 一个轻量的参数解析器，当前命令面不复杂，没必要引入额外依赖。 */
@@ -522,6 +522,28 @@ async function handleAggregateServe(options: CliOptions): Promise<void> {
   });
 }
 
+/**
+ * `ccus open`：用系统文件管理器打开 ccus 本地存储目录（事件日志、exports、dashboard 都在里面）。
+ *
+ * 默认目录由 `getDefaultDataDir` 推导，可用 `--data-dir` 覆盖。
+ * 加 `--print` 只把目录路径打到 stdout、不真正打开，方便在脚本里取路径。
+ */
+async function handleOpenDataDir(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  debugLog("open", "resolved data dir", { dataDir, print: getBooleanOption(options, "print") });
+
+  if (getBooleanOption(options, "print")) {
+    process.stdout.write(`${dataDir}\n`);
+    return;
+  }
+
+  // 目录可能还没被 statusline 创建过，先确保存在，否则系统打开会失败。
+  const fs = await import("node:fs/promises");
+  await fs.mkdir(dataDir, { recursive: true });
+  await openPath(dataDir);
+  process.stdout.write(`${dataDir}\n`);
+}
+
 /** 历史上被移除的导出格式 token，作为位置参数出现时要明确报错而不是当成 range。 */
 const REMOVED_EXPORT_FORMAT_TOKENS = new Set(["csv", "jsonl", "raw"]);
 
@@ -645,6 +667,11 @@ async function main(args = process.argv.slice(2)): Promise<void> {
 
   if (group === "--version" || group === "-V" || group === "version") {
     process.stdout.write(`${getCurrentVersion()}\n`);
+    return;
+  }
+
+  if (group === "open") {
+    await handleOpenDataDir(parseOptions(args.slice(1)));
     return;
   }
 

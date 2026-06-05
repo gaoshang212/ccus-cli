@@ -107,6 +107,16 @@
 
 三个 CSV 共用一个 `personKey` —— 来源于 `gitUserEmail` 在 `@` 前的规范化用户名（小写、清洗特殊字符），落到不出现真实 email 的导出列里。
 
+**同一个人多台电脑导出多个 bundle 的合并语义（很重要）：**
+
+同一个人（同 personKey）可能在多台电脑上各自 `ccus export`，目录里会出现多份覆盖同一周 / 同一天的 bundle。`aggregate` 按 personKey 合并去重，规则分两类字段：
+
+- **累加类字段**（token、`userMessageCount`、`apiRequestCount`、`sampleCount`、`uniqueSessions`、`uniqueWorkspaces`）：怕重复计数（同一台机器重复导出、周与周重叠），所以**不相加**，按「同人同天 / 同人同周取 `generatedAt` 最新的那份导出 bundle」保留。winner 选择优先取该天 / 该周有数据的 bundle，再比 `generatedAt`，最后用文件路径做稳定 tie-break。
+- **usage 字段**（5h / 7d 的 peak/latest）：是百分比快照、不是累加量，不存在翻倍问题，从选中那份 winner bundle 的 `rawEvents` 按真实时间戳**重算**（peak 取 max、latest 取时间戳最新）；某指标在 `rawEvents` 里缺失时回退到 daySummary/weeklySummary 自带值。
+- `detail.csv` 同步只展开 winner bundle 的事件，避免同机重复导出把明细也翻倍。
+
+这套合并只改变行的去重 / 取值逻辑，CSV 列集合与 `schemaVersion` 都不变。winner 判定依赖 bundle 顶层已有的 `generatedAt`，不需要给导出加机器标识字段。实现见 `selectDailyWinners` / `selectWeeklyWinners` / `recomputeUsage`。
+
 - `detail.csv` 列：`personKey, timestamp, week, date, sessionId, workspaceName, modelName, fiveHourUsagePct, contextWindowPct, contextUsedM, contextMaxM, inputTokensM, outputTokensM, cacheReadInputTokensM`
   - 历史上有的 `sourceFile`、`workspaceDir`、`statusLine`、`gitUserName`、`gitUserEmail` 已移除，不要再加回来
   - `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 是**该事件所在自然日**的 token 总量（从同一 bundle 的 `dailySummaries` 按 `date` join 而来），不是单条事件的 token。同一天的多条 detail 行会重复同一组日总量，所以这三列不能直接按行求和
@@ -132,6 +142,7 @@
 - `ccus export`
 - `ccus aggregate`
 - `ccus aggregate serve`
+- `ccus open`（用系统文件管理器打开本地存储目录，`--print` 只输出路径不打开）
 - `ccus update`（主动检查更新，仅提示不自动安装）
 - `ccus --version`
 - `ccus __check-update`（隐藏命令，statusline 路径 spawn 的 detached 后台进程，只刷新更新缓存，不输出 stdout）
@@ -165,7 +176,8 @@
 - `src/lib/aggregate.ts`
   - 读取 bundle JSON
   - 从 bundle 展开 detail/daily/weekly 行
-  - 当前会校验 `schemaVersion: 5`
+  - 当前会校验 `schemaVersion: 6`
+  - 同一个人多台电脑导出多个 bundle 时按 personKey 合并去重（见 2.6）
 
 - `src/lib/claude.ts`
   - 从 `~/.claude/projects/**/*.jsonl` 统计：

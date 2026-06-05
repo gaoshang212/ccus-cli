@@ -239,6 +239,120 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
   }
 });
 
+/**
+ * 构造同一周、可调 generatedAt / 当天指标的单人 bundle，
+ * 用于验证「同一个人多台电脑导出」时的合并去重。
+ */
+function buildBundleForMerge(options: {
+  personKey: string;
+  generatedAt: string;
+  date: string;
+  eventTimestamp: string;
+  userMessageCount: number;
+  inputTokens: number;
+  fiveHour: number;
+}) {
+  const { personKey, generatedAt, date, eventTimestamp, userMessageCount, inputTokens, fiveHour } = options;
+  return {
+    schemaVersion: 6,
+    generatedAt,
+    range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-31T23:59:59.999Z" },
+    identity: { gitUserName: personKey, gitUserEmail: `${personKey}@example.com` },
+    rawEvents: [
+      {
+        schemaVersion: 3,
+        timestamp: eventTimestamp,
+        gitUserName: personKey,
+        gitUserEmail: `${personKey}@example.com`,
+        gitUserAccount: personKey,
+        rawPayload: {
+          session_id: `${personKey}-${generatedAt}`,
+          model: { display_name: "Opus" },
+          workspace: { current_dir: `/repo/${personKey}` },
+          context_window: { used_percentage: 20, used_tokens: 100, max_tokens: 1000 },
+          rate_limits: { five_hour: { used_percentage: fiveHour } },
+        },
+      },
+    ],
+    weeklySummary: {
+      schemaVersion: 6,
+      generatedAt,
+      range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-31T23:59:59.999Z" },
+      identity: { gitUserName: personKey, gitUserEmail: `${personKey}@example.com` },
+      counts: { userMessageCount, apiRequestCount: 1 },
+      tokens: { inputTokens, outputTokens: 10, cacheReadInputTokens: 5 },
+      statusline: { sampleCount: 1, uniqueSessions: 1, uniqueWorkspaces: 1, fiveHourLatestUsagePct: fiveHour, fiveHourPeakUsagePct: fiveHour, sevenDayLatestUsagePct: null, sevenDayPeakUsagePct: null },
+      sources: {
+        ccusDataDir: "D:/ccus",
+        claudeDataDir: "C:/Users/test/.claude",
+        projectFilesMatched: 1,
+        messageCountSource: "claude-projects:user-events",
+        apiRequestCountSource: "claude-projects:assistant-usage-events",
+        tokenSource: "claude-projects:assistant-usage-events",
+      },
+    },
+    dailySummaries: [
+      {
+        date,
+        userMessageCount,
+        apiRequestCount: 1,
+        inputTokens,
+        outputTokens: 10,
+        cacheReadInputTokens: 5,
+        sampleCount: 1,
+        fiveHourLatestUsagePct: fiveHour,
+        fiveHourPeakUsagePct: fiveHour,
+        sevenDayLatestUsagePct: null,
+        sevenDayPeakUsagePct: null,
+        uniqueSessions: 1,
+        uniqueWorkspaces: 1,
+      },
+    ],
+  };
+}
+
+test("aggregate merges same person same day across machines by keeping the latest export", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-merge-"));
+  try {
+    // 同一个人 erin、同一天 2026-05-26，在两台电脑各导出一次：
+    // 旧导出（machine-a）与新导出（machine-b）。预期合并后同天只保留最新那份，不相加。
+    await fs.writeFile(
+      path.join(root, "erin_a.json"),
+      JSON.stringify(buildBundleForMerge({ personKey: "erin", generatedAt: "2026-05-27T08:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T01:00:00.000Z", userMessageCount: 2, inputTokens: 300, fiveHour: 10 })),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(root, "erin_b.json"),
+      JSON.stringify(buildBundleForMerge({ personKey: "erin", generatedAt: "2026-05-27T20:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T09:00:00.000Z", userMessageCount: 9, inputTokens: 999, fiveHour: 42 })),
+      "utf8",
+    );
+
+    const bundles = await loadWeeklyExportBundles(root);
+    const detailRows = buildAggregatedDetailRows(bundles);
+    const dailyRows = buildAggregatedDailyRows(bundles);
+    const weeklyRows = buildAggregatedWeeklyRows(bundles);
+
+    // 同人同天 / 同周不再重复成两行。
+    assert.equal(dailyRows.length, 1);
+    assert.equal(weeklyRows.length, 1);
+    assert.equal(detailRows.length, 1);
+
+    // 取 generatedAt 最新（erin_b）那份的累加值，而不是相加。
+    assert.equal(dailyRows[0].userMessageCount, 9);
+    assert.equal(dailyRows[0].inputTokens, 999);
+    // usage 从 winner 的 rawEvents 重算（5h=42），不是旧那份的 10。
+    assert.equal(dailyRows[0].fiveHourPeakUsagePct, 42);
+    assert.equal(dailyRows[0].fiveHourLatestUsagePct, 42);
+    assert.equal(weeklyRows[0].userMessageCount, 9);
+    assert.equal(weeklyRows[0].fiveHourPeakUsagePct, 42);
+    // detail 只来自 winner 那一条事件。
+    assert.equal(detailRows[0].timestamp, "2026-05-26T09:00:00.000Z");
+    assert.equal(detailRows[0].inputTokens, 999);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("loadWeeklyExportBundles reads gzip-compressed .json.gz bundles", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-gz-"));
   const gzFile = path.join(root, "carol_export_2026-05-25_to_2026-05-31.json.gz");
