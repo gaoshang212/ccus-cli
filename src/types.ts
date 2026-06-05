@@ -220,6 +220,8 @@ export interface SyncConfig {
   targetDir: string | null;
   intervalLabel: string;
   range: string;
+  /** 同步到目标目录时追加到文件名（扩展名前）的固定后缀，用于区分多台电脑；null 表示不加。 */
+  suffix: string | null;
 }
 
 /** 定时同步的运行时状态（写入 sync-state.json）：上次同步时间与结果。 */

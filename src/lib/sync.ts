@@ -47,6 +47,43 @@ export function parseSyncInterval(label: string | undefined): SyncInterval {
   return { kind: "daily" };
 }
 
+/**
+ * 清洗用户传入的文件名后缀：去首尾分隔、把非法字符折叠成连字符。
+ *
+ * 只保留字母数字与 `._-`，避免生成非法/危险的文件名；清洗后为空则返回 null。
+ */
+export function sanitizeSuffix(raw: string | undefined): string | null {
+  if (raw === undefined) {
+    return null;
+  }
+  const cleaned = raw
+    .trim()
+    .replaceAll(/[^a-zA-Z0-9._-]+/g, "-")
+    .replaceAll(/-+/g, "-")
+    .replaceAll(/^[-_.]+|[-_.]+$/g, "");
+  return cleaned === "" ? null : cleaned;
+}
+
+/**
+ * 把后缀插到文件名的扩展名之前（`.json.gz` / `.json` 视为整体扩展名）。
+ *
+ * 例如 `alice_export_2026-06-01_to_2026-06-07.json.gz` + `laptop`
+ * → `alice_export_2026-06-01_to_2026-06-07-laptop.json.gz`。
+ */
+export function applyFileSuffix(fileName: string, suffix: string | null): string {
+  if (!suffix) {
+    return fileName;
+  }
+  const tag = `-${suffix}`;
+  for (const ext of [".json.gz", ".json"]) {
+    if (fileName.endsWith(ext)) {
+      return `${fileName.slice(0, fileName.length - ext.length)}${tag}${ext}`;
+    }
+  }
+  const ext = path.extname(fileName);
+  return `${fileName.slice(0, fileName.length - ext.length)}${tag}${ext}`;
+}
+
 /** 把同一本地日映射成稳定日键，用于 daily 周期的「是否跨天」判断。 */
 function localDayKey(date: Date): string {
   const year = date.getFullYear();
@@ -61,7 +98,7 @@ function localDayKey(date: Date): string {
  * statusline 兜底路径需要同步、极快、绝不抛错，所以这里用同步 IO。
  */
 export function readSyncConfig(dataDir: string): SyncConfig {
-  const fallback: SyncConfig = { targetDir: null, intervalLabel: DEFAULT_INTERVAL_LABEL, range: DEFAULT_RANGE };
+  const fallback: SyncConfig = { targetDir: null, intervalLabel: DEFAULT_INTERVAL_LABEL, range: DEFAULT_RANGE, suffix: null };
   try {
     const raw = fs.readFileSync(getSyncConfigPath(dataDir), "utf8");
     const parsed = JSON.parse(raw) as Partial<SyncConfig>;
@@ -69,6 +106,7 @@ export function readSyncConfig(dataDir: string): SyncConfig {
       targetDir: typeof parsed.targetDir === "string" && parsed.targetDir.trim() !== "" ? parsed.targetDir : null,
       intervalLabel: typeof parsed.intervalLabel === "string" && parsed.intervalLabel.trim() !== "" ? parsed.intervalLabel : DEFAULT_INTERVAL_LABEL,
       range: typeof parsed.range === "string" && parsed.range.trim() !== "" ? parsed.range : DEFAULT_RANGE,
+      suffix: typeof parsed.suffix === "string" && parsed.suffix.trim() !== "" ? parsed.suffix : null,
     };
   } catch {
     return fallback;
@@ -153,14 +191,16 @@ async function exportAndCopy(
   runExport: RunExport,
   targetDir: string,
   range: string,
+  suffix: string | null,
 ): Promise<{ outputPath: string; destPath: string; weekDir: string; targetWeekDir: string }> {
   const { outputPath, window } = await runExport({ "data-dir": dataDir, range });
   const weekDir = formatWeekDirName(window.start, window.end);
   const targetWeekDir = path.join(targetDir, weekDir);
   await fsp.mkdir(targetWeekDir, { recursive: true });
-  const destPath = path.join(targetWeekDir, path.basename(outputPath));
+  // 后缀只加在目标目录的副本上，本地 exports 原文件名保持不变。
+  const destPath = path.join(targetWeekDir, applyFileSuffix(path.basename(outputPath), suffix));
   await fsp.copyFile(outputPath, destPath);
-  debugLog("sync", "copied bundle", { range, outputPath, destPath, weekDir });
+  debugLog("sync", "copied bundle", { range, outputPath, destPath, weekDir, suffix });
   return { outputPath, destPath, weekDir, targetWeekDir };
 }
 
@@ -182,7 +222,7 @@ export async function performSync(dataDir: string, runExport: RunExport, now: Da
   let lastArchivedWeek = state?.lastArchivedWeek;
 
   try {
-    const primary = await exportAndCopy(dataDir, runExport, config.targetDir, config.range);
+    const primary = await exportAndCopy(dataDir, runExport, config.targetDir, config.range, config.suffix);
 
     // 周一（getDay() === 1）是上一周结束后第一个能拿到完整数据的日子：顺带归档 last-week。
     let archivedLastWeekDest: string | null = null;
@@ -190,7 +230,7 @@ export async function performSync(dataDir: string, runExport: RunExport, now: Da
       const lastWeek = resolveRange("last-week", now);
       const lastWeekDir = formatWeekDirName(lastWeek.start, lastWeek.end);
       if (lastArchivedWeek !== lastWeekDir) {
-        const archived = await exportAndCopy(dataDir, runExport, config.targetDir, "last-week");
+        const archived = await exportAndCopy(dataDir, runExport, config.targetDir, "last-week", config.suffix);
         lastArchivedWeek = archived.weekDir;
         archivedLastWeekDest = archived.destPath;
         debugLog("sync", "archived last week", { weekDir: archived.weekDir, destPath: archived.destPath });

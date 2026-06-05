@@ -145,7 +145,7 @@
 - `ccus open`（用系统文件管理器打开本地存储目录，`--print` 只输出路径不打开）
 - `ccus update`（主动检查更新，仅提示不自动安装）
 - `ccus sync`（立即执行一次同步：导出当前周 bundle 并复制到目标目录的按周子目录，周一额外归档上一周）
-- `ccus sync config`（只读写同步配置 `--target` / `--interval` / `--range`，不触发同步；不带参数打印当前配置）
+- `ccus sync config`（只读写同步配置 `--target` / `--interval` / `--range` / `--suffix`，不触发同步；不带参数打印当前配置）
 - `ccus sync install`（注册系统调度器：每周五 18:00 跑一次 `ccus sync`；Windows 用 schtasks 真正创建，macOS/Linux 打印 cron 命令引导手动安装；`--print` 只打印不安装）
 - `ccus sync uninstall`（卸载系统调度器；Windows 用 schtasks 删除任务，macOS/Linux 打印 crontab 提示；`--print` 只打印不执行）
 - `ccus sync status`（查看同步配置与上次同步时间）
@@ -182,6 +182,7 @@
 - `src/lib/sync.ts`
   - 定时同步：读写 `sync-config.json`（目标目录/周期/范围）与 `sync-state.json`（上次同步时间/结果）
   - `performSync`：注入 `runExport`（避免与 cli.ts 循环依赖）→ 导出当前周 bundle → 在目标目录的按周子目录（`formatWeekDirName`，形如 `2026_06_01_2026_06_07`）下**复制**一份；本地 exports 仍保留
+  - `--suffix` 机器后缀：`sanitizeSuffix` 清洗、`applyFileSuffix` 在 `.json.gz` / `.json` 扩展名前插入 `-<suffix>`，只作用于目标目录副本（本地原文件名不变），供多机同步到同一目录时区分不覆盖
   - 周一（`now.getDay() === 1`）额外导出 `last-week` 并归档到对应上一周子目录；用 `sync-state.lastArchivedWeek` 去重，避免周一当天每次同步重复归档
   - `isSyncDue`：默认周期 `3h`（滚动 TTL）；`daily` 按自然日判断，`<N>h` / `<N>m` 按滚动 TTL
 

@@ -15,7 +15,7 @@ import { openInBrowser, openPath } from "./lib/open";
 import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, parseStatuslinePayload } from "./lib/payload";
 import { getClaudeSettingsPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
 import { installScheduler, uninstallScheduler } from "./lib/scheduler";
-import { isSyncDue, maybeSpawnBackgroundSync, performSync, readSyncConfig, readSyncStateSync, writeSyncConfig } from "./lib/sync";
+import { isSyncDue, maybeSpawnBackgroundSync, performSync, readSyncConfig, readSyncStateSync, sanitizeSuffix, writeSyncConfig } from "./lib/sync";
 import { appendEvent, readEventsForRange } from "./lib/storage";
 import { enumerateDateKeys, expandToFullWeekWindow, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
 import { computeUpdateNotice, fetchLatestVersion, maybeSpawnBackgroundCheck, performUpdateCheck } from "./lib/update-check";
@@ -27,7 +27,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
-  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
+  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
 /** 一个轻量的参数解析器，当前命令面不复杂，没必要引入额外依赖。 */
@@ -676,12 +676,14 @@ async function handleSync(options: CliOptions): Promise<void> {
   const interval = getStringOption(options, "interval");
   const range = getStringOption(options, "range");
 
-  if (target !== undefined || interval !== undefined || range !== undefined) {
+  const suffix = getStringOption(options, "suffix");
+  if (target !== undefined || interval !== undefined || range !== undefined || suffix !== undefined) {
     const current = readSyncConfig(dataDir);
     const next = {
       targetDir: target !== undefined ? path.resolve(target) : current.targetDir,
       intervalLabel: interval ?? current.intervalLabel,
       range: range ?? current.range,
+      suffix: suffix !== undefined ? sanitizeSuffix(suffix) : current.suffix,
     };
     await writeSyncConfig(dataDir, next);
     debugLog("sync", "config updated", next);
@@ -712,6 +714,7 @@ async function handleSyncStatus(options: CliOptions): Promise<void> {
     `目标目录: ${config.targetDir ?? "(未配置)"}`,
     `同步周期: ${config.intervalLabel}`,
     `导出范围: ${config.range}`,
+    `文件后缀: ${config.suffix ?? "(无)"}`,
     `上次同步: ${state?.lastSyncedAt ?? "(从未)"}${state?.lastResult ? ` [${state.lastResult}]` : ""}`,
     state?.lastArchivedWeek ? `已归档上一周: ${state.lastArchivedWeek}` : null,
     state?.lastError ? `上次错误: ${state.lastError}` : null,
@@ -731,13 +734,17 @@ async function handleSyncConfig(options: CliOptions): Promise<void> {
   const target = getStringOption(options, "target");
   const interval = getStringOption(options, "interval");
   const range = getStringOption(options, "range");
+  const suffix = getStringOption(options, "suffix");
+  const clearSuffix = getBooleanOption(options, "no-suffix");
   const current = readSyncConfig(dataDir);
 
-  const changed = target !== undefined || interval !== undefined || range !== undefined;
+  const changed = target !== undefined || interval !== undefined || range !== undefined || suffix !== undefined || clearSuffix;
   const next = {
     targetDir: target !== undefined ? path.resolve(target) : current.targetDir,
     intervalLabel: interval ?? current.intervalLabel,
     range: range ?? current.range,
+    // --no-suffix 优先清除；否则有 --suffix 就更新，没有就保持原值。
+    suffix: clearSuffix ? null : suffix !== undefined ? sanitizeSuffix(suffix) : current.suffix,
   };
 
   if (changed) {
@@ -747,7 +754,7 @@ async function handleSyncConfig(options: CliOptions): Promise<void> {
 
   const header = changed ? "同步配置已更新：" : "当前同步配置：";
   process.stdout.write(
-    `${header}\n  目标目录: ${next.targetDir ?? "(未配置)"}\n  同步周期: ${next.intervalLabel}\n  导出范围: ${next.range}\n`,
+    `${header}\n  目标目录: ${next.targetDir ?? "(未配置)"}\n  同步周期: ${next.intervalLabel}\n  导出范围: ${next.range}\n  文件后缀: ${next.suffix ?? "(无)"}\n`,
   );
 }
 

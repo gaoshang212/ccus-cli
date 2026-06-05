@@ -187,6 +187,8 @@ ccus aggregate serve --input-dir ./team-exports
 ```bash
 ccus sync config --target ./team-exports         # 配置同步目标目录（默认周期 3h）
 ccus sync config --interval daily                # 改周期，可写 3h（默认）/ daily / 6h / 30m
+ccus sync config --suffix laptop                 # 给目标文件名加机器后缀，区分多台电脑
+ccus sync config --no-suffix                     # 移除已配置的机器后缀
 ccus sync config                                 # 不带参数：打印当前配置
 ccus sync                                        # 用已存配置立即同步一次
 ccus sync install                                # 注册系统调度器：每周五 18:00 自动同步（Windows 直接创建计划任务）
@@ -199,6 +201,7 @@ ccus sync status                                 # 查看目标目录、周期�
 - **目标目录按周建子目录**：子目录名形如 `2026_06_01_2026_06_07`（该周周一~周日，全下划线），不存在时自动创建。
 - **周一归档上一周**：周一同步时会额外把刚结束的上一整周（`last-week`）导出并归档到对应的上一周子目录（周一是第一个能拿到完整上一周数据的日子）；同一天内多次同步用 `sync-state.lastArchivedWeek` 去重，不重复归档。
 - **复制语义**：本地 `data-dir/exports` 仍保留一份，目标目录再放一份，本地照旧可 `aggregate` / `dashboard`。导出产物与 `ccus export` 完全一致，目标目录可直接喂给 `ccus aggregate`。
+- **机器后缀**：`ccus sync config --suffix laptop` 会在**目标目录副本**的文件名扩展名前加 `-laptop`（如 `…_to_2026-06-07-laptop.json.gz`），本地原文件名不变。同一个人多台电脑同步到同一目标目录时，靠后缀让各机器的文件互不覆盖、都保留下来，正好供 `ccus aggregate` 按 personKey 合并去重。用 `ccus sync config --no-suffix` 移除后缀。
 - **配置与同步分离**：`ccus sync config` 只读写配置（`--target` / `--interval` / `--range` 写进数据目录下的 `sync-config.json`，可手编；不带参数则打印当前配置）；`ccus sync` 只用已存配置执行一次同步。上次同步时间记录在 `sync-state.json`。
 - **周期**：默认 `3h`（每 3 小时最多同步一次的滚动周期）；也支持 `daily`（按**自然日**判断——同一天内不重复同步，跨到下一天才再同步）与 `<N>h` / `<N>m` 的滚动周期。
 

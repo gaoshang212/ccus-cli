@@ -5,11 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import { SyncConfig } from "../types";
 import {
+  applyFileSuffix,
   isSyncDue,
   parseSyncInterval,
   performSync,
   readSyncConfig,
   readSyncStateSync,
+  sanitizeSuffix,
   writeSyncConfig,
 } from "../lib/sync";
 
@@ -29,27 +31,27 @@ test("parseSyncInterval maps daily / empty / unknown to daily, and <N>h <N>m to 
 
 test("readSyncConfig returns safe defaults when file is missing or broken", async () => {
   const dataDir = await makeTempDir("ccus-sync-cfg-");
-  assert.deepEqual(readSyncConfig(dataDir), { targetDir: null, intervalLabel: "3h", range: "this-week" });
+  assert.deepEqual(readSyncConfig(dataDir), { targetDir: null, intervalLabel: "3h", range: "this-week", suffix: null });
 
   await fs.writeFile(path.join(dataDir, "sync-config.json"), "not json", "utf8");
-  assert.deepEqual(readSyncConfig(dataDir), { targetDir: null, intervalLabel: "3h", range: "this-week" });
+  assert.deepEqual(readSyncConfig(dataDir), { targetDir: null, intervalLabel: "3h", range: "this-week", suffix: null });
 });
 
 test("writeSyncConfig then readSyncConfig round-trips", async () => {
   const dataDir = await makeTempDir("ccus-sync-cfg-");
-  const config: SyncConfig = { targetDir: "/team/share", intervalLabel: "6h", range: "last-week" };
+  const config: SyncConfig = { targetDir: "/team/share", intervalLabel: "6h", range: "last-week", suffix: "office" };
   await writeSyncConfig(dataDir, config);
   assert.deepEqual(readSyncConfig(dataDir), config);
 });
 
 test("isSyncDue: never due without a target dir", () => {
-  const config: SyncConfig = { targetDir: null, intervalLabel: "daily", range: "this-week" };
+  const config: SyncConfig = { targetDir: null, intervalLabel: "daily", range: "this-week", suffix: null };
   assert.equal(isSyncDue(config, null), false);
   assert.equal(isSyncDue(config, { lastSyncedAt: null, lastResult: null }), false);
 });
 
 test("isSyncDue: daily triggers across calendar days, not within the same day", () => {
-  const config: SyncConfig = { targetDir: "/x", intervalLabel: "daily", range: "this-week" };
+  const config: SyncConfig = { targetDir: "/x", intervalLabel: "daily", range: "this-week", suffix: null };
   // 从未同步过 → 到期
   assert.equal(isSyncDue(config, null), true);
 
@@ -63,7 +65,7 @@ test("isSyncDue: daily triggers across calendar days, not within the same day", 
 });
 
 test("isSyncDue: <N>h interval uses a rolling TTL", () => {
-  const config: SyncConfig = { targetDir: "/x", intervalLabel: "6h", range: "this-week" };
+  const config: SyncConfig = { targetDir: "/x", intervalLabel: "6h", range: "this-week", suffix: null };
   const base = new Date(2026, 5, 3, 10, 0, 0);
   const state = { lastSyncedAt: base.toISOString(), lastResult: "ok" as const };
   assert.equal(isSyncDue(config, state, new Date(2026, 5, 3, 14, 0, 0)), false); // +4h 未到
@@ -73,7 +75,7 @@ test("isSyncDue: <N>h interval uses a rolling TTL", () => {
 test("performSync exports and copies the bundle into a per-week subdir of the target", async () => {
   const dataDir = await makeTempDir("ccus-sync-data-");
   const targetDir = await makeTempDir("ccus-sync-target-");
-  await writeSyncConfig(dataDir, { targetDir, intervalLabel: "3h", range: "this-week" });
+  await writeSyncConfig(dataDir, { targetDir, intervalLabel: "3h", range: "this-week", suffix: null });
 
   // 2026-06-01 周一 ~ 2026-06-07 周日。
   const start = new Date(2026, 5, 1);
@@ -104,7 +106,7 @@ test("performSync exports and copies the bundle into a per-week subdir of the ta
 test("performSync on Monday also archives last-week, and dedupes within the same day", async () => {
   const dataDir = await makeTempDir("ccus-sync-data-");
   const targetDir = await makeTempDir("ccus-sync-target-");
-  await writeSyncConfig(dataDir, { targetDir, intervalLabel: "3h", range: "this-week" });
+  await writeSyncConfig(dataDir, { targetDir, intervalLabel: "3h", range: "this-week", suffix: null });
 
   // range-aware fake runExport：this-week 与 last-week 各返回各自窗口与文件。
   let lastWeekExports = 0;
@@ -143,6 +145,51 @@ test("performSync on Monday also archives last-week, and dedupes within the same
   const second = await performSync(dataDir, runExport, monday);
   assert.equal(second.archivedLastWeekDest, null);
   assert.equal(lastWeekExports, 1);
+});
+
+test("sanitizeSuffix trims, folds illegal chars, and returns null for empty", () => {
+  assert.equal(sanitizeSuffix("laptop"), "laptop");
+  assert.equal(sanitizeSuffix("  Office-PC  "), "Office-PC");
+  assert.equal(sanitizeSuffix("my pc!!"), "my-pc");
+  assert.equal(sanitizeSuffix("--x--"), "x");
+  assert.equal(sanitizeSuffix(""), null);
+  assert.equal(sanitizeSuffix(undefined), null);
+});
+
+test("applyFileSuffix inserts before .json.gz / .json, and is a no-op for null", () => {
+  assert.equal(
+    applyFileSuffix("alice_export_2026-06-01_to_2026-06-07.json.gz", "laptop"),
+    "alice_export_2026-06-01_to_2026-06-07-laptop.json.gz",
+  );
+  assert.equal(
+    applyFileSuffix("alice_export_2026-06-01_to_2026-06-07.json", "office"),
+    "alice_export_2026-06-01_to_2026-06-07-office.json",
+  );
+  assert.equal(applyFileSuffix("alice_export_2026-06-01_to_2026-06-07.json.gz", null), "alice_export_2026-06-01_to_2026-06-07.json.gz");
+});
+
+test("performSync applies the configured suffix to the target file name only", async () => {
+  const dataDir = await makeTempDir("ccus-sync-data-");
+  const targetDir = await makeTempDir("ccus-sync-target-");
+  await writeSyncConfig(dataDir, { targetDir, intervalLabel: "3h", range: "this-week", suffix: "laptop" });
+
+  const start = new Date(2026, 5, 1);
+  const end = new Date(2026, 5, 7, 23, 59, 59, 999);
+  const localExport = path.join(dataDir, "exports", "alice_export_2026-06-01_to_2026-06-07.json.gz");
+  const runExport = async () => {
+    await fs.mkdir(path.dirname(localExport), { recursive: true });
+    await fs.writeFile(localExport, "fake-bundle-bytes", "utf8");
+    return { outputPath: localExport, window: { label: "this-week", start, end } };
+  };
+
+  const result = await performSync(dataDir, runExport, new Date(2026, 5, 3, 10, 0, 0));
+
+  // 目标副本文件名带后缀
+  const expectedDest = path.join(targetDir, "2026_06_01_2026_06_07", "alice_export_2026-06-01_to_2026-06-07-laptop.json.gz");
+  assert.equal(result.destPath, expectedDest);
+  assert.equal(await fs.readFile(expectedDest, "utf8"), "fake-bundle-bytes");
+  // 本地原文件名不带后缀
+  assert.equal(await fs.readFile(localExport, "utf8"), "fake-bundle-bytes");
 });
 
 test("performSync without a configured target dir throws and records an error state", async () => {
