@@ -353,6 +353,44 @@ test("aggregate merges same person same day across machines by keeping the lates
   }
 });
 
+test("aggregate weekly rolls up multi-machine days within the same week", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-weekroll-"));
+  try {
+    // 同一个人 frank、同一周，但两台电脑各自在不同天有数据：
+    // machine-a 在 2026-05-26 有数据，machine-b 在 2026-05-28 有数据。
+    // 每台的 weeklySummary 都只含自己那天，旧逻辑取单份会丢另一台；新逻辑按天上卷应相加。
+    await fs.writeFile(
+      path.join(root, "frank_a.json"),
+      JSON.stringify(buildBundleForMerge({ personKey: "frank", generatedAt: "2026-05-26T20:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T01:00:00.000Z", userMessageCount: 2, inputTokens: 300, fiveHour: 10 })),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(root, "frank_b.json"),
+      JSON.stringify(buildBundleForMerge({ personKey: "frank", generatedAt: "2026-05-28T20:00:00.000Z", date: "2026-05-28", eventTimestamp: "2026-05-28T01:00:00.000Z", userMessageCount: 5, inputTokens: 700, fiveHour: 30 })),
+      "utf8",
+    );
+
+    const bundles = await loadWeeklyExportBundles(root);
+    const dailyRows = buildAggregatedDailyRows(bundles);
+    const weeklyRows = buildAggregatedWeeklyRows(bundles);
+
+    // 两天各自一行 daily，整周合成一行 weekly。
+    assert.equal(dailyRows.length, 2);
+    assert.equal(weeklyRows.length, 1);
+
+    // 累加类字段跨机按天上卷：2+5、300+700、计数与采样数同理。
+    assert.equal(weeklyRows[0].userMessageCount, 7);
+    assert.equal(weeklyRows[0].inputTokens, 1000);
+    assert.equal(weeklyRows[0].apiRequestCount, 2);
+    assert.equal(weeklyRows[0].sampleCount, 2);
+    // usage 从该周全部事件重算：peak 取 max（30），latest 取时间戳最新（machine-b=30）。
+    assert.equal(weeklyRows[0].fiveHourPeakUsagePct, 30);
+    assert.equal(weeklyRows[0].fiveHourLatestUsagePct, 30);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("loadWeeklyExportBundles reads gzip-compressed .json.gz bundles", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-gz-"));
   const gzFile = path.join(root, "carol_export_2026-05-25_to_2026-05-31.json.gz");

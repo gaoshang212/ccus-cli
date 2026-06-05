@@ -146,12 +146,6 @@ function dayHasData(day: WeeklyExportDaySummary): boolean {
   return day.sampleCount > 0 || day.userMessageCount > 0 || day.apiRequestCount > 0;
 }
 
-/** 整周 weeklySummary 是否承载真实数据。 */
-function weekHasData(bundle: WeeklyExportBundle): boolean {
-  const summary = bundle.weeklySummary;
-  return summary.statusline.sampleCount > 0 || summary.counts.userMessageCount > 0 || summary.counts.apiRequestCount > 0;
-}
-
 /** winner 比较：有数据优先，其次 generatedAt 较新，最后用 filePath 做稳定 tie-break。 */
 function isBetterCandidate(nextHasData: boolean, nextGeneratedAt: string, nextFilePath: string, currentHasData: boolean, currentGeneratedAt: string, currentFilePath: string): boolean {
   if (nextHasData !== currentHasData) {
@@ -182,28 +176,6 @@ function selectDailyWinners(bundles: Array<{ filePath: string; bundle: WeeklyExp
       if (!current || isBetterCandidate(dayHasData(day), generatedAt, filePath, dayHasData(current.day), current.generatedAt, current.filePath)) {
         winners.set(key, { personKey, date: day.date, day, bundle, generatedAt, filePath });
       }
-    }
-  }
-  return winners;
-}
-
-interface WeeklyWinner {
-  personKey: string;
-  week: string;
-  bundle: WeeklyExportBundle;
-}
-
-/** 对每个 (personKey, week) 选出 generatedAt 最新、且尽量有数据的那份 bundle。 */
-function selectWeeklyWinners(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): Map<string, WeeklyWinner> {
-  const winners = new Map<string, WeeklyWinner & { generatedAt: string; filePath: string }>();
-  for (const { filePath, bundle } of bundles) {
-    const personKey = bundlePersonKey(bundle);
-    const week = weekKey(new Date(bundle.range.start));
-    const key = `${personKey}|${week}`;
-    const generatedAt = bundle.generatedAt ?? "";
-    const current = winners.get(key);
-    if (!current || isBetterCandidate(weekHasData(bundle), generatedAt, filePath, weekHasData(current.bundle), current.generatedAt, current.filePath)) {
-      winners.set(key, { personKey, week, bundle, generatedAt, filePath });
     }
   }
   return winners;
@@ -303,29 +275,96 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
   return rows.sort((left, right) => `${left.personKey}|${left.date}`.localeCompare(`${right.personKey}|${right.date}`));
 }
 
-/** 展开 weekly.csv：同人同周取 winner bundle 的累加值，usage 从该 bundle 全部事件重算。 */
-export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): AggregatedWeeklyRow[] {
-  const winners = selectWeeklyWinners(bundles);
-  const rows: AggregatedWeeklyRow[] = [];
+/** 周级 usage 回退：rawEvents 缺失时从各天 daySummary 自带值取 peak（max）/ latest（date 最新非空）。 */
+function fallbackWeeklyUsage(days: WeeklyExportDaySummary[]): RecomputedUsage {
+  const byDateDesc = [...days].sort((left, right) => right.date.localeCompare(left.date));
+  const fivePeaks = days.map((day) => day.fiveHourPeakUsagePct).filter((value): value is number => value !== null);
+  const sevenPeaks = days.map((day) => day.sevenDayPeakUsagePct).filter((value): value is number => value !== null);
+  return {
+    fiveHourPeakUsagePct: fivePeaks.length > 0 ? roundNumber(Math.max(...fivePeaks), 1) : null,
+    fiveHourLatestUsagePct: byDateDesc.find((day) => day.fiveHourLatestUsagePct !== null)?.fiveHourLatestUsagePct ?? null,
+    sevenDayPeakUsagePct: sevenPeaks.length > 0 ? roundNumber(Math.max(...sevenPeaks), 1) : null,
+    sevenDayLatestUsagePct: byDateDesc.find((day) => day.sevenDayLatestUsagePct !== null)?.sevenDayLatestUsagePct ?? null,
+  };
+}
 
-  for (const winner of winners.values()) {
-    const summary = winner.bundle.weeklySummary;
-    const usage = recomputeUsage([...bundleEventsByDate(winner.bundle).values()].flat());
+interface WeeklyAccumulator {
+  personKey: string;
+  week: string;
+  userMessageCount: number;
+  apiRequestCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  sampleCount: number;
+  uniqueSessions: number;
+  uniqueWorkspaces: number;
+  days: WeeklyExportDaySummary[];
+  events: StatuslineEvent[];
+}
+
+/**
+ * 展开 weekly.csv：一个人同一周有多份 bundle（多台电脑各导出）时，不取单独一份的整周汇总，
+ * 而是复用按天去重后的 daily winner（每天选有数据的那份），按 (person, 周) 把每天的 token / 计数累加上卷，
+ * usage 从该周所有 winner 天的事件重算（peak 取 max、latest 取时间戳最新），缺失时回退到 daySummary 自带值。
+ */
+export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): AggregatedWeeklyRow[] {
+  const dailyWinners = selectDailyWinners(bundles);
+  const groups = new Map<string, WeeklyAccumulator>();
+
+  for (const winner of dailyWinners.values()) {
+    const week = weekKey(new Date(winner.bundle.range.start));
+    const key = `${winner.personKey}|${week}`;
+    let acc = groups.get(key);
+    if (!acc) {
+      acc = {
+        personKey: winner.personKey,
+        week,
+        userMessageCount: 0,
+        apiRequestCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+        sampleCount: 0,
+        uniqueSessions: 0,
+        uniqueWorkspaces: 0,
+        days: [],
+        events: [],
+      };
+      groups.set(key, acc);
+    }
+    const day = winner.day;
+    acc.userMessageCount += day.userMessageCount;
+    acc.apiRequestCount += day.apiRequestCount;
+    acc.inputTokens += day.inputTokens;
+    acc.outputTokens += day.outputTokens;
+    acc.cacheReadInputTokens += day.cacheReadInputTokens;
+    acc.sampleCount += day.sampleCount;
+    acc.uniqueSessions += day.uniqueSessions;
+    acc.uniqueWorkspaces += day.uniqueWorkspaces;
+    acc.days.push(day);
+    acc.events.push(...(bundleEventsByDate(winner.bundle).get(winner.date) ?? []));
+  }
+
+  const rows: AggregatedWeeklyRow[] = [];
+  for (const acc of groups.values()) {
+    const usage = recomputeUsage(acc.events);
+    const fallback = fallbackWeeklyUsage(acc.days);
     rows.push({
-      personKey: winner.personKey,
-      week: winner.week,
-      userMessageCount: summary.counts.userMessageCount,
-      apiRequestCount: summary.counts.apiRequestCount,
-      inputTokens: summary.tokens.inputTokens,
-      outputTokens: summary.tokens.outputTokens,
-      cacheReadInputTokens: summary.tokens.cacheReadInputTokens,
-      sampleCount: summary.statusline.sampleCount,
-      fiveHourPeakUsagePct: usage.fiveHourPeakUsagePct ?? summary.statusline.fiveHourPeakUsagePct,
-      fiveHourLatestUsagePct: usage.fiveHourLatestUsagePct ?? summary.statusline.fiveHourLatestUsagePct,
-      sevenDayPeakUsagePct: usage.sevenDayPeakUsagePct ?? summary.statusline.sevenDayPeakUsagePct,
-      sevenDayLatestUsagePct: usage.sevenDayLatestUsagePct ?? summary.statusline.sevenDayLatestUsagePct,
-      uniqueSessions: summary.statusline.uniqueSessions,
-      uniqueWorkspaces: summary.statusline.uniqueWorkspaces,
+      personKey: acc.personKey,
+      week: acc.week,
+      userMessageCount: acc.userMessageCount,
+      apiRequestCount: acc.apiRequestCount,
+      inputTokens: acc.inputTokens,
+      outputTokens: acc.outputTokens,
+      cacheReadInputTokens: acc.cacheReadInputTokens,
+      sampleCount: acc.sampleCount,
+      fiveHourPeakUsagePct: usage.fiveHourPeakUsagePct ?? fallback.fiveHourPeakUsagePct,
+      fiveHourLatestUsagePct: usage.fiveHourLatestUsagePct ?? fallback.fiveHourLatestUsagePct,
+      sevenDayPeakUsagePct: usage.sevenDayPeakUsagePct ?? fallback.sevenDayPeakUsagePct,
+      sevenDayLatestUsagePct: usage.sevenDayLatestUsagePct ?? fallback.sevenDayLatestUsagePct,
+      uniqueSessions: acc.uniqueSessions,
+      uniqueWorkspaces: acc.uniqueWorkspaces,
     });
   }
 

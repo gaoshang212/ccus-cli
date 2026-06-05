@@ -111,11 +111,12 @@
 
 同一个人（同 personKey）可能在多台电脑上各自 `ccus export`，目录里会出现多份覆盖同一周 / 同一天的 bundle。`aggregate` 按 personKey 合并去重，规则分两类字段：
 
-- **累加类字段**（token、`userMessageCount`、`apiRequestCount`、`sampleCount`、`uniqueSessions`、`uniqueWorkspaces`）：怕重复计数（同一台机器重复导出、周与周重叠），所以**不相加**，按「同人同天 / 同人同周取 `generatedAt` 最新的那份导出 bundle」保留。winner 选择优先取该天 / 该周有数据的 bundle，再比 `generatedAt`，最后用文件路径做稳定 tie-break。
-- **usage 字段**（5h / 7d 的 peak/latest）：是百分比快照、不是累加量，不存在翻倍问题，从选中那份 winner bundle 的 `rawEvents` 按真实时间戳**重算**（peak 取 max、latest 取时间戳最新）；某指标在 `rawEvents` 里缺失时回退到 daySummary/weeklySummary 自带值。
+- **天级累加字段**（token、`userMessageCount`、`apiRequestCount`、`sampleCount`、`uniqueSessions`、`uniqueWorkspaces`）：去重以**天**为粒度。对每个 `(personKey, date)` 取 `generatedAt` 最新的那份导出 bundle（`selectDailyWinners`），winner 选择优先取该天有数据的 bundle，再比 `generatedAt`，最后用文件路径做稳定 tie-break。同一台机器重复导出 / 周重叠在天级被去重，**不会翻倍**。
+- **周级汇总**：weekly **不取整周单份 bundle**，而是把已按天去重的 daily winner 按 `(personKey, 周)` **上卷累加**（`buildAggregatedWeeklyRows`）。因为同一周里多台电脑通常在不同天有数据（同一天一般不会两台都有），按天 winner 各取有数据的那台、再求和，正好把多机数据拼齐；同机/周重叠的翻倍仍由天级去重挡住。
+- **usage 字段**（5h / 7d 的 peak/latest）：是百分比快照、不是累加量，不存在翻倍问题。daily 从该天 winner bundle 的 `rawEvents` 重算，weekly 从该周所有 winner 天的事件汇总后重算（peak 取 max、latest 取时间戳最新）；某指标在 `rawEvents` 里缺失时回退到 daySummary 自带值。
 - `detail.csv` 同步只展开 winner bundle 的事件，避免同机重复导出把明细也翻倍。
 
-这套合并只改变行的去重 / 取值逻辑，CSV 列集合与 `schemaVersion` 都不变。winner 判定依赖 bundle 顶层已有的 `generatedAt`，不需要给导出加机器标识字段。实现见 `selectDailyWinners` / `selectWeeklyWinners` / `recomputeUsage`。
+这套合并只改变行的去重 / 取值逻辑，CSV 列集合与 `schemaVersion` 都不变。winner 判定依赖 bundle 顶层已有的 `generatedAt`，不需要给导出加机器标识字段。实现见 `selectDailyWinners` / `buildAggregatedWeeklyRows` / `recomputeUsage`。
 
 - `detail.csv` 列：`personKey, timestamp, week, date, sessionId, workspaceName, modelName, fiveHourUsagePct, contextWindowPct, contextUsedM, contextMaxM, inputTokensM, outputTokensM, cacheReadInputTokensM`
   - 历史上有的 `sourceFile`、`workspaceDir`、`statusLine`、`gitUserName`、`gitUserEmail` 已移除，不要再加回来

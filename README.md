@@ -171,12 +171,12 @@ ccus aggregate serve --input-dir ./team-exports
 
 - 输入目录放很多通过 `ccus export` 导出的 bundle 文件，`.json.gz`（gzip 压缩）与明文 `.json` 都能识别，gzip 文件读取时自动解压
 - `aggregate` 目前只接受 `schemaVersion: 6` 的 bundle；旧导出请先用当前版本重新 `ccus export`
-- 同一个人在多台电脑上各自导出 bundle 时会自动合并去重：累加类指标（token、消息数、采样数等）按「同人同天 / 同人同周取 `generatedAt` 最新的那份导出」保留，不相加，避免同一台机器重复导出或周与周重叠造成翻倍；usage（5h / 7d）从选中那份的 `rawEvents` 按真实时间戳重算（peak 取 max、latest 取最新）
+- 同一个人在多台电脑上各自导出 bundle 时会自动合并去重：去重以**天**为粒度，对每个「同人同天」取 `generatedAt` 最新的那份导出，避免同一台机器重复导出或周与周重叠造成翻倍；**周汇总不取整周单份，而是把按天去重后的各天数据上卷累加**，所以多台电脑在不同天产生的用量会正确合进同一周。usage（5h / 7d）从选中事件按真实时间戳重算（peak 取 max、latest 取最新）
 - `ccus aggregate --input-dir DIR --out-dir DIR`
 - 输出三个文件：
   - `detail.csv`：来自 winner bundle 的 `rawEvents`（同人同天只展开最新那份的事件），`contextUsedM` / `contextMaxM` 为单条事件的 context window token；另附带 `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM`（按 `date` 取自当天 `dailySummaries` 的日总量，同一天多行会重复，不能按行求和）
   - `daily.csv`：同人同天取最新导出 bundle 的 `dailySummaries`，usage 从该 bundle 当天事件重算
-  - `weekly.csv`：同人同周取最新导出 bundle 的 `weeklySummary`，usage 从该 bundle 全部事件重算
+  - `weekly.csv`：把同人同周的各天 winner（已按天去重）上卷累加得到，usage 从该周全部 winner 天的事件重算
 - CSV 里所有以 token 计的列（context 与 in/out/cache）都以百万（M）为单位（原始值除以 1,000,000），列名统一带 `M` 后缀；`contextWindowPct` 仍是百分比
 - 想直接查看团队多人 dashboard，可以用 `ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]`：默认监听 `127.0.0.1` 上的随机端口，启动后会自动用系统默认浏览器打开，每次请求实时读取目录里的 bundle，不写入任何文件
 
