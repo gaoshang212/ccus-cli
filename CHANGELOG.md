@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.14] - 2026-06-06
+
+### 修复
+- `aggregate` 按天 winner 选取：有 transcript 数据（userMessageCount / apiRequestCount > 0）的 bundle 现在优先于仅有 sampleCount 的 bundle，避免新机器采样覆盖掉有真实消息的旧机器数据导致矩阵出现空格。
+
 ## [0.1.13] - 2026-06-05
 
 ### 修复

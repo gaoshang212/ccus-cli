@@ -141,15 +141,25 @@ function bundlePersonKey(bundle: WeeklyExportBundle): string {
   return toPersonKey(bundle.identity.gitUserEmail, bundle.identity.gitUserName);
 }
 
-/** 某天 daySummary 是否承载真实数据（用于优先选中有数据的那份 bundle，而非占位空天）。 */
-function dayHasData(day: WeeklyExportDaySummary): boolean {
-  return day.sampleCount > 0 || day.userMessageCount > 0 || day.apiRequestCount > 0;
+/**
+ * 某天 daySummary 的数据质量等级（越高越优先）：
+ * 2 = 有 transcript 数据（userMessageCount / apiRequestCount > 0）
+ * 1 = 仅有 statusline 采样（sampleCount > 0，但 transcript 字段全为 0）
+ * 0 = 全空占位天
+ *
+ * transcript 级别优先于纯 sampleCount 级别，避免只有采样事件但无消息数的 bundle
+ * 抢走有真实 transcript 数据的 bundle 的 winner 位置。
+ */
+function dayDataTier(day: WeeklyExportDaySummary): number {
+  if (day.userMessageCount > 0 || day.apiRequestCount > 0) return 2;
+  if (day.sampleCount > 0) return 1;
+  return 0;
 }
 
-/** winner 比较：有数据优先，其次 generatedAt 较新，最后用 filePath 做稳定 tie-break。 */
-function isBetterCandidate(nextHasData: boolean, nextGeneratedAt: string, nextFilePath: string, currentHasData: boolean, currentGeneratedAt: string, currentFilePath: string): boolean {
-  if (nextHasData !== currentHasData) {
-    return nextHasData;
+/** winner 比较：数据质量等级高优先，同级别内 generatedAt 较新优先，最后用 filePath 做稳定 tie-break。 */
+function isBetterCandidate(nextTier: number, nextGeneratedAt: string, nextFilePath: string, currentTier: number, currentGeneratedAt: string, currentFilePath: string): boolean {
+  if (nextTier !== currentTier) {
+    return nextTier > currentTier;
   }
   if (nextGeneratedAt !== currentGeneratedAt) {
     return nextGeneratedAt > currentGeneratedAt;
@@ -173,7 +183,7 @@ function selectDailyWinners(bundles: Array<{ filePath: string; bundle: WeeklyExp
     for (const day of bundle.dailySummaries) {
       const key = `${personKey}|${day.date}`;
       const current = winners.get(key);
-      if (!current || isBetterCandidate(dayHasData(day), generatedAt, filePath, dayHasData(current.day), current.generatedAt, current.filePath)) {
+      if (!current || isBetterCandidate(dayDataTier(day), generatedAt, filePath, dayDataTier(current.day), current.generatedAt, current.filePath)) {
         winners.set(key, { personKey, date: day.date, day, bundle, generatedAt, filePath });
       }
     }
