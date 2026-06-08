@@ -4,7 +4,7 @@ import path from "node:path";
 import { buildDashboardHtml } from "./lib/dashboard";
 import { summarizeEvents } from "./lib/dashboard";
 import { buildAggregateDashboardHtml } from "./lib/aggregate-dashboard";
-import { summarizeClaudeProjectUsage, summarizeClaudeProjectUsageByDay } from "./lib/claude";
+import { findActiveSessionFiles, summarizeClaudeProjectUsage, summarizeClaudeProjectUsageByDay } from "./lib/claude";
 import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeeklyCsv, buildSummaryRows, buildWeeklyExportBundleJson, writeGzipFile, writeTextFile } from "./lib/export";
 import { buildAggregatedDailyRows, buildAggregatedDetailRows, buildAggregatedWeeklyRows, loadWeeklyExportBundles } from "./lib/aggregate";
 import { debugLog, resolveDebugEnabled, setDebugEnabled } from "./lib/debug";
@@ -27,7 +27,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
-  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
+  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus sessions [RANGE] [--out FILE] [--data-dir PATH]   (把 ~/.claude/projects 本周活跃 session 打包成 zip，名如 projects_<dates>_<user>.zip)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
 /** 一个轻量的参数解析器，当前命令面不复杂，没必要引入额外依赖。 */
@@ -588,6 +588,62 @@ export function resolveExportOptions(action: string | undefined, args: string[],
   return options;
 }
 
+/**
+ * `ccus sessions`：把 ~/.claude/projects 中在指定时间范围内有活动的 session 文件打包成 zip。
+ *
+ * zip 内部结构保持 <projectDir>/<sessionId>.jsonl 层级（路径分隔符统一用 /）。
+ * 文件名格式：projects_<start>_<end>_<gitUserName>.zip。
+ * 默认输出到 <data-dir>/sessions/，加 --out 可指定完整路径。
+ * 位置参数作为 range 简写，例如 `ccus sessions lw` 等价于 `--range last-week`。
+ */
+async function handleSessions(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  const range = getStringOption(options, "range") ?? "this-week";
+  const out = getStringOption(options, "out");
+  const now = new Date();
+  const window = expandToFullWeekWindow(resolveRange(range, now));
+  debugLog("sessions", "range resolved", { range, label: window.label, start: window.start.toISOString(), end: window.end.toISOString() });
+
+  const sessions = await findActiveSessionFiles(window.start, window.end);
+  debugLog("sessions", "active sessions found", { count: sessions.length });
+
+  const fsRead = (await import("node:fs/promises")).readFile;
+  const { buildZipBuffer } = await import("./lib/zip");
+
+  const entries = await Promise.all(
+    sessions.map(async (session) => ({
+      name: `${session.projectDir.replaceAll("\\", "/")}/${session.sessionId}.jsonl`,
+      data: await fsRead(session.filePath),
+    })),
+  );
+
+  const zipBuffer = await buildZipBuffer(entries);
+
+  const gitIdentity = await readGitIdentity();
+  const userName = formatGitEmailFilePrefix(gitIdentity.userEmail) ?? "unknown";
+  const fileLabel = formatRangeFileLabel(window.start, window.end);
+  const defaultFileName = `projects_${fileLabel}_${userName}.zip`;
+  const outputPath = path.resolve(out ?? path.join(dataDir, "sessions", defaultFileName));
+  const fsNode = await import("node:fs/promises");
+  await fsNode.mkdir(path.dirname(outputPath), { recursive: true });
+  await fsNode.writeFile(outputPath, zipBuffer);
+  process.stdout.write(`${outputPath}\n`);
+}
+
+/**
+ * 解析 sessions 命令的参数，支持 RANGE 作为位置参数简写。
+ */
+function resolveSessionsOptions(action: string | undefined, args: string[], rest: string[]): CliOptions {
+  if (!action || action.startsWith("--")) {
+    return parseOptions(args.slice(1));
+  }
+  const options = parseOptions(rest);
+  if (typeof options.range !== "string") {
+    options.range = action;
+  }
+  return options;
+}
+
 /** 用 readline 向用户提问，返回用户输入的一行文本。 */
 async function prompt(question: string): Promise<string> {
   const rl = (await import("node:readline")).createInterface({
@@ -925,6 +981,12 @@ async function main(args = process.argv.slice(2)): Promise<void> {
   if (group === "export") {
     const exportOptions = resolveExportOptions(action, args, rest);
     await handleExport(exportOptions);
+    return;
+  }
+
+  if (group === "sessions") {
+    const sessionsOptions = resolveSessionsOptions(action, args, rest);
+    await handleSessions(sessionsOptions);
     return;
   }
 

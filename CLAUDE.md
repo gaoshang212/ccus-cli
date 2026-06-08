@@ -143,6 +143,7 @@
 - `ccus export`
 - `ccus aggregate`
 - `ccus aggregate serve`
+- `ccus sessions [RANGE] [--out FILE]`（把 `~/.claude/projects` 中在指定时间窗口内有活动的 session 文件打包成 zip，内部保持 `<projectDir>/<sessionId>.jsonl` 结构；文件名格式 `projects_<start>_<end>_<gitUserName>.zip`；默认 `this-week`，输出到 `<data-dir>/sessions/`）
 - `ccus open`（用系统文件管理器打开本地存储目录，`--print` 只输出路径不打开）
 - `ccus update`（主动检查更新，仅提示不自动安装）
 - `ccus sync`（立即执行一次同步：导出当前周 bundle 并复制到目标目录的按周子目录，周一额外归档上一周）

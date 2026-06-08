@@ -171,6 +171,57 @@ export async function summarizeClaudeProjectUsage(start: Date, end: Date): Promi
   return totals;
 }
 
+/** 在时间范围内有活动的 session 文件信息。 */
+export interface ActiveSessionFile {
+  filePath: string;
+  /** 相对于 ~/.claude/projects 的子目录名（Claude Code 对工作区路径的编码形式）。 */
+  projectDir: string;
+  sessionId: string;
+}
+
+/**
+ * 找出 ~/.claude/projects 中在指定时间范围内有活动的 session 文件，返回文件路径及结构信息。
+ *
+ * 只判断文件里是否存在范围内的记录，不过滤内容，导出时完整复制原始文件。
+ */
+export async function findActiveSessionFiles(start: Date, end: Date): Promise<ActiveSessionFile[]> {
+  const claudeDataDir = getClaudeDataDir();
+  const projectsDir = path.join(claudeDataDir, "projects");
+  const files = await collectProjectJsonlFiles(projectsDir);
+  const result: ActiveSessionFile[] = [];
+
+  for (const filePath of files) {
+    try {
+      const content = await fs.readFile(filePath, "utf8");
+      const lines = content.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+      let hasInRange = false;
+      for (const line of lines) {
+        try {
+          const record = JSON.parse(line) as unknown;
+          if (!isRecord(record)) continue;
+          if (timestampInRange(getString(record.timestamp), start, end)) {
+            hasInRange = true;
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+      if (hasInRange) {
+        result.push({
+          filePath,
+          projectDir: path.relative(projectsDir, path.dirname(filePath)),
+          sessionId: path.basename(filePath, ".jsonl"),
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return result;
+}
+
 /**
  * 按天汇总 Claude project transcript 中的消息数、请求数和 token 用量。
  */
