@@ -169,7 +169,10 @@ test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", ()
   assert.match(html, /<!doctype html>/i);
   assert.match(html, /ccus team dashboard/);
   assert.match(html, /多人对比/);
-  assert.match(html, /周使用量峰值对比/);
+  assert.match(html, /周使用量累计对比/);
+  // 对比图改用累计口径：标题、eyebrow、ARIA 标签都切到累计，不再出现「峰值对比」。
+  assert.match(html, /Weekly Cumulative Usage/);
+  assert.doesNotMatch(html, /周使用量峰值对比/);
   assert.match(html, /5h \/ 7d 使用率详细曲线/);
   assert.match(html, /按真实时间戳绘制/);
   assert.match(html, /7d 周使用量/);
@@ -187,6 +190,47 @@ test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", ()
   assert.match(html, /<g data-person="bob">/);
   assert.match(html, /legend-toggle/);
   assert.match(html, /addEventListener\("click"/);
+});
+
+test("cumulative chart keeps a 100% full scale when no one exceeds 100%", () => {
+  // bob 累计 70%、alice 40%，都不超过 100% → maxValue=100：bob fill=70/100*690=483.00、alice=276.00，均非满条。
+  const html = buildAggregateDashboardHtml(detailRows, dailyRows, weeklyRows, new Date("2026-05-27T08:00:00.000Z"));
+  assert.match(html, /width="483\.00"/);
+  assert.match(html, /width="276\.00"/);
+  // 没人到满刻度，满条 fill 宽度（trackWidth 690.00，带小数）不应出现。
+  assert.doesNotMatch(html, /width="690\.00"/);
+});
+
+test("cumulative chart normalizes bars by the in-group max, allowing values over 100%", () => {
+  // bob 累计 240%（超过 100），alice 60%。最大值 240 对应满条（fill 宽 = trackWidth 690.00）。
+  const overWeekly: AggregatedWeeklyRow[] = [
+    { ...weeklyRows[0], personKey: "alice", sevenDayCumulativeUsagePct: 60 },
+    { ...weeklyRows[1], personKey: "bob", sevenDayCumulativeUsagePct: 240 },
+  ];
+  const overDaily: AggregatedDailyRow[] = [
+    { ...dailyRows[2], personKey: "alice", sevenDayCumulativeUsagePct: 60 },
+    { ...dailyRows[2], personKey: "bob", sevenDayCumulativeUsagePct: 240 },
+  ];
+  const html = buildAggregateDashboardHtml([], overDaily, overWeekly, new Date("2026-05-27T08:00:00.000Z"));
+  // 累计绝对值标注保留，超过 100% 照常显示。
+  assert.match(html, /240\.0%/);
+  assert.match(html, /60\.0%/);
+  // 最大累计值对应满条：fill 宽度等于 trackWidth（690），带两位小数。
+  assert.match(html, /class="bar-fill" \/>\s*<text[^>]*>240\.0%/);
+  assert.match(html, /width="690\.00"/);
+});
+
+test("cumulative chart shows empty state when no one has a cumulative value", () => {
+  const nullWeekly: AggregatedWeeklyRow[] = [
+    { ...weeklyRows[0], personKey: "alice", sevenDayCumulativeUsagePct: null },
+    { ...weeklyRows[1], personKey: "bob", sevenDayCumulativeUsagePct: null },
+  ];
+  const nullDaily: AggregatedDailyRow[] = [
+    { ...dailyRows[2], personKey: "alice", sevenDayCumulativeUsagePct: null },
+    { ...dailyRows[2], personKey: "bob", sevenDayCumulativeUsagePct: null },
+  ];
+  const html = buildAggregateDashboardHtml([], nullDaily, nullWeekly, new Date("2026-05-27T08:00:00.000Z"));
+  assert.match(html, /还没有 7 天额度累计使用量样本/);
 });
 
 test("buildAggregateDashboardHtml stays graceful with empty rows", () => {

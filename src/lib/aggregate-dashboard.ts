@@ -271,25 +271,27 @@ function renderDailyUserRequestChart(people: AggregatePersonSummary[], dailyInde
 }
 
 /**
- * 用横向条形图对比每个人的「周使用量（7 天额度）峰值」。
+ * 用横向条形图对比每个人的「周使用量（7 天额度）累计真实使用量」。
  *
- * 7 天额度是 Claude 给出的滚动周额度使用率，峰值代表这段时间里每个人最接近用满周额度的程度。
- * 条长按固定的 100% 满刻度归一，直接反映绝对使用率水平；右侧仍标注绝对百分比。
+ * sevenDayCumulativeUsagePct 把 7 天额度的锯齿波还原成区间内累计真实使用量，比峰值更能反映
+ * 一段时间里实际消耗了多少额度（峰值相同但累计可相差数倍）。条长默认按 100% 满刻度归一、
+ * 直接反映绝对使用率；仅当有人累计超过 100% 时才放大刻度到该最大值，避免超长条溢出。右侧仍
+ * 标注绝对累计百分比。
  */
-function renderSevenDayPeakChart(people: AggregatePersonSummary[]): string {
+function renderSevenDayCumulativeChart(people: AggregatePersonSummary[]): string {
   const ranked = people
-    .filter((person) => person.sevenDayPeakUsagePct !== null)
-    .sort((left, right) => (right.sevenDayPeakUsagePct ?? 0) - (left.sevenDayPeakUsagePct ?? 0));
+    .filter((person) => person.sevenDayCumulativeUsagePct !== null)
+    .sort((left, right) => (right.sevenDayCumulativeUsagePct ?? 0) - (left.sevenDayCumulativeUsagePct ?? 0));
 
   if (ranked.length === 0) {
     return `
       <section class="panel chart-panel">
         <div class="panel-header">
           <div>
-            <p class="eyebrow">Weekly Peak Usage</p>
-            <h2>周使用量峰值对比</h2>
+            <p class="eyebrow">Weekly Cumulative Usage</p>
+            <h2>周使用量累计对比</h2>
           </div>
-          <p class="muted">还没有 7 天额度使用率样本。</p>
+          <p class="muted">还没有 7 天额度累计使用量样本。</p>
         </div>
       </section>
     `;
@@ -304,11 +306,13 @@ function renderSevenDayPeakChart(people: AggregatePersonSummary[]): string {
   const height = paddingTop + paddingBottom + ranked.length * rowHeight;
   const trackX = labelWidth;
   const trackWidth = width - labelWidth - valueWidth - 16;
-  const maxValue = 100;
+  // 默认按 100% 满刻度，条长直接反映绝对使用率；仅当有人累计超过 100% 时才放大刻度到该最大值，
+  // 避免超长条溢出轨道。下限 100 同时兜底全 0 时的除零（条归零而非 NaN）。
+  const maxValue = Math.max(100, ...ranked.map((person) => person.sevenDayCumulativeUsagePct ?? 0));
 
   const bars = ranked
     .map((person, index) => {
-      const pct = person.sevenDayPeakUsagePct ?? 0;
+      const pct = person.sevenDayCumulativeUsagePct ?? 0;
       const rowTop = paddingTop + index * rowHeight;
       const barHeight = 18;
       const barY = rowTop + (rowHeight - barHeight) / 2;
@@ -328,12 +332,12 @@ function renderSevenDayPeakChart(people: AggregatePersonSummary[]): string {
     <section class="panel chart-panel">
       <div class="panel-header">
         <div>
-          <p class="eyebrow">Weekly Peak Usage</p>
-          <h2>周使用量峰值对比</h2>
+          <p class="eyebrow">Weekly Cumulative Usage</p>
+          <h2>周使用量累计对比</h2>
         </div>
-        <p class="muted">每个人 7 天额度使用率（sevenDayPeakUsagePct）的峰值，条越长越接近用满周额度。</p>
+        <p class="muted">每个人 7 天额度累计真实使用量（sevenDayCumulativeUsagePct），条越长累计消耗越多；默认按 100% 满刻度，仅当有人累计超过 100% 时才放大刻度到在场最大值。</p>
       </div>
-      <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="周使用量峰值对比">
+      <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="周使用量累计对比">
         ${bars}
       </svg>
     </section>
@@ -882,7 +886,7 @@ export function buildAggregateDashboardHtml(
         </article>
       </section>
       ${renderPeopleLeaderboard(people)}
-      ${renderSevenDayPeakChart(people)}
+      ${renderSevenDayCumulativeChart(people)}
       ${renderFiveHourUsageChart(people, detailRows)}
       ${renderDailyUserRequestChart(people, dailyIndex, dateAxis)}
       ${renderDailyMatrix(people, dailyIndex, dateAxis)}
