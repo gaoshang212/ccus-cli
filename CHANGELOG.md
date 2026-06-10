@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.19] - 2026-06-10
+
+### 变更
+- 发布 workflow 升级 `actions/checkout` / `actions/setup-node` 到 v5、构建 Node 升到 22，消除 Node 20 弃用告警。
+- 重新发布以修正 npm `latest` 标签（此前 0.1.16 晚于 0.1.18 完成发布，把 `latest` 顶回了 0.1.16）。
+
 ## [0.1.18] - 2026-06-10
 
 ### 变更
