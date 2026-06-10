@@ -107,7 +107,7 @@ function renderChart(buckets: DashboardBucket[]): string {
         label: formatLocalTimestamp(new Date(entry.bucket.bucketStart)),
       }));
 
-  const fiveHourPoints = collectPoints((bucket) => bucket.avgUsagePct);
+  const fiveHourPoints = collectPoints((bucket) => bucket.maxUsagePct);
   const sevenDayPoints = collectPoints((bucket) => bucket.avgSevenDayUsagePct);
 
   const linePathOf = (points: { x: number; y: number }[]): string =>
