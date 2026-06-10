@@ -114,15 +114,19 @@
 - **天级累加字段**（token、`userMessageCount`、`apiRequestCount`、`sampleCount`、`uniqueSessions`、`uniqueWorkspaces`）：去重以**天**为粒度。对每个 `(personKey, date)` 取 `generatedAt` 最新的那份导出 bundle（`selectDailyWinners`），winner 选择优先取该天有数据的 bundle，再比 `generatedAt`，最后用文件路径做稳定 tie-break。同一台机器重复导出 / 周重叠在天级被去重，**不会翻倍**。
 - **周级汇总**：weekly **不取整周单份 bundle**，而是把已按天去重的 daily winner 按 `(personKey, 周)` **上卷累加**（`buildAggregatedWeeklyRows`）。因为同一周里多台电脑通常在不同天有数据（同一天一般不会两台都有），按天 winner 各取有数据的那台、再求和，正好把多机数据拼齐；同机/周重叠的翻倍仍由天级去重挡住。
 - **usage 字段**（5h / 7d 的 peak/latest）：是百分比快照、不是累加量，不存在翻倍问题。daily 从该天 winner bundle 的 `rawEvents` 重算，weekly 从该周所有 winner 天的事件汇总后重算（peak 取 max、latest 取时间戳最新）；某指标在 `rawEvents` 里缺失时回退到 daySummary 自带值。
-- `detail.csv` 同步只展开 winner bundle 的事件，避免同机重复导出把明细也翻倍。
+- **7d 累计字段**（`sevenDayCumulativeUsagePct`，daily/weekly 各一列）：是把 7d 锯齿波还原成累计真实使用量的派生指标。计算分两层，**两层都不要改回朴素的 `Σ max(0, uᵢ − uᵢ₋₁)`**（真实 7d 信号会 ±1 抖动 + 偶发 stale 尖峰，朴素累加会严重高估，实测 gaoshang 102 / lijian 164 vs 真实 ~50 / ~93）：
+  - **① 读数去毛刺**（`deburrSevenDayEvents`，挂在 `buildPersonSevenDayCurve` 合并去重之后）：真实档位被高频采样连续覆盖多个样本、持续几十分钟，stale 缓存读数只持续秒级。把**中间**持续短于 2 分钟（`SEVEN_DAY_MIN_HOLD_MS`，下一段起始 − 本段起始）的读数段替换为前值，首尾段无条件保留。只对密集真实曲线生效，稀疏数据/单样本段不受影响。
+  - **② 分段峰谷和**（`computeCumulativeSevenDay`）：把去毛刺后曲线按 reset（样本跌破当前段峰值一半，`SEVEN_DAY_RESET_RATIO=0.5`）切成上升段，每段贡献「段内峰值 − 段内谷值」，累计 = 各段之和。
+  - 它把百分比快照变成了**累加量**，所以**不能走 winner 路**——winner 按天只取一台机器会漏样、分机各自累计再相加会翻倍（同账号 7d 额度共享，多机只是同一条曲线的密集采样）。它走一条**独立于 winner 的全样本 merge 路**：对每个 personKey 收集**所有 bundle**（非仅 winner）的 `rawEvents` → 取非 null `sevenDayUsagePct` → 按 timestamp 升序合并、对完全相同 timestamp 去重 → 去毛刺成一条账号级曲线，再按区间切片做分段峰谷和。daily 在当天子曲线上算、weekly 在整周子曲线上一次性算；因「段在区间内重新起算、跨天边界的上升段在 weekly 连续计入而在 daily 被切断」，故 `weekly ≥ Σ daily`，daily 逐行相加只是近似。已知遗留：同 personKey 长期混入交错多源（多账号/多机各自 7d 额度不同）时，去毛刺只压短尖峰、压不掉长期并行的双水平曲线，属数据源粒度问题、不在本算法范围。
+- `detail.csv` 同步只展开 winner bundle 的事件，避免同机重复导出把明细也翻倍；`detail.csv` **不**含 `sevenDayCumulativeUsagePct`（单事件行不承载区间累计语义）。
 
-这套合并只改变行的去重 / 取值逻辑，CSV 列集合与 `schemaVersion` 都不变。winner 判定依赖 bundle 顶层已有的 `generatedAt`，不需要给导出加机器标识字段。实现见 `selectDailyWinners` / `buildAggregatedWeeklyRows` / `recomputeUsage`。
+这套合并只改变行的去重 / 取值逻辑，CSV 列集合与 `schemaVersion` 都不变（`sevenDayCumulativeUsagePct` 纯在 aggregate 层从 `rawEvents` 重算，与 `recomputeUsage` 同理，**不 bump export `schemaVersion`**）。winner 判定依赖 bundle 顶层已有的 `generatedAt`，不需要给导出加机器标识字段。实现见 `selectDailyWinners` / `buildAggregatedWeeklyRows` / `recomputeUsage` / `buildPersonSevenDayCurve` / `computeCumulativeSevenDay`。
 
 - `detail.csv` 列：`personKey, timestamp, week, date, sessionId, workspaceName, modelName, fiveHourUsagePct, contextWindowPct, contextUsedM, contextMaxM, inputTokensM, outputTokensM, cacheReadInputTokensM`
   - 历史上有的 `sourceFile`、`workspaceDir`、`statusLine`、`gitUserName`、`gitUserEmail` 已移除，不要再加回来
   - `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 是**该事件所在自然日**的 token 总量（从同一 bundle 的 `dailySummaries` 按 `date` join 而来），不是单条事件的 token。同一天的多条 detail 行会重复同一组日总量，所以这三列不能直接按行求和
   - `contextUsedM` / `contextMaxM` 是单条事件的 context window token（来自 `rawPayload`），同样换算成 M；`contextWindowPct` 仍是百分比，不换算
-- `daily.csv` / `weekly.csv` 都包含 `fiveHourPeakUsagePct` / `fiveHourLatestUsagePct` / `sevenDayPeakUsagePct` / `sevenDayLatestUsagePct` 四个 usage 列，以及 `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 三个 token 列
+- `daily.csv` / `weekly.csv` 都包含 `fiveHourPeakUsagePct` / `fiveHourLatestUsagePct` / `sevenDayPeakUsagePct` / `sevenDayLatestUsagePct` 四个 usage 列、`sevenDayCumulativeUsagePct` 累计列（紧跟在 `sevenDayLatestUsagePct` 之后），以及 `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 三个 token 列
 - 所有以 token 计的列（detail 的 `contextUsedM` / `contextMaxM` / `*TokensM`，daily/weekly 的 `*TokensM`）都以**百万（M）为单位**：原始整数除以 1_000_000 后写出（`export.ts` 的 `toMillions`，保留 6 位小数，null 仍写空）。bundle JSON 里仍是原始整数，M 换算只发生在 CSV 展示层，所以本次改动不动 `schemaVersion`。`*M` 后缀就是单位标记，不要去掉
 
 `ccus aggregate serve` 与 `ccus aggregate` 共用同一个 bundle 输入目录，但不写文件，只在内存里渲染多人 dashboard HTML 并通过本地 HTTP 端口提供页面。新增字段时，serve 路径的 HTML 也要同步更新，避免对外契约和页面展示脱节。

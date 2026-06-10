@@ -213,6 +213,160 @@ function bundleEventsByDate(bundle: WeeklyExportBundle): Map<string, StatuslineE
   return byDate;
 }
 
+/**
+ * 7d 曲线判定额度重置（reset）的阈值：某样本跌到「当前段峰值 × 此比例」及以下时视为一次归零重置，开启新段。
+ *
+ * 真实 7d 曲线在每个档位附近会 ±1 抖动、并随滚动窗口小幅回落（aging），这些都不该被当成新使用量。
+ * 只有跌破段峰值一半才算真正的额度重置；0.4 / 0.5 / 0.6 对实测数值几乎不敏感，取中间值 0.5。
+ */
+const SEVEN_DAY_RESET_RATIO = 0.5;
+
+/**
+ * 7 天额度累计真实使用量：对一组事件取非 null `sevenDayUsagePct`、按时间升序，用**分段峰谷和**还原。
+ *
+ * 把曲线按 reset（样本跌破当前段峰值的 {@link SEVEN_DAY_RESET_RATIO}）切成若干上升段，
+ * 每段贡献「段内峰值 − 段内谷值」，累计 = 各段贡献之和。等价于「正增量累加，但忽略未跌破段峰一半的小回落」。
+ *
+ * 之所以不用朴素的 `Σ max(0, uᵢ − uᵢ₋₁)`：实测 7d 信号在同一档位反复 ±1 抖动（采样毛刺），
+ * 朴素累加会把每次上抖都计成真实增长，导致严重高估（实测 gaoshang 102 vs 分段 50）。
+ * 分段峰谷和对抖动 / aging 回落鲁棒，又能正确累计「涨到峰 → 归零 → 再涨」的多段真实使用。
+ *
+ * 无有效样本返回 null（区别于 0：0 表示有样本但无净增长）；单样本返回 0。
+ */
+export function computeCumulativeSevenDay(events: StatuslineEvent[]): number | null {
+  const values = [...events]
+    .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime())
+    .map((event) => event.sevenDayUsagePct)
+    .filter((value): value is number => value !== null);
+  if (values.length === 0) {
+    return null;
+  }
+  let cumulative = 0;
+  let segMin = values[0];
+  let segMax = values[0];
+  for (let index = 1; index < values.length; index += 1) {
+    const value = values[index];
+    if (value > segMax) {
+      segMax = value;
+    } else if (segMax > 0 && value <= segMax * SEVEN_DAY_RESET_RATIO) {
+      // 跌破段峰一半：判定为额度重置，锁定上一段峰谷差，从该点开启新段。
+      cumulative += segMax - segMin;
+      segMin = value;
+      segMax = value;
+    } else if (value < segMin) {
+      // 段内小回落（抖动 / aging）：只更新谷值，不分段、不重复计数。
+      segMin = value;
+    }
+  }
+  cumulative += segMax - segMin;
+  return roundNumber(cumulative, 1);
+}
+
+/** 7d 曲线读数去毛刺的最小持续时长：短于此的中间读数段视为 stale / 瞬时异常。 */
+const SEVEN_DAY_MIN_HOLD_MS = 2 * 60 * 1000;
+
+/**
+ * 7d 曲线读数去毛刺：真实 7d 信号变化慢、每个档位会被高频采样连续覆盖几十上百个样本，
+ * 而 stale 缓存读数 / 瞬时异常只会短暂出现（秒级，如 baseline 很低时偶发跳到 30 又落回）。
+ *
+ * 把**中间**持续短于 {@link SEVEN_DAY_MIN_HOLD_MS} 的读数段（下一段起始 − 本段起始）替换为最近的已保留前值，
+ * 抹掉这些尖峰；首尾段无条件保留（端点缺上下文判断持续性）。这等价于人眼在曲线图上自动忽略短毛刺。
+ *
+ * 仅对密集采样的真实曲线生效：稀疏数据（每个值只有一两个样本、间隔很大）的中间段持续时长通常远超阈值，
+ * 不会被误删，所以 spec 的稀疏示例与单样本段不受影响。输入须按 timestamp 升序。
+ */
+function deburrSevenDayEvents(events: StatuslineEvent[], minHoldMs: number = SEVEN_DAY_MIN_HOLD_MS): StatuslineEvent[] {
+  if (events.length <= 2) {
+    return events;
+  }
+  const runs: Array<{ value: number | null; startIdx: number; endIdx: number; startTime: number }> = [];
+  let index = 0;
+  while (index < events.length) {
+    let end = index;
+    while (end + 1 < events.length && events[end + 1].sevenDayUsagePct === events[index].sevenDayUsagePct) {
+      end += 1;
+    }
+    runs.push({ value: events[index].sevenDayUsagePct, startIdx: index, endIdx: end, startTime: new Date(events[index].timestamp).getTime() });
+    index = end + 1;
+  }
+
+  const result = [...events];
+  let lastKept = runs[0].value;
+  for (let k = 0; k < runs.length; k += 1) {
+    const isEdge = k === 0 || k === runs.length - 1;
+    const holdMs = k + 1 < runs.length ? runs[k + 1].startTime - runs[k].startTime : Number.POSITIVE_INFINITY;
+    if (isEdge || holdMs >= minHoldMs) {
+      lastKept = runs[k].value;
+      continue;
+    }
+    for (let idx = runs[k].startIdx; idx <= runs[k].endIdx; idx += 1) {
+      result[idx] = { ...result[idx], sevenDayUsagePct: lastKept };
+    }
+  }
+  return result;
+}
+
+/**
+ * 同一 personKey 的 7d 累计曲线：把该人**所有 bundle**（非仅 winner）的 rawEvents 计算成事件、
+ * 取非 null `sevenDayUsagePct`、按 timestamp 升序合并、对完全相同 timestamp 去重，再做读数去毛刺，
+ * 得到一条账号级曲线。
+ *
+ * 走全样本而非 winner，是因为累计指标是同一条共享额度曲线的密集采样：只取 winner 会漏掉非 winner
+ * 机器的样本（曲线稀疏、累计偏小），分机各自累计再相加又会翻倍。结果按 bundles 数组缓存复用。
+ */
+const personSevenDayCurveCache = new WeakMap<object, Map<string, StatuslineEvent[]>>();
+export function buildPersonSevenDayCurve(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): Map<string, StatuslineEvent[]> {
+  const cached = personSevenDayCurveCache.get(bundles);
+  if (cached) {
+    return cached;
+  }
+
+  const collected = new Map<string, StatuslineEvent[]>();
+  for (const { bundle } of bundles) {
+    const personKey = bundlePersonKey(bundle);
+    for (const record of bundle.rawEvents.filter(isPersistedStatuslineEvent)) {
+      const event = computeStatuslineEvent(record);
+      if (event.sevenDayUsagePct === null) {
+        continue;
+      }
+      const list = collected.get(personKey);
+      if (list) {
+        list.push(event);
+      } else {
+        collected.set(personKey, [event]);
+      }
+    }
+  }
+
+  const curves = new Map<string, StatuslineEvent[]>();
+  for (const [personKey, events] of collected.entries()) {
+    const sorted = [...events].sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime());
+    const seen = new Set<string>();
+    const deduped: StatuslineEvent[] = [];
+    for (const event of sorted) {
+      if (seen.has(event.timestamp)) {
+        continue;
+      }
+      seen.add(event.timestamp);
+      deduped.push(event);
+    }
+    curves.set(personKey, deburrSevenDayEvents(deduped));
+  }
+
+  personSevenDayCurveCache.set(bundles, curves);
+  return curves;
+}
+
+/** 从合并曲线里切出某自然日的子序列。 */
+function sliceCurveByDate(curve: StatuslineEvent[], date: string): StatuslineEvent[] {
+  return curve.filter((event) => localDateKey(new Date(event.timestamp)) === date);
+}
+
+/** 从合并曲线里切出某周（周起始日 key）的子序列。 */
+function sliceCurveByWeek(curve: StatuslineEvent[], week: string): StatuslineEvent[] {
+  return curve.filter((event) => weekKey(new Date(event.timestamp)) === week);
+}
+
 interface RecomputedUsage {
   fiveHourPeakUsagePct: number | null;
   fiveHourLatestUsagePct: number | null;
@@ -259,11 +413,14 @@ export function buildAggregatedDetailRows(bundles: Array<{ filePath: string; bun
 /** 展开 daily.csv：同人同天取 winner bundle 的累加值，usage 从该 bundle 当天事件重算。 */
 export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): AggregatedDailyRow[] {
   const winners = selectDailyWinners(bundles);
+  const curves = buildPersonSevenDayCurve(bundles);
   const rows: AggregatedDailyRow[] = [];
 
   for (const winner of winners.values()) {
     const day = winner.day;
     const usage = recomputeUsage(bundleEventsByDate(winner.bundle).get(winner.date) ?? []);
+    // 累计指标走全样本合并曲线，不走 winner 的 recomputeUsage，避免漏掉非 winner 机器的样本。
+    const sevenDayCumulativeUsagePct = computeCumulativeSevenDay(sliceCurveByDate(curves.get(winner.personKey) ?? [], winner.date));
     rows.push({
       personKey: winner.personKey,
       date: day.date,
@@ -277,6 +434,7 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
       fiveHourLatestUsagePct: usage.fiveHourLatestUsagePct ?? day.fiveHourLatestUsagePct,
       sevenDayPeakUsagePct: usage.sevenDayPeakUsagePct ?? day.sevenDayPeakUsagePct,
       sevenDayLatestUsagePct: usage.sevenDayLatestUsagePct ?? day.sevenDayLatestUsagePct,
+      sevenDayCumulativeUsagePct,
       uniqueSessions: day.uniqueSessions,
       uniqueWorkspaces: day.uniqueWorkspaces,
     });
@@ -320,6 +478,7 @@ interface WeeklyAccumulator {
  */
 export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): AggregatedWeeklyRow[] {
   const dailyWinners = selectDailyWinners(bundles);
+  const curves = buildPersonSevenDayCurve(bundles);
   const groups = new Map<string, WeeklyAccumulator>();
 
   for (const winner of dailyWinners.values()) {
@@ -360,6 +519,8 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
   for (const acc of groups.values()) {
     const usage = recomputeUsage(acc.events);
     const fallback = fallbackWeeklyUsage(acc.days);
+    // 整周累计：在整周合并曲线上一次性求正增量，跨天边界增量被计入，故 weekly ≥ Σ daily。
+    const sevenDayCumulativeUsagePct = computeCumulativeSevenDay(sliceCurveByWeek(curves.get(acc.personKey) ?? [], acc.week));
     rows.push({
       personKey: acc.personKey,
       week: acc.week,
@@ -373,6 +534,7 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
       fiveHourLatestUsagePct: usage.fiveHourLatestUsagePct ?? fallback.fiveHourLatestUsagePct,
       sevenDayPeakUsagePct: usage.sevenDayPeakUsagePct ?? fallback.sevenDayPeakUsagePct,
       sevenDayLatestUsagePct: usage.sevenDayLatestUsagePct ?? fallback.sevenDayLatestUsagePct,
+      sevenDayCumulativeUsagePct,
       uniqueSessions: acc.uniqueSessions,
       uniqueWorkspaces: acc.uniqueWorkspaces,
     });

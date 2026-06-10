@@ -177,6 +177,10 @@ ccus aggregate serve --input-dir ./team-exports
   - `detail.csv`：来自 winner bundle 的 `rawEvents`（同人同天只展开最新那份的事件），`contextUsedM` / `contextMaxM` 为单条事件的 context window token；另附带 `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM`（按 `date` 取自当天 `dailySummaries` 的日总量，同一天多行会重复，不能按行求和）
   - `daily.csv`：同人同天取最新导出 bundle 的 `dailySummaries`，usage 从该 bundle 当天事件重算
   - `weekly.csv`：把同人同周的各天 winner（已按天去重）上卷累加得到，usage 从该周全部 winner 天的事件重算
+- `daily.csv` / `weekly.csv` 还各带一列 `sevenDayCumulativeUsagePct`：7 天额度的**累计真实使用量**，把锯齿波（涨到峰值→窗口重置归零→再涨）还原成实际消耗。计算分两层：先**去毛刺**（把持续短于 2 分钟的 stale 瞬时读数尖峰抹平，只保留真实持续的水平），再做**分段峰谷和**（按 reset 跌破段峰值一半切成上升段，每段累加「段内峰值−谷值」）。以百分比累加表达、可大于 100（用掉多于一个 7d 额度）。对 ±1 采样抖动和 stale 读数尖峰都鲁棒，不会被噪声虚增
+  - 该列**绕开按天 winner**，对同一个人**所有机器、所有周**的 bundle `rawEvents` 先按时间合并去重成一条账号级曲线再算，绝不分机相加（同账号 7d 额度共享）
+  - 区间内第一个有效样本无前值、不贡献增量，所以 **`daily.csv` 逐行相加只是对全局总量的近似**（跨天边界增量不计入单天）；`weekly.csv` 在整周连续算、把跨天增量也计入，更连续，恒有 `weekly ≥ Σ 同周 daily`，想要更准的总量请看 weekly 这列
+  - 无有效样本写空（`null`），有样本但无净增长写 `0`；`detail.csv` 不含此列（单事件行不承载区间累计语义）
 - CSV 里所有以 token 计的列（context 与 in/out/cache）都以百万（M）为单位（原始值除以 1,000,000），列名统一带 `M` 后缀；`contextWindowPct` 仍是百分比
 - 想直接查看团队多人 dashboard，可以用 `ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]`：默认监听 `127.0.0.1` 上的随机端口，启动后会自动用系统默认浏览器打开，每次请求实时读取目录里的 bundle，不写入任何文件
 

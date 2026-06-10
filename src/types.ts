@@ -206,6 +206,11 @@ export interface AggregatedDailyRow {
   fiveHourLatestUsagePct: number | null;
   sevenDayLatestUsagePct: number | null;
   sevenDayPeakUsagePct: number | null;
+  /**
+   * 当天合并曲线（全样本，不走 winner）的 7 天额度累计真实使用量：相邻样本正增量之和 Σ max(0, uᵢ−uᵢ₋₁)。
+   * 区间内第一个有效样本无前值、不贡献增量，所以 daily 逐行相加只是全局总量的近似，weekly 更连续。
+   */
+  sevenDayCumulativeUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
 }
@@ -247,6 +252,11 @@ export interface AggregatedWeeklyRow {
   fiveHourLatestUsagePct: number | null;
   sevenDayLatestUsagePct: number | null;
   sevenDayPeakUsagePct: number | null;
+  /**
+   * 整周合并曲线（全样本，不走 winner）一次性求得的 7 天额度累计真实使用量。
+   * 因跨天边界增量在整周连续计算时被计入，故 weekly ≥ Σ 同周 daily。
+   */
+  sevenDayCumulativeUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
 }

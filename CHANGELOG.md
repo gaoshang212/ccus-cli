@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.17] - 2026-06-10
+
+### 新增
+- `aggregate serve` 折线图：点击图例人名只高亮该人曲线，其余淡化，再次点击取消。
+- `aggregate` 的 daily.csv / weekly.csv 及 serve 看板新增 `sevenDayCumulativeUsagePct`：7 天额度累计真实使用量（先去毛刺再分段峰谷和），detail.csv 不含此列。
+
 ## [0.1.16] - 2026-06-10
 
 ### 修复

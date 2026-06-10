@@ -223,6 +223,7 @@ export function buildAggregatedDailyCsv(rows: AggregatedDailyRow[]): string {
     "fiveHourLatestUsagePct",
     "sevenDayPeakUsagePct",
     "sevenDayLatestUsagePct",
+    "sevenDayCumulativeUsagePct",
     "uniqueSessions",
     "uniqueWorkspaces",
   ];
@@ -240,6 +241,7 @@ export function buildAggregatedDailyCsv(rows: AggregatedDailyRow[]): string {
       row.fiveHourLatestUsagePct,
       row.sevenDayPeakUsagePct,
       row.sevenDayLatestUsagePct,
+      row.sevenDayCumulativeUsagePct,
       row.uniqueSessions,
       row.uniqueWorkspaces,
     ]),
@@ -262,6 +264,7 @@ export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
     "fiveHourLatestUsagePct",
     "sevenDayPeakUsagePct",
     "sevenDayLatestUsagePct",
+    "sevenDayCumulativeUsagePct",
     "uniqueSessions",
     "uniqueWorkspaces",
   ];
@@ -279,6 +282,7 @@ export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
       row.fiveHourLatestUsagePct,
       row.sevenDayPeakUsagePct,
       row.sevenDayLatestUsagePct,
+      row.sevenDayCumulativeUsagePct,
       row.uniqueSessions,
       row.uniqueWorkspaces,
     ]),

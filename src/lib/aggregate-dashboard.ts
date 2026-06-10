@@ -16,6 +16,8 @@ export interface AggregatePersonSummary {
   fiveHourLatestUsagePct: number | null;
   sevenDayPeakUsagePct: number | null;
   sevenDayLatestUsagePct: number | null;
+  /** 与 weekly.csv 同源：把该人各周 weekly 行的 sevenDayCumulativeUsagePct 相加（无有效值则 null）。 */
+  sevenDayCumulativeUsagePct: number | null;
   activeDays: number;
   firstDate: string | null;
   lastDate: string | null;
@@ -65,7 +67,7 @@ function maxOrNull(values: Array<number | null>): number | null {
  *
  * 这里只信任 daily.csv 的口径，确保数字和 aggregate 输出的 CSV 一致。
  */
-export function summarizePeople(dailyRows: AggregatedDailyRow[]): AggregatePersonSummary[] {
+export function summarizePeople(dailyRows: AggregatedDailyRow[], weeklyRows: AggregatedWeeklyRow[] = []): AggregatePersonSummary[] {
   const grouped = new Map<string, AggregatedDailyRow[]>();
   for (const row of dailyRows) {
     const items = grouped.get(row.personKey);
@@ -74,6 +76,16 @@ export function summarizePeople(dailyRows: AggregatedDailyRow[]): AggregatePerso
     } else {
       grouped.set(row.personKey, [row]);
     }
+  }
+
+  // 累计 7d 走 weekly.csv 同源：按 personKey 把各周 weekly 行的累计值相加（weekly ≥ Σ daily，不能用 daily 求和）。
+  const cumulativeByPerson = new Map<string, number | null>();
+  for (const row of weeklyRows) {
+    if (row.sevenDayCumulativeUsagePct === null) {
+      continue;
+    }
+    const current = cumulativeByPerson.get(row.personKey);
+    cumulativeByPerson.set(row.personKey, (current ?? 0) + row.sevenDayCumulativeUsagePct);
   }
 
   const summaries: AggregatePersonSummary[] = [];
@@ -101,6 +113,7 @@ export function summarizePeople(dailyRows: AggregatedDailyRow[]): AggregatePerso
       fiveHourLatestUsagePct: latestRowWithUsage?.fiveHourLatestUsagePct ?? null,
       sevenDayPeakUsagePct: maxOrNull(items.map((row) => row.sevenDayPeakUsagePct)),
       sevenDayLatestUsagePct: latestRowWithSevenDay?.sevenDayLatestUsagePct ?? null,
+      sevenDayCumulativeUsagePct: cumulativeByPerson.get(personKey) ?? null,
       activeDays,
       firstDate: sortedByDate[0]?.date ?? null,
       lastDate: sortedByDate.at(-1)?.date ?? null,
@@ -227,14 +240,14 @@ function renderDailyUserRequestChart(people: AggregatePersonSummary[], dailyInde
             `<circle cx="${xFor(index).toFixed(2)}" cy="${yFor(value).toFixed(2)}" r="3" fill="${color}"><title>${escapeHtml(series.person.personKey)} · ${escapeHtml(dateAxis[index])} · ${formatNumber(value)} 用户请求</title></circle>`,
         )
         .join("");
-      return `<g><path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />${points}</g>`;
+      return `<g data-person="${escapeHtml(series.person.personKey)}"><path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />${points}</g>`;
     })
     .join("");
 
   const legend = seriesData
     .map((series, seriesIndex) => {
       const color = palette[seriesIndex % palette.length];
-      return `<span class="legend-chip"><span class="legend-dot" style="background:${color}"></span>${escapeHtml(series.person.personKey)}</span>`;
+      return `<span class="legend-chip legend-toggle" data-person="${escapeHtml(series.person.personKey)}"><span class="legend-dot" style="background:${color}"></span>${escapeHtml(series.person.personKey)}</span>`;
     })
     .join("");
 
@@ -245,7 +258,7 @@ function renderDailyUserRequestChart(people: AggregatePersonSummary[], dailyInde
           <p class="eyebrow">Daily User Requests</p>
           <h2>每日用户请求数对比</h2>
         </div>
-        <p class="muted">基于每人 daily 汇总中的 userMessageCount（已剔除 tool_result 工具回填；sidechain 子 agent 提示保留）。</p>
+        <p class="muted">基于每人 daily 汇总中的 userMessageCount（已剔除 tool_result 工具回填；sidechain 子 agent 提示保留）。点击图例人名可只高亮该人曲线。</p>
       </div>
       <div class="legend">${legend}</div>
       <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="每日用户请求数对比">
@@ -423,7 +436,7 @@ function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: 
         entry.sevenPoints.length > 0
           ? `<path d="${pathFor(entry.sevenPoints)}" fill="none" stroke="${sevenColor}" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round" stroke-linejoin="round"><title>${escapeHtml(entry.person.personKey)} · 7d</title></path>`
           : "";
-      return `<g>${fivePath}${sevenPath}</g>`;
+      return `<g data-person="${escapeHtml(entry.person.personKey)}">${fivePath}${sevenPath}</g>`;
     })
     .join("");
 
@@ -431,7 +444,7 @@ function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: 
     .map((entry) => {
       const color = CHART_PALETTE[entry.index % CHART_PALETTE.length];
       const sevenColor = SEVEN_DAY_PALETTE[entry.index % SEVEN_DAY_PALETTE.length];
-      return `<span class="legend-chip"><span class="legend-dot" style="background:${color}"></span><span class="legend-dot" style="background:${sevenColor}"></span>${escapeHtml(entry.person.personKey)}</span>`;
+      return `<span class="legend-chip legend-toggle" data-person="${escapeHtml(entry.person.personKey)}"><span class="legend-dot" style="background:${color}"></span><span class="legend-dot" style="background:${sevenColor}"></span>${escapeHtml(entry.person.personKey)}</span>`;
     })
     .join("");
 
@@ -442,7 +455,7 @@ function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: 
           <p class="eyebrow">Usage Detail</p>
           <h2>5h / 7d 使用率详细曲线</h2>
         </div>
-        <p class="muted">每条 statusline 采样的 5 小时额度（实线）与 7 天周额度（对比色虚线）使用率，按真实时间戳绘制、共用 Y 轴。</p>
+        <p class="muted">每条 statusline 采样的 5 小时额度（实线）与 7 天周额度（对比色虚线）使用率，按真实时间戳绘制、共用 Y 轴。点击图例人名可只高亮该人曲线。</p>
       </div>
       <div class="legend">
         ${legend}
@@ -488,6 +501,7 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[]): string {
         <td>${escapeHtml(statValue(person.fiveHourLatestUsagePct))}</td>
         <td>${escapeHtml(statValue(person.sevenDayPeakUsagePct))}</td>
         <td>${escapeHtml(statValue(person.sevenDayLatestUsagePct))}</td>
+        <td>${escapeHtml(statValue(person.sevenDayCumulativeUsagePct))}</td>
         <td>${person.activeDays}</td>
         <td class="muted-col">${formatNumber(person.apiRequestCount)}</td>
       </tr>`,
@@ -517,6 +531,7 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[]): string {
               <th>5h Latest</th>
               <th>7d Peak</th>
               <th>7d Latest</th>
+              <th>7d 累计</th>
               <th>活跃天数</th>
               <th class="muted-col">API 请求</th>
             </tr>
@@ -603,6 +618,7 @@ function renderWeeklyTable(weeklyRows: AggregatedWeeklyRow[]): string {
         <td>${escapeHtml(statValue(row.fiveHourLatestUsagePct))}</td>
         <td>${escapeHtml(statValue(row.sevenDayPeakUsagePct))}</td>
         <td>${escapeHtml(statValue(row.sevenDayLatestUsagePct))}</td>
+        <td>${escapeHtml(statValue(row.sevenDayCumulativeUsagePct))}</td>
         <td class="muted-col">${formatNumber(row.apiRequestCount)}</td>
       </tr>`,
     )
@@ -631,6 +647,7 @@ function renderWeeklyTable(weeklyRows: AggregatedWeeklyRow[]): string {
               <th>5h Latest</th>
               <th>7d Peak</th>
               <th>7d Latest</th>
+              <th>7d 累计</th>
               <th class="muted-col">API 请求</th>
             </tr>
           </thead>
@@ -652,7 +669,7 @@ export function buildAggregateDashboardHtml(
   weeklyRows: AggregatedWeeklyRow[],
   generatedAt: Date = new Date(),
 ): string {
-  const people = summarizePeople(dailyRows);
+  const people = summarizePeople(dailyRows, weeklyRows);
   const overall = summarizeOverall(dailyRows, people);
   const dateAxis = collectDateAxis(dailyRows);
   const dailyIndex = indexDailyRows(dailyRows);
@@ -774,7 +791,14 @@ export function buildAggregateDashboardHtml(
         font-size: 13px;
       }
       .legend-chip { display: inline-flex; align-items: center; gap: 8px; }
+      .legend-toggle { cursor: pointer; user-select: none; transition: opacity 0.15s ease; }
+      .legend-toggle:hover { color: var(--text); }
+      .legend-toggle.is-active { color: var(--text); font-weight: 600; }
+      .legend-toggle.is-dimmed { opacity: 0.4; }
       .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+      svg [data-person] { transition: opacity 0.15s ease; }
+      svg [data-person].is-dimmed { opacity: 0.1; }
+      svg [data-person].is-active { opacity: 1; }
       .legend-line { display: inline-block; width: 22px; height: 0; border-top-width: 2px; border-top-style: solid; border-top-color: var(--muted); }
       .legend-line-dashed { border-top-style: dashed; }
       .table-panel { margin-top: 22px; }
@@ -864,6 +888,26 @@ export function buildAggregateDashboardHtml(
       ${renderDailyMatrix(people, dailyIndex, dateAxis)}
       ${renderWeeklyTable(weeklyRows)}
     </main>
+    <script>
+      (function () {
+        // 点击图例里的人名：高亮该人在所有图表里的曲线，其余淡化；再次点击同名取消高亮。
+        var active = null;
+        function apply() {
+          document.querySelectorAll("[data-person]").forEach(function (el) {
+            el.classList.remove("is-active", "is-dimmed");
+            if (active === null) return;
+            el.classList.add(el.getAttribute("data-person") === active ? "is-active" : "is-dimmed");
+          });
+        }
+        document.querySelectorAll(".legend-toggle").forEach(function (chip) {
+          chip.addEventListener("click", function () {
+            var person = chip.getAttribute("data-person");
+            active = active === person ? null : person;
+            apply();
+          });
+        });
+      })();
+    </script>
   </body>
 </html>`;
 }

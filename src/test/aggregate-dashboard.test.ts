@@ -18,6 +18,7 @@ const dailyRows: AggregatedDailyRow[] = [
     fiveHourLatestUsagePct: 12,
     sevenDayPeakUsagePct: 36,
     sevenDayLatestUsagePct: 30,
+    sevenDayCumulativeUsagePct: 12,
     uniqueSessions: 1,
     uniqueWorkspaces: 1,
   },
@@ -34,6 +35,7 @@ const dailyRows: AggregatedDailyRow[] = [
     fiveHourLatestUsagePct: 22,
     sevenDayPeakUsagePct: 38,
     sevenDayLatestUsagePct: 33,
+    sevenDayCumulativeUsagePct: 8,
     uniqueSessions: 1,
     uniqueWorkspaces: 1,
   },
@@ -50,6 +52,7 @@ const dailyRows: AggregatedDailyRow[] = [
     fiveHourLatestUsagePct: 40,
     sevenDayPeakUsagePct: 65,
     sevenDayLatestUsagePct: 60,
+    sevenDayCumulativeUsagePct: 50,
     uniqueSessions: 2,
     uniqueWorkspaces: 1,
   },
@@ -69,6 +72,7 @@ const weeklyRows: AggregatedWeeklyRow[] = [
     fiveHourLatestUsagePct: 22,
     sevenDayPeakUsagePct: 38,
     sevenDayLatestUsagePct: 33,
+    sevenDayCumulativeUsagePct: 40,
     uniqueSessions: 1,
     uniqueWorkspaces: 1,
   },
@@ -85,6 +89,7 @@ const weeklyRows: AggregatedWeeklyRow[] = [
     fiveHourLatestUsagePct: 40,
     sevenDayPeakUsagePct: 65,
     sevenDayLatestUsagePct: 60,
+    sevenDayCumulativeUsagePct: 70,
     uniqueSessions: 2,
     uniqueWorkspaces: 1,
   },
@@ -124,11 +129,13 @@ const detailRows: AggregatedEventRow[] = [
 ];
 
 test("summarizePeople rolls up daily rows per person and sorts by user messages desc", () => {
-  const people = summarizePeople(dailyRows);
+  const people = summarizePeople(dailyRows, weeklyRows);
   assert.equal(people.length, 2);
   assert.equal(people[0].personKey, "bob");
   assert.equal(people[0].userMessageCount, 9);
   assert.equal(people[0].apiRequestCount, 7);
+  // 累计 7d 与 weekly.csv 同源：bob 单周 weekly 行 70。
+  assert.equal(people[0].sevenDayCumulativeUsagePct, 70);
   assert.equal(people[1].personKey, "alice");
   assert.equal(people[1].apiRequestCount, 4);
   assert.equal(people[1].userMessageCount, 7);
@@ -137,6 +144,8 @@ test("summarizePeople rolls up daily rows per person and sorts by user messages 
   assert.equal(people[1].fiveHourLatestUsagePct, 22);
   assert.equal(people[1].sevenDayPeakUsagePct, 38);
   assert.equal(people[1].sevenDayLatestUsagePct, 33);
+  // alice 单周 weekly 行累计 40（来自 weekly.csv，而非 daily 12+8=20 求和）。
+  assert.equal(people[1].sevenDayCumulativeUsagePct, 40);
   assert.equal(people[1].activeDays, 2);
   assert.equal(people[1].firstDate, "2026-05-26");
   assert.equal(people[1].lastDate, "2026-05-27");
@@ -167,9 +176,17 @@ test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", ()
   assert.match(html, /stroke-dasharray/);
   assert.match(html, /每日用户请求数对比/);
   assert.match(html, /按周聚合/);
+  // 7d 累计指标在排行榜与周表的表头都出现，bob 的累计值 70.0% 被渲染。
+  assert.match(html, /7d 累计/);
+  assert.match(html, /70\.0%/);
   assert.match(html, />alice</);
   assert.match(html, />bob</);
   assert.match(html, /Total API requests/);
+  // 图例人名可点击高亮：曲线分组与图例 chip 都带 data-person，并注入点击交互脚本。
+  assert.match(html, /class="legend-chip legend-toggle" data-person="alice"/);
+  assert.match(html, /<g data-person="bob">/);
+  assert.match(html, /legend-toggle/);
+  assert.match(html, /addEventListener\("click"/);
 });
 
 test("buildAggregateDashboardHtml stays graceful with empty rows", () => {

@@ -5,10 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { resolveExportOptions } from "../cli";
 import { gunzipSync } from "node:zlib";
-import { buildRawJsonl, buildWeeklyExportBundleJson, buildWeeklySummaryJson, writeGzipFile, writeTextFile } from "../lib/export";
+import { buildAggregatedDailyCsv, buildAggregatedWeeklyCsv, buildRawJsonl, buildWeeklyExportBundleJson, buildWeeklySummaryJson, writeGzipFile, writeTextFile } from "../lib/export";
 import { computeStatuslineEvent } from "../lib/payload";
 import { enumerateDateKeys, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "../lib/time";
-import { PersistedStatuslineEvent, WeeklyExportBundle, WeeklyExportSummary } from "../types";
+import { AggregatedDailyRow, AggregatedWeeklyRow, PersistedStatuslineEvent, WeeklyExportBundle, WeeklyExportSummary } from "../types";
 
 /** 导出测试使用的基础样本，覆盖两个不同时间点和 workspace。 */
 const records: PersistedStatuslineEvent[] = [
@@ -173,6 +173,58 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
   assert.equal(parsed.dailySummaries[0].fiveHourPeakUsagePct, 31);
   assert.equal(parsed.dailySummaries[0].sevenDayLatestUsagePct, 62);
   assert.equal(parsed.dailySummaries[0].sevenDayPeakUsagePct, 71);
+});
+
+/** daily/weekly CSV 都要在 7d latest 之后带上 sevenDayCumulativeUsagePct 列，格式与现有 usage 列一致。 */
+test("aggregated daily/weekly csv include sevenDayCumulativeUsagePct column", () => {
+  const dailyRow: AggregatedDailyRow = {
+    personKey: "alice",
+    date: "2026-05-26",
+    userMessageCount: 2,
+    apiRequestCount: 1,
+    inputTokens: 300,
+    outputTokens: 40,
+    cacheReadInputTokens: 20,
+    sampleCount: 3,
+    fiveHourPeakUsagePct: 18,
+    fiveHourLatestUsagePct: 12,
+    sevenDayPeakUsagePct: 60,
+    sevenDayLatestUsagePct: 40,
+    sevenDayCumulativeUsagePct: 80,
+    uniqueSessions: 1,
+    uniqueWorkspaces: 1,
+  };
+  const weeklyRow: AggregatedWeeklyRow = {
+    personKey: "alice",
+    week: "2026-05-25",
+    userMessageCount: 2,
+    apiRequestCount: 1,
+    inputTokens: 300,
+    outputTokens: 40,
+    cacheReadInputTokens: 20,
+    sampleCount: 3,
+    fiveHourPeakUsagePct: 18,
+    fiveHourLatestUsagePct: 12,
+    sevenDayPeakUsagePct: 60,
+    sevenDayLatestUsagePct: 40,
+    sevenDayCumulativeUsagePct: 95,
+    uniqueSessions: 1,
+    uniqueWorkspaces: 1,
+  };
+
+  const dailyCsv = buildAggregatedDailyCsv([dailyRow]);
+  const weeklyCsv = buildAggregatedWeeklyCsv([weeklyRow]);
+
+  // 列顺序：sevenDayLatestUsagePct 之后紧跟 sevenDayCumulativeUsagePct，再到 uniqueSessions。
+  assert.match(dailyCsv, /sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions/);
+  assert.match(weeklyCsv, /sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions/);
+  // 数值落在 7d latest(40) 与 uniqueSessions(1) 之间。
+  assert.match(dailyCsv, /,40,80,1,1$/m);
+  assert.match(weeklyCsv, /,40,95,1,1$/m);
+
+  // null 累计写空，与现有 usage 列一致。
+  const nullCsv = buildAggregatedDailyCsv([{ ...dailyRow, sevenDayCumulativeUsagePct: null }]);
+  assert.match(nullCsv, /,40,,1,1$/m);
 });
 
 /** last-week 应该解析成上一个完整的周一到周日，与本周不重叠。 */
