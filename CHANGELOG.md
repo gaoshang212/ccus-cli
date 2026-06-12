@@ -5,6 +5,9 @@
 ### 新增
 - dashboard 与 `aggregate serve` 的使用率折线图、每日消息数/请求数柱状图迁移至 uPlot：悬停任意位置显示十字线与跟随 tooltip 读数，多人图支持点击人名切换显隐，uPlot 资源内联进 HTML 离线可用。
 
+### 变更
+- `aggregate` 同一人同一天多台电脑的数据改为叠加合并：通过 `rawEvents` 中的 `session_id` 集合判断是否同台机器，不同机器的 userMessageCount / apiRequestCount / token 等累加字段直接相加，同台机器重复导出仍走去重（取最佳代表），daily × 人矩阵不再丢失多机数据。
+
 ## [0.1.19] - 2026-06-10
 
 ### 变更

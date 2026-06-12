@@ -8,6 +8,11 @@ import { extractGitEmailAccount, roundNumber } from "./time";
 
 const gunzipAsync = promisify(gunzip);
 
+function maxOrNull(values: Array<number | null>): number | null {
+  const numbers = values.filter((v): v is number => v !== null);
+  return numbers.length > 0 ? Math.max(...numbers) : null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -156,10 +161,24 @@ function dayDataTier(day: WeeklyExportDaySummary): number {
   return 0;
 }
 
-/** winner 比较：数据质量等级高优先，同级别内 generatedAt 较新优先，最后用 filePath 做稳定 tie-break。 */
-function isBetterCandidate(nextTier: number, nextGeneratedAt: string, nextFilePath: string, currentTier: number, currentGeneratedAt: string, currentFilePath: string): boolean {
+/**
+ * winner 比较：数据质量等级高优先；同 tier=2 時消息数多优先（避免"仅 generatedAt 更新"的低活跃机器
+ * 覆盖同一天高活跃机器的数据）；同 count 内 generatedAt 较新优先；最后用 filePath 做稳定 tie-break。
+ */
+function isBetterCandidate(
+  nextTier: number, nextMsgCount: number, nextApiCount: number, nextGeneratedAt: string, nextFilePath: string,
+  currentTier: number, currentMsgCount: number, currentApiCount: number, currentGeneratedAt: string, currentFilePath: string,
+): boolean {
   if (nextTier !== currentTier) {
     return nextTier > currentTier;
+  }
+  if (nextTier === 2) {
+    if (nextMsgCount !== currentMsgCount) {
+      return nextMsgCount > currentMsgCount;
+    }
+    if (nextApiCount !== currentApiCount) {
+      return nextApiCount > currentApiCount;
+    }
   }
   if (nextGeneratedAt !== currentGeneratedAt) {
     return nextGeneratedAt > currentGeneratedAt;
@@ -167,28 +186,89 @@ function isBetterCandidate(nextTier: number, nextGeneratedAt: string, nextFilePa
   return nextFilePath > currentFilePath;
 }
 
-interface DailyWinner {
+interface DailyRepresentative {
   personKey: string;
   date: string;
   day: WeeklyExportDaySummary;
   bundle: WeeklyExportBundle;
 }
 
-/** 对每个 (personKey, date) 选出 generatedAt 最新、且尽量有数据的那份 bundle 当天数据。 */
-function selectDailyWinners(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): Map<string, DailyWinner> {
-  const winners = new Map<string, DailyWinner & { generatedAt: string; filePath: string }>();
+/**
+ * 同一 (personKey, date) 的所有 bundle，按 rawEvents sessionId 集合的交集分组：
+ * - 有交集的视为同机器重复导出（同一账号同一天的会话在两份 bundle 里均存在），只取最优 winner
+ * - 无交集的视为不同机器的独立数据，分别保留，后续叠加
+ *
+ * sessionId 集合为空的候选（该天没有 statusline 事件）不参与交集判断，单独成组。
+ */
+function selectDailyRepresentatives(
+  bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>,
+): Map<string, DailyRepresentative[]> {
+  // 收集每个 (personKey, date) 的所有候选
+  const candidatesByKey = new Map<
+    string,
+    Array<{ day: WeeklyExportDaySummary; bundle: WeeklyExportBundle; generatedAt: string; filePath: string; sessionIds: Set<string> }>
+  >();
+
   for (const { filePath, bundle } of bundles) {
     const personKey = bundlePersonKey(bundle);
     const generatedAt = bundle.generatedAt ?? "";
+    const eventsByDate = bundleEventsByDate(bundle);
     for (const day of bundle.dailySummaries) {
       const key = `${personKey}|${day.date}`;
-      const current = winners.get(key);
-      if (!current || isBetterCandidate(dayDataTier(day), generatedAt, filePath, dayDataTier(current.day), current.generatedAt, current.filePath)) {
-        winners.set(key, { personKey, date: day.date, day, bundle, generatedAt, filePath });
-      }
+      const events = eventsByDate.get(day.date) ?? [];
+      const sessionIds = new Set(events.map((e) => e.sessionId).filter((s): s is string => s !== null));
+      const list = candidatesByKey.get(key) ?? [];
+      list.push({ day, bundle, generatedAt, filePath, sessionIds });
+      candidatesByKey.set(key, list);
     }
   }
-  return winners;
+
+  const result = new Map<string, DailyRepresentative[]>();
+  for (const [key, candidates] of candidatesByKey.entries()) {
+    const barIdx = key.indexOf("|");
+    const personKey = key.slice(0, barIdx);
+    const date = key.slice(barIdx + 1);
+
+    // 贪心分组：候选有 sessionId 且与某组内任意候选的 sessionId 有交集，则并入该组；否则新建组
+    const groups: typeof candidates[] = [];
+    for (const candidate of candidates) {
+      let added = false;
+      if (candidate.sessionIds.size > 0) {
+        for (const group of groups) {
+          const hasOverlap = group.some((c) => c.sessionIds.size > 0 && [...candidate.sessionIds].some((s) => c.sessionIds.has(s)));
+          if (hasOverlap) {
+            group.push(candidate);
+            added = true;
+            break;
+          }
+        }
+      }
+      if (!added) {
+        groups.push([candidate]);
+      }
+    }
+
+    // 每组取最优代表（同机器多次导出只保留一份）
+    const reps: DailyRepresentative[] = groups.map((group) => {
+      let best = group[0];
+      for (let i = 1; i < group.length; i++) {
+        const c = group[i];
+        if (
+          isBetterCandidate(
+            dayDataTier(c.day), c.day.userMessageCount, c.day.apiRequestCount, c.generatedAt, c.filePath,
+            dayDataTier(best.day), best.day.userMessageCount, best.day.apiRequestCount, best.generatedAt, best.filePath,
+          )
+        ) {
+          best = c;
+        }
+      }
+      return { personKey, date, day: best.day, bundle: best.bundle };
+    });
+
+    result.set(key, reps);
+  }
+
+  return result;
 }
 
 /** 把 bundle 的 rawEvents 计算成 StatuslineEvent 并按本地自然日分组，结果做缓存复用。 */
@@ -387,56 +467,79 @@ function recomputeUsage(events: StatuslineEvent[]): RecomputedUsage {
   };
 }
 
-/** 从 winner bundle 的事件展开 detail.csv，同人同天只保留 winner，那份的当天 token 总量随行附带。 */
+/** 展开 detail.csv：同人同天各机器的代表 bundle 事件都列出来，token 总量随本机器当天的 daySummary 附带。 */
 export function buildAggregatedDetailRows(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): AggregatedEventRow[] {
-  const winners = selectDailyWinners(bundles);
+  const repsMap = selectDailyRepresentatives(bundles);
   const rows: AggregatedEventRow[] = [];
 
-  for (const winner of winners.values()) {
-    const events = bundleEventsByDate(winner.bundle).get(winner.date) ?? [];
-    for (const event of events) {
-      rows.push({
-        ...event,
-        personKey: winner.personKey,
-        weekKey: weekKey(new Date(event.timestamp)),
-        dateKey: winner.date,
-        inputTokens: winner.day.inputTokens,
-        outputTokens: winner.day.outputTokens,
-        cacheReadInputTokens: winner.day.cacheReadInputTokens,
-      });
+  for (const reps of repsMap.values()) {
+    for (const rep of reps) {
+      const events = bundleEventsByDate(rep.bundle).get(rep.date) ?? [];
+      for (const event of events) {
+        rows.push({
+          ...event,
+          personKey: rep.personKey,
+          weekKey: weekKey(new Date(event.timestamp)),
+          dateKey: rep.date,
+          inputTokens: rep.day.inputTokens,
+          outputTokens: rep.day.outputTokens,
+          cacheReadInputTokens: rep.day.cacheReadInputTokens,
+        });
+      }
     }
   }
 
   return rows.sort((left, right) => left.timestamp.localeCompare(right.timestamp));
 }
 
-/** 展开 daily.csv：同人同天取 winner bundle 的累加值，usage 从该 bundle 当天事件重算。 */
+/**
+ * 展开 daily.csv：同人同天的不同机器数据直接叠加（计数字段相加），usage 从所有机器该天事件合并后重算。
+ * 同机器重复导出由 selectDailyRepresentatives 在分组阶段去重，不会翻倍。
+ */
 export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): AggregatedDailyRow[] {
-  const winners = selectDailyWinners(bundles);
+  const repsMap = selectDailyRepresentatives(bundles);
   const curves = buildPersonSevenDayCurve(bundles);
   const rows: AggregatedDailyRow[] = [];
 
-  for (const winner of winners.values()) {
-    const day = winner.day;
-    const usage = recomputeUsage(bundleEventsByDate(winner.bundle).get(winner.date) ?? []);
-    // 累计指标走全样本合并曲线，不走 winner 的 recomputeUsage，避免漏掉非 winner 机器的样本。
-    const sevenDayCumulativeUsagePct = computeCumulativeSevenDay(sliceCurveByDate(curves.get(winner.personKey) ?? [], winner.date));
+  for (const reps of repsMap.values()) {
+    const { personKey, date } = reps[0];
+
+    // 不同机器的独立数据直接叠加
+    const userMessageCount = reps.reduce((sum, r) => sum + r.day.userMessageCount, 0);
+    const apiRequestCount = reps.reduce((sum, r) => sum + r.day.apiRequestCount, 0);
+    const inputTokens = reps.reduce((sum, r) => sum + r.day.inputTokens, 0);
+    const outputTokens = reps.reduce((sum, r) => sum + r.day.outputTokens, 0);
+    const cacheReadInputTokens = reps.reduce((sum, r) => sum + r.day.cacheReadInputTokens, 0);
+    const sampleCount = reps.reduce((sum, r) => sum + r.day.sampleCount, 0);
+    const uniqueSessions = reps.reduce((sum, r) => sum + r.day.uniqueSessions, 0);
+    const uniqueWorkspaces = reps.reduce((sum, r) => sum + r.day.uniqueWorkspaces, 0);
+
+    // usage 从所有机器该天事件合并后重算；rawEvents 缺失时用各代表 daySummary 回退
+    const allEvents = reps.flatMap((r) => bundleEventsByDate(r.bundle).get(date) ?? []);
+    const usage = recomputeUsage(allEvents);
+    const fiveHourPeakFallback = maxOrNull(reps.map((r) => r.day.fiveHourPeakUsagePct));
+    const sevenDayPeakFallback = maxOrNull(reps.map((r) => r.day.sevenDayPeakUsagePct));
+    const fiveHourLatestFallback = reps.find((r) => r.day.fiveHourLatestUsagePct !== null)?.day.fiveHourLatestUsagePct ?? null;
+    const sevenDayLatestFallback = reps.find((r) => r.day.sevenDayLatestUsagePct !== null)?.day.sevenDayLatestUsagePct ?? null;
+
+    // 累计指标走全样本合并曲线，不走单机的 recomputeUsage，避免漏掉另一台机器的样本。
+    const sevenDayCumulativeUsagePct = computeCumulativeSevenDay(sliceCurveByDate(curves.get(personKey) ?? [], date));
     rows.push({
-      personKey: winner.personKey,
-      date: day.date,
-      userMessageCount: day.userMessageCount,
-      apiRequestCount: day.apiRequestCount,
-      inputTokens: day.inputTokens,
-      outputTokens: day.outputTokens,
-      cacheReadInputTokens: day.cacheReadInputTokens,
-      sampleCount: day.sampleCount,
-      fiveHourPeakUsagePct: usage.fiveHourPeakUsagePct ?? day.fiveHourPeakUsagePct,
-      fiveHourLatestUsagePct: usage.fiveHourLatestUsagePct ?? day.fiveHourLatestUsagePct,
-      sevenDayPeakUsagePct: usage.sevenDayPeakUsagePct ?? day.sevenDayPeakUsagePct,
-      sevenDayLatestUsagePct: usage.sevenDayLatestUsagePct ?? day.sevenDayLatestUsagePct,
+      personKey,
+      date,
+      userMessageCount,
+      apiRequestCount,
+      inputTokens,
+      outputTokens,
+      cacheReadInputTokens,
+      sampleCount,
+      fiveHourPeakUsagePct: usage.fiveHourPeakUsagePct ?? fiveHourPeakFallback,
+      fiveHourLatestUsagePct: usage.fiveHourLatestUsagePct ?? fiveHourLatestFallback,
+      sevenDayPeakUsagePct: usage.sevenDayPeakUsagePct ?? sevenDayPeakFallback,
+      sevenDayLatestUsagePct: usage.sevenDayLatestUsagePct ?? sevenDayLatestFallback,
       sevenDayCumulativeUsagePct,
-      uniqueSessions: day.uniqueSessions,
-      uniqueWorkspaces: day.uniqueWorkspaces,
+      uniqueSessions,
+      uniqueWorkspaces,
     });
   }
 
@@ -472,47 +575,48 @@ interface WeeklyAccumulator {
 }
 
 /**
- * 展开 weekly.csv：一个人同一周有多份 bundle（多台电脑各导出）时，不取单独一份的整周汇总，
- * 而是复用按天去重后的 daily winner（每天选有数据的那份），按 (person, 周) 把每天的 token / 计数累加上卷，
- * usage 从该周所有 winner 天的事件重算（peak 取 max、latest 取时间戳最新），缺失时回退到 daySummary 自带值。
+ * 展开 weekly.csv：不同机器的同人同天数据已在 selectDailyRepresentatives 层按 sessionId 去重分组，
+ * 这里直接按 (person, 周) 把所有代表的 token / 计数累加上卷，usage 从该周所有代表事件重算。
  */
 export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): AggregatedWeeklyRow[] {
-  const dailyWinners = selectDailyWinners(bundles);
+  const repsMap = selectDailyRepresentatives(bundles);
   const curves = buildPersonSevenDayCurve(bundles);
   const groups = new Map<string, WeeklyAccumulator>();
 
-  for (const winner of dailyWinners.values()) {
-    const week = weekKey(new Date(winner.bundle.range.start));
-    const key = `${winner.personKey}|${week}`;
-    let acc = groups.get(key);
-    if (!acc) {
-      acc = {
-        personKey: winner.personKey,
-        week,
-        userMessageCount: 0,
-        apiRequestCount: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadInputTokens: 0,
-        sampleCount: 0,
-        uniqueSessions: 0,
-        uniqueWorkspaces: 0,
-        days: [],
-        events: [],
-      };
-      groups.set(key, acc);
+  for (const reps of repsMap.values()) {
+    for (const rep of reps) {
+      const week = weekKey(new Date(rep.bundle.range.start));
+      const key = `${rep.personKey}|${week}`;
+      let acc = groups.get(key);
+      if (!acc) {
+        acc = {
+          personKey: rep.personKey,
+          week,
+          userMessageCount: 0,
+          apiRequestCount: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          sampleCount: 0,
+          uniqueSessions: 0,
+          uniqueWorkspaces: 0,
+          days: [],
+          events: [],
+        };
+        groups.set(key, acc);
+      }
+      const day = rep.day;
+      acc.userMessageCount += day.userMessageCount;
+      acc.apiRequestCount += day.apiRequestCount;
+      acc.inputTokens += day.inputTokens;
+      acc.outputTokens += day.outputTokens;
+      acc.cacheReadInputTokens += day.cacheReadInputTokens;
+      acc.sampleCount += day.sampleCount;
+      acc.uniqueSessions += day.uniqueSessions;
+      acc.uniqueWorkspaces += day.uniqueWorkspaces;
+      acc.days.push(day);
+      acc.events.push(...(bundleEventsByDate(rep.bundle).get(rep.date) ?? []));
     }
-    const day = winner.day;
-    acc.userMessageCount += day.userMessageCount;
-    acc.apiRequestCount += day.apiRequestCount;
-    acc.inputTokens += day.inputTokens;
-    acc.outputTokens += day.outputTokens;
-    acc.cacheReadInputTokens += day.cacheReadInputTokens;
-    acc.sampleCount += day.sampleCount;
-    acc.uniqueSessions += day.uniqueSessions;
-    acc.uniqueWorkspaces += day.uniqueWorkspaces;
-    acc.days.push(day);
-    acc.events.push(...(bundleEventsByDate(winner.bundle).get(winner.date) ?? []));
   }
 
   const rows: AggregatedWeeklyRow[] = [];

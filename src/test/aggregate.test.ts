@@ -242,7 +242,11 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
 
 /**
  * 构造同一周、可调 generatedAt / 当天指标的单人 bundle，
- * 用于验证「同一个人多台电脑导出」时的合并去重。
+ * 用于验证「同一个人多台电脑导出」时的合并叠加 / 同机去重。
+ *
+ * sessionId 控制机器识别逻辑：
+ * - 同机多次导出：两份 bundle 共享同一 sessionId（模拟同一 session 在两次导出里都出现）→ 去重取最优
+ * - 不同机器：两份 bundle 使用不同的 sessionId → 叠加
  */
 function buildBundleForMerge(options: {
   personKey: string;
@@ -252,8 +256,9 @@ function buildBundleForMerge(options: {
   userMessageCount: number;
   inputTokens: number;
   fiveHour: number;
+  sessionId?: string;
 }) {
-  const { personKey, generatedAt, date, eventTimestamp, userMessageCount, inputTokens, fiveHour } = options;
+  const { personKey, generatedAt, date, eventTimestamp, userMessageCount, inputTokens, fiveHour, sessionId } = options;
   return {
     schemaVersion: 6,
     generatedAt,
@@ -267,7 +272,7 @@ function buildBundleForMerge(options: {
         gitUserEmail: `${personKey}@example.com`,
         gitUserAccount: personKey,
         rawPayload: {
-          session_id: `${personKey}-${generatedAt}`,
+          session_id: sessionId ?? `${personKey}-${generatedAt}`,
           model: { display_name: "Opus" },
           workspace: { current_dir: `/repo/${personKey}` },
           context_window: { used_percentage: 20, used_tokens: 100, max_tokens: 1000 },
@@ -312,19 +317,20 @@ function buildBundleForMerge(options: {
   };
 }
 
-test("aggregate merges same person same day across machines by keeping the latest export", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-merge-"));
+test("aggregate same-machine repeated export: deduplicates by shared sessionId, keeps best", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-dedup-"));
   try {
-    // 同一个人 erin、同一天 2026-05-26，在两台电脑各导出一次：
-    // 旧导出（machine-a）与新导出（machine-b）。预期合并后同天只保留最新那份，不相加。
+    // 同一个人 erin、同一台机器、同一天导出两次（上午 2 条 / 下午 9 条）。
+    // 两份 bundle 共享同一个 sessionId（同一机器的同一 session 在两次导出里都存在），
+    // 视为同机器重复导出 → 取最优（msgs 多的 b，9 条），不相加成 11 条。
     await fs.writeFile(
       path.join(root, "erin_a.json"),
-      JSON.stringify(buildBundleForMerge({ personKey: "erin", generatedAt: "2026-05-27T08:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T01:00:00.000Z", userMessageCount: 2, inputTokens: 300, fiveHour: 10 })),
+      JSON.stringify(buildBundleForMerge({ personKey: "erin", generatedAt: "2026-05-27T08:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T01:00:00.000Z", userMessageCount: 2, inputTokens: 300, fiveHour: 10, sessionId: "erin-machine-a" })),
       "utf8",
     );
     await fs.writeFile(
       path.join(root, "erin_b.json"),
-      JSON.stringify(buildBundleForMerge({ personKey: "erin", generatedAt: "2026-05-27T20:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T09:00:00.000Z", userMessageCount: 9, inputTokens: 999, fiveHour: 42 })),
+      JSON.stringify(buildBundleForMerge({ personKey: "erin", generatedAt: "2026-05-27T20:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T09:00:00.000Z", userMessageCount: 9, inputTokens: 999, fiveHour: 42, sessionId: "erin-machine-a" })),
       "utf8",
     );
 
@@ -333,22 +339,54 @@ test("aggregate merges same person same day across machines by keeping the lates
     const dailyRows = buildAggregatedDailyRows(bundles);
     const weeklyRows = buildAggregatedWeeklyRows(bundles);
 
-    // 同人同天 / 同周不再重复成两行。
+    // 同机同天合并为一行，不重复。
     assert.equal(dailyRows.length, 1);
     assert.equal(weeklyRows.length, 1);
     assert.equal(detailRows.length, 1);
 
-    // 取 generatedAt 最新（erin_b）那份的累加值，而不是相加。
+    // 取消息数更多（erin_b，9 条）那份，不相加成 11。
     assert.equal(dailyRows[0].userMessageCount, 9);
     assert.equal(dailyRows[0].inputTokens, 999);
-    // usage 从 winner 的 rawEvents 重算（5h=42），不是旧那份的 10。
+    // usage 从代表的 rawEvents 重算（5h=42）。
     assert.equal(dailyRows[0].fiveHourPeakUsagePct, 42);
     assert.equal(dailyRows[0].fiveHourLatestUsagePct, 42);
     assert.equal(weeklyRows[0].userMessageCount, 9);
     assert.equal(weeklyRows[0].fiveHourPeakUsagePct, 42);
-    // detail 只来自 winner 那一条事件。
+    // detail 只来自代表那一条事件。
     assert.equal(detailRows[0].timestamp, "2026-05-26T09:00:00.000Z");
     assert.equal(detailRows[0].inputTokens, 999);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("aggregate same day different machines: stacks up independently", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-stack-"));
+  try {
+    // 同一个人同一天，tj 机器（msgs=111，sessionId 独立）和 tj2 机器（msgs=3，sessionId 独立）。
+    // sessionId 集合不相交 → 视为不同机器 → 叠加 → msgs=114。
+    await fs.writeFile(
+      path.join(root, "user_tj.json"),
+      JSON.stringify(buildBundleForMerge({ personKey: "user", generatedAt: "2026-05-27T15:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T10:00:00.000Z", userMessageCount: 111, inputTokens: 5000, fiveHour: 60, sessionId: "user-session-tj" })),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(root, "user_tj2.json"),
+      JSON.stringify(buildBundleForMerge({ personKey: "user", generatedAt: "2026-05-27T17:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T16:00:00.000Z", userMessageCount: 3, inputTokens: 100, fiveHour: 20, sessionId: "user-session-tj2" })),
+      "utf8",
+    );
+
+    const bundles = await loadWeeklyExportBundles(root);
+    const dailyRows = buildAggregatedDailyRows(bundles);
+    const weeklyRows = buildAggregatedWeeklyRows(bundles);
+
+    assert.equal(dailyRows.length, 1);
+    assert.equal(weeklyRows.length, 1);
+    // 叠加：111+3=114，5000+100=5100，usage peak = max(60,20)=60。
+    assert.equal(dailyRows[0].userMessageCount, 114);
+    assert.equal(dailyRows[0].inputTokens, 5100);
+    assert.equal(dailyRows[0].fiveHourPeakUsagePct, 60);
+    assert.equal(weeklyRows[0].userMessageCount, 114);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
