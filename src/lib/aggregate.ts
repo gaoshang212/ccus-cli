@@ -106,20 +106,30 @@ async function readBundleFileContent(filePath: string): Promise<string> {
 /** 读取目录里的 export bundle json 文件。 */
 export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{ filePath: string; bundle: WeeklyExportBundle }>> {
   const files = await collectBundleJsonFiles(inputDir);
-  const bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }> = [];
   const invalidFiles: string[] = [];
 
-  for (const filePath of files) {
-    try {
-      const content = await readBundleFileContent(filePath);
-      const parsed = JSON.parse(content) as unknown;
-      if (isWeeklyExportBundle(parsed)) {
-        bundles.push({ filePath, bundle: parsed });
-        continue;
+  const results = await Promise.all(
+    files.map(async (filePath) => {
+      try {
+        const content = await readBundleFileContent(filePath);
+        const parsed = JSON.parse(content) as unknown;
+        if (isWeeklyExportBundle(parsed)) {
+          return { filePath, bundle: parsed as WeeklyExportBundle };
+        }
+        return { filePath, bundle: null };
+      } catch {
+        return null;
       }
-      invalidFiles.push(filePath);
-    } catch {
-      continue;
+    }),
+  );
+
+  const bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }> = [];
+  for (const result of results) {
+    if (result === null) continue;
+    if (result.bundle === null) {
+      invalidFiles.push(result.filePath);
+    } else {
+      bundles.push({ filePath: result.filePath, bundle: result.bundle });
     }
   }
 

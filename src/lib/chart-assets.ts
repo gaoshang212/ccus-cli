@@ -373,8 +373,13 @@ export function uplotBodyScripts(): string {
             ticks: { stroke: THEME.grid, width: 1 },
           };
           if (spec.xType === "category") {
+            xAxis.splits = function () {
+              var n = spec.xLabels ? spec.xLabels.length : 0;
+              return Array.from({ length: n }, function (_, i) { return i; });
+            };
             xAxis.values = function (u, splits) {
               return splits.map(function (v) {
+                if (Math.abs(v - Math.round(v)) > 0.01) return null;
                 var i = Math.round(v);
                 return spec.xLabels && spec.xLabels[i] != null ? spec.xLabels[i] : "";
               });

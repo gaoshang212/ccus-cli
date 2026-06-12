@@ -495,7 +495,13 @@ async function handleAggregateServe(options: CliOptions): Promise<void> {
     throw new Error(`Invalid port: ${portOption ?? ""}`);
   }
 
-  const server = http.createServer(async (_request, response) => {
+  const server = http.createServer(async (request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    if (url.pathname !== "/") {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
     try {
       const html = await renderAggregateDashboardHtml(resolvedInputDir);
       response.writeHead(200, {

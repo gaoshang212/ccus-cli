@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.21] - 2026-06-12
+
+### 变更
+- `aggregate serve` 非根路径请求（如 `favicon.ico`）直接返回 404，不再触发完整计算。
+- `loadWeeklyExportBundles` 改为并发读取文件（`Promise.all`），多文件读盘与解压同时进行。
+
+### 修复
+- 修复 uPlot category 轴刻度在插值点上显示多余标签的问题。
+
 ## [0.1.20] - 2026-06-12
 
 ### 新增
