@@ -1,4 +1,5 @@
 import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow } from "../types";
+import { ChartSeriesSpec, ChartSpec, renderUplotChart, uplotBodyScripts, uplotHeadAssets } from "./chart-assets";
 import { roundNumber } from "./time";
 
 /** 把多人 aggregate 行按 personKey 汇总成的一个人的总账。 */
@@ -60,6 +61,40 @@ function escapeHtml(value: string): string {
 function maxOrNull(values: Array<number | null>): number | null {
   const numbers = values.filter((value): value is number => value !== null);
   return numbers.length > 0 ? Math.max(...numbers) : null;
+}
+
+/**
+ * 把多条不规则时间戳的 series 并集对齐到一个统一 x 轴。
+ *
+ * 多人 5h/7d 详细曲线各人按真实采样时间戳记录、彼此不对齐，而 uPlot 要求所有 series
+ * 共用同一个 x 数组。这里取所有 series 时间戳的并集升序作统一 x，每条 series 在自己
+ * 没有采样的时间点填 `null`（uPlot 以 gap 呈现 / spanGaps 连接），保证读数对齐而不串位。
+ */
+export function alignTimeSeries(
+  seriesList: Array<Array<{ t: number; v: number }>>,
+): { xs: number[]; columns: Array<Array<number | null>> } {
+  const xsSet = new Set<number>();
+  for (const series of seriesList) {
+    for (const point of series) {
+      xsSet.add(point.t);
+    }
+  }
+  const xs = [...xsSet].sort((left, right) => left - right);
+  const indexOf = new Map<number, number>();
+  xs.forEach((t, index) => indexOf.set(t, index));
+
+  const columns = seriesList.map((series) => {
+    const column: Array<number | null> = new Array(xs.length).fill(null);
+    for (const point of series) {
+      const index = indexOf.get(point.t);
+      if (index !== undefined) {
+        column[index] = point.v;
+      }
+    }
+    return column;
+  });
+
+  return { xs, columns };
 }
 
 /**
@@ -195,61 +230,30 @@ function renderDailyUserRequestChart(people: AggregatePersonSummary[], dailyInde
     `;
   }
 
-  const width = 920;
-  const height = 320;
-  const paddingX = 56;
-  const paddingY = 32;
-  const innerWidth = width - paddingX * 2;
-  const innerHeight = height - paddingY * 2;
+  // x 复用共享 dateAxis：已对齐，无需并集。用 category x（索引 0..n-1 + 月-日标签），
+  // 每个人一条折线，缺失天沿用 0 计数。uPlot 原生 legend 全显示当前日各人值、点击 toggle 显隐。
+  const xs = dateAxis.map((_, index) => index);
+  const xLabels = dateAxis.map((date) => date.slice(5));
+  const seriesSpecs: ChartSeriesSpec[] = [];
+  const columns: Array<Array<number | null>> = [];
+  const legendGroups: Array<{ label: string; color: string; seriesIdx: number[] }> = [];
+  people.forEach((person, index) => {
+    const color = CHART_PALETTE[index % CHART_PALETTE.length];
+    seriesSpecs.push({ label: person.personKey, stroke: color, width: 2 });
+    columns.push(dateAxis.map((date) => dailyIndex.get(`${person.personKey}|${date}`)?.userMessageCount ?? 0));
+    // 每人一条 series，图例一项即一个人名（小写）。
+    legendGroups.push({ label: person.personKey, color, seriesIdx: [index + 1] });
+  });
 
-  const seriesData = people.map((person) => ({
-    person,
-    values: dateAxis.map((date) => dailyIndex.get(`${person.personKey}|${date}`)?.userMessageCount ?? 0),
-  }));
-  const maxValue = Math.max(1, ...seriesData.flatMap((series) => series.values));
-  const palette = CHART_PALETTE;
-
-  const xFor = (index: number): number => paddingX + (index / Math.max(dateAxis.length - 1, 1)) * innerWidth;
-  const yFor = (value: number): number => paddingY + (1 - value / maxValue) * innerHeight;
-
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((fraction) => {
-    const tickValue = Math.round(maxValue * fraction);
-    const y = paddingY + (1 - fraction) * innerHeight;
-    return `<g><line x1="${paddingX}" x2="${width - paddingX}" y1="${y}" y2="${y}" class="chart-grid" /><text x="8" y="${y + 4}" class="chart-axis">${formatNumber(tickValue)}</text></g>`;
-  }).join("");
-
-  const stride = Math.max(1, Math.floor(dateAxis.length / 7));
-  const xLabels = dateAxis
-    .map((date, index) => ({ date, index }))
-    .filter(({ index }) => index === dateAxis.length - 1 || index % stride === 0)
-    .map(({ date, index }) => {
-      const x = xFor(index);
-      return `<g><line x1="${x}" x2="${x}" y1="${height - paddingY}" y2="${height - paddingY + 6}" class="chart-axis-line" /><text x="${x}" y="${height - 4}" text-anchor="middle" class="chart-axis">${escapeHtml(date.slice(5))}</text></g>`;
-    })
-    .join("");
-
-  const seriesPaths = seriesData
-    .map((series, seriesIndex) => {
-      const color = palette[seriesIndex % palette.length];
-      const path = series.values
-        .map((value, index) => `${index === 0 ? "M" : "L"}${xFor(index).toFixed(2)} ${yFor(value).toFixed(2)}`)
-        .join(" ");
-      const points = series.values
-        .map(
-          (value, index) =>
-            `<circle cx="${xFor(index).toFixed(2)}" cy="${yFor(value).toFixed(2)}" r="3" fill="${color}"><title>${escapeHtml(series.person.personKey)} · ${escapeHtml(dateAxis[index])} · ${formatNumber(value)} 用户请求</title></circle>`,
-        )
-        .join("");
-      return `<g data-person="${escapeHtml(series.person.personKey)}"><path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />${points}</g>`;
-    })
-    .join("");
-
-  const legend = seriesData
-    .map((series, seriesIndex) => {
-      const color = palette[seriesIndex % palette.length];
-      return `<span class="legend-chip legend-toggle" data-person="${escapeHtml(series.person.personKey)}"><span class="legend-dot" style="background:${color}"></span>${escapeHtml(series.person.personKey)}</span>`;
-    })
-    .join("");
+  const spec: ChartSpec = {
+    height: 320,
+    xType: "category",
+    xLabels,
+    yMin0: true,
+    series: seriesSpecs,
+    legendGroups,
+  };
+  const chart = renderUplotChart("chart-daily-requests", spec, [xs, ...columns]);
 
   return `
     <section class="panel chart-panel">
@@ -258,14 +262,9 @@ function renderDailyUserRequestChart(people: AggregatePersonSummary[], dailyInde
           <p class="eyebrow">Daily User Requests</p>
           <h2>每日用户请求数对比</h2>
         </div>
-        <p class="muted">基于每人 daily 汇总中的 userMessageCount（已剔除 tool_result 工具回填；sidechain 子 agent 提示保留）。点击图例人名可只高亮该人曲线。</p>
+        <p class="muted">基于每人 daily 汇总中的 userMessageCount（已剔除 tool_result 工具回填；sidechain 子 agent 提示保留）。悬停任意日期可在跟随 tooltip 看到各人请求数，点击图例人名可切换该人曲线显隐。</p>
       </div>
-      <div class="legend">${legend}</div>
-      <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="每日用户请求数对比">
-        ${ticks}
-        ${xLabels}
-        ${seriesPaths}
-      </svg>
+      ${chart}
     </section>
   `;
 }
@@ -344,43 +343,57 @@ function renderSevenDayCumulativeChart(people: AggregatePersonSummary[]): string
   `;
 }
 
-/** 把时间戳格式化成图表 X 轴用的本地「MM-DD HH:mm」短标签。 */
-function formatTickTime(t: number): string {
-  const d = new Date(t);
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mi = String(d.getMinutes()).padStart(2, "0");
-  return `${mm}-${dd} ${hh}:${mi}`;
-}
-
 /**
- * 用事件级 detail 行画出 5h 额度与 7d 周额度使用率的详细曲线。
+ * 用事件级 detail 行画出 5h 额度与 7d 周额度使用率的详细曲线（uPlot 渲染）。
  *
  * 与按天聚合的图不同，这里直接用每条 statusline 采样的真实时间戳，粒度最细，
  * 能看出每个人 5 小时额度在一天里的爬升与重置节奏，同时叠加 7 天周额度的走势。
- * X 轴是连续时间，Y 轴是百分比；同一个人 5h 用实线、7d 用虚线，共用颜色和 Y 轴。
+ * 各人时间戳不规则、彼此不对齐，先用 alignTimeSeries 取并集成统一 x 轴、缺失填 null；
+ * 同一个人 5h 用 CHART_PALETTE 实线、7d 用 SEVEN_DAY_PALETTE 对比色虚线，共用 Y 轴。
+ * 悬停由跟随 tooltip 显示当前位置各 series 的值（2D 吸附，尖峰按高度命中），点击静态图例 toggle 显隐。
  */
 function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: AggregatedEventRow[]): string {
-  const series = people
+  const built = people
     .map((person, index) => {
       const personRows = detailRows
         .filter((row) => row.personKey === person.personKey)
         .map((row) => ({ t: new Date(row.timestamp).getTime(), five: row.usagePct, seven: row.sevenDayUsagePct }))
         .filter((point) => Number.isFinite(point.t))
         .sort((left, right) => left.t - right.t);
+      // uPlot 时间轴以秒为单位，这里把毫秒时间戳折算成秒。
       const fivePoints = personRows
         .filter((point) => point.five !== null)
-        .map((point) => ({ t: point.t, v: point.five as number }));
+        .map((point) => ({ t: Math.floor(point.t / 1000), v: point.five as number }));
       const sevenPoints = personRows
         .filter((point) => point.seven !== null)
-        .map((point) => ({ t: point.t, v: point.seven as number }));
+        .map((point) => ({ t: Math.floor(point.t / 1000), v: point.seven as number }));
       return { person, index, fivePoints, sevenPoints };
     })
     .filter((entry) => entry.fivePoints.length > 0 || entry.sevenPoints.length > 0);
 
-  const allPoints = series.flatMap((entry) => [...entry.fivePoints, ...entry.sevenPoints]);
-  if (allPoints.length === 0) {
+  // 把每个人的 5h / 7d 拆成独立 series，连同对应配色 spec 一起按顺序收集，再整体并集对齐。
+  // legendGroups 把同一个人的 5h + 7d series 索引归到一项，图例只显示一个人名、勾选联动两条线。
+  const seriesList: Array<Array<{ t: number; v: number }>> = [];
+  const seriesSpecs: ChartSeriesSpec[] = [];
+  const legendGroups: Array<{ label: string; color: string; seriesIdx: number[] }> = [];
+  for (const entry of built) {
+    const color = CHART_PALETTE[entry.index % CHART_PALETTE.length];
+    const sevenColor = SEVEN_DAY_PALETTE[entry.index % SEVEN_DAY_PALETTE.length];
+    const seriesIdx: number[] = [];
+    if (entry.fivePoints.length > 0) {
+      seriesList.push(entry.fivePoints);
+      seriesSpecs.push({ label: `${entry.person.personKey} · 5h`, stroke: color, width: 2 });
+      seriesIdx.push(seriesSpecs.length);
+    }
+    if (entry.sevenPoints.length > 0) {
+      seriesList.push(entry.sevenPoints);
+      seriesSpecs.push({ label: `${entry.person.personKey} · 7d`, stroke: sevenColor, dash: [5, 4], width: 2 });
+      seriesIdx.push(seriesSpecs.length);
+    }
+    legendGroups.push({ label: entry.person.personKey, color, seriesIdx });
+  }
+
+  if (seriesList.length === 0) {
     return `
       <section class="panel chart-panel">
         <div class="panel-header">
@@ -394,63 +407,16 @@ function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: 
     `;
   }
 
-  const width = 920;
-  const height = 320;
-  const paddingX = 56;
-  const paddingY = 32;
-  const innerWidth = width - paddingX * 2;
-  const innerHeight = height - paddingY * 2;
-
-  const minT = Math.min(...allPoints.map((point) => point.t));
-  const maxT = Math.max(...allPoints.map((point) => point.t));
-  const maxValue = Math.max(1, ...allPoints.map((point) => point.v));
-  const spanT = maxT - minT;
-
-  const xFor = (t: number): number => paddingX + (spanT === 0 ? 0.5 : (t - minT) / spanT) * innerWidth;
-  const yFor = (value: number): number => paddingY + (1 - value / maxValue) * innerHeight;
-
-  const ticks = [0, 0.25, 0.5, 0.75, 1]
-    .map((fraction) => {
-      const tickValue = maxValue * fraction;
-      const y = paddingY + (1 - fraction) * innerHeight;
-      return `<g><line x1="${paddingX}" x2="${width - paddingX}" y1="${y}" y2="${y}" class="chart-grid" /><text x="8" y="${y + 4}" class="chart-axis">${tickValue.toFixed(1)}%</text></g>`;
-    })
-    .join("");
-
-  const labelCount = spanT === 0 ? 1 : 5;
-  const xLabels = Array.from({ length: labelCount + 1 }, (_, i) => minT + (spanT * i) / labelCount)
-    .map((t) => {
-      const x = xFor(t);
-      return `<g><line x1="${x}" x2="${x}" y1="${height - paddingY}" y2="${height - paddingY + 6}" class="chart-axis-line" /><text x="${x}" y="${height - 4}" text-anchor="middle" class="chart-axis">${escapeHtml(formatTickTime(t))}</text></g>`;
-    })
-    .join("");
-
-  const pathFor = (points: Array<{ t: number; v: number }>): string =>
-    points.map((point, pointIndex) => `${pointIndex === 0 ? "M" : "L"}${xFor(point.t).toFixed(2)} ${yFor(point.v).toFixed(2)}`).join(" ");
-
-  const seriesPaths = series
-    .map((entry) => {
-      const color = CHART_PALETTE[entry.index % CHART_PALETTE.length];
-      const sevenColor = SEVEN_DAY_PALETTE[entry.index % SEVEN_DAY_PALETTE.length];
-      const fivePath =
-        entry.fivePoints.length > 0
-          ? `<path d="${pathFor(entry.fivePoints)}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><title>${escapeHtml(entry.person.personKey)} · 5h</title></path>`
-          : "";
-      const sevenPath =
-        entry.sevenPoints.length > 0
-          ? `<path d="${pathFor(entry.sevenPoints)}" fill="none" stroke="${sevenColor}" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round" stroke-linejoin="round"><title>${escapeHtml(entry.person.personKey)} · 7d</title></path>`
-          : "";
-      return `<g data-person="${escapeHtml(entry.person.personKey)}">${fivePath}${sevenPath}</g>`;
-    })
-    .join("");
-
-  const legend = series
-    .map((entry) => {
-      const color = CHART_PALETTE[entry.index % CHART_PALETTE.length];
-      const sevenColor = SEVEN_DAY_PALETTE[entry.index % SEVEN_DAY_PALETTE.length];
-      return `<span class="legend-chip legend-toggle" data-person="${escapeHtml(entry.person.personKey)}"><span class="legend-dot" style="background:${color}"></span><span class="legend-dot" style="background:${sevenColor}"></span>${escapeHtml(entry.person.personKey)}</span>`;
-    })
-    .join("");
+  const { xs, columns } = alignTimeSeries(seriesList);
+  const spec: ChartSpec = {
+    height: 320,
+    xType: "time",
+    yUnit: "%",
+    yMin0: true,
+    series: seriesSpecs,
+    legendGroups,
+  };
+  const chart = renderUplotChart("chart-usage-detail", spec, [xs, ...columns]);
 
   return `
     <section class="panel chart-panel">
@@ -459,18 +425,9 @@ function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: 
           <p class="eyebrow">Usage Detail</p>
           <h2>5h / 7d 使用率详细曲线</h2>
         </div>
-        <p class="muted">每条 statusline 采样的 5 小时额度（实线）与 7 天周额度（对比色虚线）使用率，按真实时间戳绘制、共用 Y 轴。点击图例人名可只高亮该人曲线。</p>
+        <p class="muted">每条 statusline 采样的 5 小时额度（实线）与 7 天周额度（对比色虚线）使用率，按真实时间戳绘制、共用 Y 轴。悬停任意位置可在跟随 tooltip 看到各人 5h/7d 当前值（尖峰把鼠标移到竖线顶端即可读到峰值），点击图例可切换显隐。</p>
       </div>
-      <div class="legend">
-        ${legend}
-        <span class="legend-chip"><span class="legend-line legend-line-solid"></span>5h 使用率（实线）</span>
-        <span class="legend-chip"><span class="legend-line legend-line-dashed"></span>7d 周使用量（对比色虚线）</span>
-      </div>
-      <svg viewBox="0 0 ${width} ${height}" class="chart" role="img" aria-label="5h / 7d 使用率详细曲线">
-        ${ticks}
-        ${xLabels}
-        ${seriesPaths}
-      </svg>
+      ${chart}
     </section>
   `;
 }
@@ -786,25 +743,6 @@ export function buildAggregateDashboardHtml(
       .chart-grid { stroke: var(--grid); stroke-width: 1; }
       .chart-axis { fill: var(--muted); font-size: 11px; }
       .chart-axis-line { stroke: var(--grid); stroke-width: 1; }
-      .legend {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px 18px;
-        padding: 14px 24px 0;
-        color: var(--muted);
-        font-size: 13px;
-      }
-      .legend-chip { display: inline-flex; align-items: center; gap: 8px; }
-      .legend-toggle { cursor: pointer; user-select: none; transition: opacity 0.15s ease; }
-      .legend-toggle:hover { color: var(--text); }
-      .legend-toggle.is-active { color: var(--text); font-weight: 600; }
-      .legend-toggle.is-dimmed { opacity: 0.4; }
-      .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
-      svg [data-person] { transition: opacity 0.15s ease; }
-      svg [data-person].is-dimmed { opacity: 0.1; }
-      svg [data-person].is-active { opacity: 1; }
-      .legend-line { display: inline-block; width: 22px; height: 0; border-top-width: 2px; border-top-style: solid; border-top-color: var(--muted); }
-      .legend-line-dashed { border-top-style: dashed; }
       .table-panel { margin-top: 22px; }
       .table-wrap { overflow: auto; padding: 16px 20px 22px; }
       table { width: 100%; border-collapse: collapse; min-width: 760px; }
@@ -838,6 +776,7 @@ export function buildAggregateDashboardHtml(
         .panel-header { flex-direction: column; align-items: start; }
       }
     </style>
+    ${uplotHeadAssets()}
   </head>
   <body>
     <main class="shell">
@@ -892,26 +831,7 @@ export function buildAggregateDashboardHtml(
       ${renderDailyMatrix(people, dailyIndex, dateAxis)}
       ${renderWeeklyTable(weeklyRows)}
     </main>
-    <script>
-      (function () {
-        // 点击图例里的人名：高亮该人在所有图表里的曲线，其余淡化；再次点击同名取消高亮。
-        var active = null;
-        function apply() {
-          document.querySelectorAll("[data-person]").forEach(function (el) {
-            el.classList.remove("is-active", "is-dimmed");
-            if (active === null) return;
-            el.classList.add(el.getAttribute("data-person") === active ? "is-active" : "is-dimmed");
-          });
-        }
-        document.querySelectorAll(".legend-toggle").forEach(function (chip) {
-          chip.addEventListener("click", function () {
-            var person = chip.getAttribute("data-person");
-            active = active === person ? null : person;
-            apply();
-          });
-        });
-      })();
-    </script>
+    ${uplotBodyScripts()}
   </body>
 </html>`;
 }

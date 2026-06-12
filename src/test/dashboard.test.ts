@@ -57,27 +57,37 @@ test("bucketizeEvents creates fixed 5-minute buckets", () => {
   assert.equal(buckets[1].avgSevenDayUsagePct, 48);
 });
 
-/** 只验证关键内容是否进入 HTML，避免测试过度绑定具体样式细节。 */
-test("buildDashboardHtml renders chart and recent events", () => {
+/**
+ * 使用率趋势图迁到 uPlot：断言从旧 SVG path/dot 改为「容器 + 内联数据 + series 配置」。
+ *
+ * 不再有 SVG `<path>` / dot title，改为校验 uPlot 容器 id、内联数据 script、以及
+ * spec 里的 5h/7d series 标签与固定 0–100% Y 轴。
+ */
+test("buildDashboardHtml renders the usage uPlot chart and recent events", () => {
   const html = buildDashboardHtml(events, "5h", new Date("2026-05-26T01:00:00.000Z"), new Date("2026-05-26T06:00:00.000Z"));
   assert.match(html, /Claude 使用率趋势/);
   assert.match(html, /最近 20 条采样/);
-  assert.match(html, /5h 24.0%/);
+  // uPlot 容器 + 内联数据 script
+  assert.match(html, /class="uplot-host" id="chart-usage"/);
+  assert.match(html, /class="ccus-chart" data-target="chart-usage"/);
+  // 不再有旧 SVG 折线 / 数据点 class
+  assert.doesNotMatch(html, /class="chart-line"/);
 });
 
-/** 跨多天窗口的 x 轴应按自然日打刻度（只显示月-日），更像周视图。 */
-test("buildDashboardHtml uses per-day x-axis ticks for multi-day windows", () => {
+/** 跨多天窗口仍用同一张 uPlot 时间轴图，x 轴格式由客户端按时间自适应。 */
+test("buildDashboardHtml uses a time x-axis uPlot chart for multi-day windows", () => {
   const html = buildDashboardHtml(events, "this-week", new Date("2026-05-25T00:00:00.000Z"), new Date("2026-05-31T00:00:00.000Z"));
-  assert.match(html, /class="chart-axis">05-25<\/text>/);
-  assert.match(html, /class="chart-axis">05-29<\/text>/);
+  assert.match(html, /class="uplot-host" id="chart-usage"/);
+  assert.match(html, /"xType":"time"/);
 });
 
-/** 5h 与 7d 两条曲线都应进入 HTML：图例、7d 线与 7d 数据点。 */
-test("buildDashboardHtml overlays the 7d usage line", () => {
+/** 5h 与 7d 两条曲线都应进入 uPlot spec：series 标签 + 7d 虚线 dash + 固定 0–100% Y 轴。 */
+test("buildDashboardHtml overlays the 7d usage series in the uPlot spec", () => {
   const html = buildDashboardHtml(events, "5h", new Date("2026-05-26T01:00:00.000Z"), new Date("2026-05-26T06:00:00.000Z"));
-  assert.match(html, /7 天使用率/);
-  assert.match(html, /chart-line-7d/);
-  assert.match(html, /7d 48.0%/);
+  assert.match(html, /"label":"5 小时使用率"/);
+  assert.match(html, /"label":"7 天使用率"/);
+  assert.match(html, /"dash":\[6,4\]/);
+  assert.match(html, /"yRange":\[0,100\]/);
 });
 
 /** 顶部统计卡应展示 7d 使用率与用户消息数合计，并移除 Sessions / Workspaces。 */
@@ -93,14 +103,19 @@ test("buildDashboardHtml shows 7d usage and total user messages stats", () => {
   assert.doesNotMatch(html, /Workspaces/);
 });
 
-/** 传入每日用户消息数时应渲染出对应柱状图面板与计数。 */
-test("buildDashboardHtml renders daily user messages panel when provided", () => {
+/** 传入每日用户消息数时应渲染出 uPlot 纵向柱状图面板：容器 + bars 配置 + 计数。 */
+test("buildDashboardHtml renders daily user messages uPlot bar chart when provided", () => {
   const html = buildDashboardHtml(events, "this-week", new Date("2026-05-26T00:00:00.000Z"), new Date("2026-05-26T06:00:00.000Z"), [
     { date: "2026-05-25", userMessageCount: 3 },
     { date: "2026-05-26", userMessageCount: 7 },
   ]);
   assert.match(html, /每日用户消息数/);
   assert.match(html, /共 10 条/);
+  // uPlot 纵向柱：容器 + bars spec
+  assert.match(html, /class="uplot-host" id="chart-daily-messages"/);
+  assert.match(html, /"bars":true/);
+  // category x 的日期标签内联进数据
+  assert.match(html, /"xLabels":\["05-25","05-26"\]/);
 });
 
 /** 不传每日用户消息数时不应出现该面板，保持向后兼容。 */
@@ -115,4 +130,42 @@ test("buildDashboardHtml returns a full html document", () => {
   assert.match(html, /<!doctype html>/i);
   assert.match(html, /<html lang="zh-CN">/);
   assert.match(html, /ccus dashboard/);
+});
+
+/** 离线自包含：uPlot 库与官方 CSS 必须内联进 HTML，不依赖任何 CDN。 */
+test("buildDashboardHtml inlines the uPlot library and CSS for offline use", () => {
+  const html = buildDashboardHtml(events, "5h", new Date("2026-05-26T01:00:00.000Z"), new Date("2026-05-26T06:00:00.000Z"));
+  // uPlot IIFE 库源码（banner + 全局定义）内联
+  assert.match(html, /uPlot \(v1\.6\.32\)/);
+  assert.match(html, /var uPlot=function/);
+  // uPlot 官方 CSS 内联
+  assert.match(html, /\.u-legend/);
+  // 不走 CDN：没有任何外链 script/style
+  assert.doesNotMatch(html, /<script[^>]+src=/);
+  assert.doesNotMatch(html, /<link[^>]+href=/);
+});
+
+/** 纵向柱柱顶数值标签由 bootstrap 的 draw-hook 插件绘制，HTML 应内联该插件。 */
+test("buildDashboardHtml inlines the bar value-label draw hook", () => {
+  const html = buildDashboardHtml(events, "this-week", new Date("2026-05-26T00:00:00.000Z"), new Date("2026-05-26T06:00:00.000Z"), [
+    { date: "2026-05-25", userMessageCount: 3 },
+    { date: "2026-05-26", userMessageCount: 7 },
+  ]);
+  assert.match(html, /barLabelHook/);
+});
+
+/** 读数走跟随 tooltip、原生 legend 关闭改自绘图例；内联 tooltip 与 2D / nearest-non-null 吸附。 */
+test("buildDashboardHtml moves readouts to a follow tooltip with 2D snapping and custom legend", () => {
+  const html = buildDashboardHtml(events, "5h", new Date("2026-05-26T01:00:00.000Z"), new Date("2026-05-26T06:00:00.000Z"));
+  // 关掉 uPlot 原生 legend，改自绘图例
+  assert.match(html, /legend: \{ show: false \}/);
+  assert.match(html, /buildLegend/);
+  assert.match(html, /"legendGroups":/);
+  // 跟随 tooltip 浮层 + 2D 吸附 + nearest-non-null 兜底
+  assert.match(html, /ccus-tooltip/);
+  assert.match(html, /nearestNonNull/);
+  assert.match(html, /dataIdx: nearestPointIdx/);
+  // 时间轴改 24 小时制（去掉 uPlot 默认 12h + am/pm）
+  assert.match(html, /function timeAxisVals/);
+  assert.match(html, /xAxis\.values = timeAxisVals/);
 });

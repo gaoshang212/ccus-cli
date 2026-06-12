@@ -147,8 +147,9 @@ ccus aggregate serve --input-dir ./team-exports
 
 - `5 小时使用量百分比` 是 **展示指标**，来自 Claude 自身字段 `rate_limits.five_hour.used_percentage`
 - 使用率趋势图会在同一张图上叠加两条线：实线为 5 小时使用率（`rate_limits.five_hour`），虚线为 7 天使用率（`rate_limits.seven_day`），两者各自独立按时间桶聚合
-- 页面新增 **每日用户消息数** 柱状图：按自然日统计的真实用户请求数，口径与导出契约的 `userMessageCount` 一致（来自 `~/.claude/projects/**/*.jsonl`），不是 statusline 采样数，也仅用于页面展示、不进任何导出/聚合契约
-- 跨多天的窗口（如 `this-week` / `last-week`）使用率曲线会自动改用小时桶聚合，避免一周生成上千个点，且 x 轴改为按自然日（月-日）打刻度
+- **折线与纵向柱状图均由 [uPlot](https://github.com/leeoniya/uPlot) 渲染**：鼠标在绘图区**任意位置**悬停即可通过十字线 + **跟随鼠标的 tooltip** 看到该处各条线的当前读数（不必精确落在采样点上；遇到几乎垂直的窄尖峰，把鼠标移到竖线顶端即可读到峰值）；纵向柱还会在每根柱顶标注数值。底部为**自绘图例**（实时读数集中在 tooltip 里）。uPlot 库与样式已**内联进生成的 HTML**，`dashboard build` 产物用 `file://` 离线打开也能完整渲染与交互，不依赖任何 CDN
+- 页面新增 **每日用户消息数** 纵向柱状图：按自然日统计的真实用户请求数，口径与导出契约的 `userMessageCount` 一致（来自 `~/.claude/projects/**/*.jsonl`），不是 statusline 采样数，也仅用于页面展示、不进任何导出/聚合契约
+- 跨多天的窗口（如 `this-week` / `last-week`）使用率曲线会自动改用小时桶聚合，避免一周生成上千个点；x 轴刻度由 uPlot 按时间跨度自适应（短窗口显示 `HH:mm` **24 小时制**、跨天的刻度再补一行日期），不用 am/pm
 - 顶部统计卡展示 `Latest 5h usage`、`Peak 5h usage`、`Latest 7d usage`（含峰值）、`用户消息数`（窗口内每日真实用户请求数合计）
 - `--range today / this-week / last-week / 24h` 是 **你要查看的采样历史时间窗口**（`last-week` 指上一个完整周一到周日）
 - statusline 日志本身主要保存 `rawPayload` 与外部补充字段；默认导出时会同时保留原始事件，并额外汇总 `~/.claude/projects/**/*.jsonl` 中的会话 usage
@@ -183,6 +184,9 @@ ccus aggregate serve --input-dir ./team-exports
   - 无有效样本写空（`null`），有样本但无净增长写 `0`；`detail.csv` 不含此列（单事件行不承载区间累计语义）
 - CSV 里所有以 token 计的列（context 与 in/out/cache）都以百万（M）为单位（原始值除以 1,000,000），列名统一带 `M` 后缀；`contextWindowPct` 仍是百分比
 - 想直接查看团队多人 dashboard，可以用 `ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]`：默认监听 `127.0.0.1` 上的随机端口，启动后会自动用系统默认浏览器打开，每次请求实时读取目录里的 bundle，不写入任何文件
+  - 多人「5h/7d 使用率详细曲线」与「每日用户请求数对比」两张折线同样由 uPlot 渲染，悬停任意位置即可在**跟随 tooltip** 里看到当前位置**各人**的读数。底部图例**一个人只显示一个名字**（小写），点击该名字会同时切换该人 5h + 7d 两条线的显隐。各人按真实时间戳采样、彼此不对齐的曲线会先做**时间戳并集对齐**（缺失点留空而非补 0）再绘制；悬停时每条线的读数与高亮点会**吸附到该人离光标最近的真实采样点**，横向重合的尖峰按鼠标高度做 2D 命中，所以任意位置都能读到每个人的值、峰值圆点也会亮
+  - 「周使用量累计对比」是**横向排行榜**，仍保持自绘 SVG（它是带标签的水平进度条排行，uPlot 无原生横向 bar，不纳入迁移）
+  - uPlot 库同样内联，离线可用
 
 ## 定时同步
 

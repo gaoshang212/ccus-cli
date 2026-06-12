@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildAggregateDashboardHtml, summarizeOverall, summarizePeople } from "../lib/aggregate-dashboard";
+import { alignTimeSeries, buildAggregateDashboardHtml, summarizeOverall, summarizePeople } from "../lib/aggregate-dashboard";
 import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow } from "../types";
 
 /** 两个人、两天的样本，足够覆盖排序、累计和峰值逻辑。 */
@@ -175,8 +175,6 @@ test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", ()
   assert.doesNotMatch(html, /周使用量峰值对比/);
   assert.match(html, /5h \/ 7d 使用率详细曲线/);
   assert.match(html, /按真实时间戳绘制/);
-  assert.match(html, /7d 周使用量/);
-  assert.match(html, /stroke-dasharray/);
   assert.match(html, /每日用户请求数对比/);
   assert.match(html, /按周聚合/);
   // 7d 累计指标在排行榜与周表的表头都出现，bob 的累计值 70.0% 被渲染。
@@ -185,11 +183,57 @@ test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", ()
   assert.match(html, />alice</);
   assert.match(html, />bob</);
   assert.match(html, /Total API requests/);
-  // 图例人名可点击高亮：曲线分组与图例 chip 都带 data-person，并注入点击交互脚本。
-  assert.match(html, /class="legend-chip legend-toggle" data-person="alice"/);
-  assert.match(html, /<g data-person="bob">/);
-  assert.match(html, /legend-toggle/);
-  assert.match(html, /addEventListener\("click"/);
+});
+
+/** 两张折线改用 uPlot：断言从 SVG path/title 改为容器 + 内联 series 配置（5h 实线 / 7d 虚线）。 */
+test("buildAggregateDashboardHtml renders the two line charts as uPlot", () => {
+  const html = buildAggregateDashboardHtml(detailRows, dailyRows, weeklyRows, new Date("2026-05-27T08:00:00.000Z"));
+  // 5h/7d 详细曲线：uPlot 容器 + 每人 5h/7d series 标签 + 7d 虚线 dash 配置
+  assert.match(html, /class="uplot-host" id="chart-usage-detail"/);
+  assert.match(html, /"label":"alice · 5h"/);
+  assert.match(html, /"label":"alice · 7d"/);
+  assert.match(html, /"dash":\[5,4\]/);
+  // 每日用户请求对比：uPlot 容器 + 按人 series 标签（category x）
+  assert.match(html, /class="uplot-host" id="chart-daily-requests"/);
+  assert.match(html, /"label":"bob"/);
+  assert.match(html, /"xType":"category"/);
+  // 不再有旧 SVG 折线手写图例与点击高亮脚本
+  assert.doesNotMatch(html, /legend-toggle/);
+  assert.doesNotMatch(html, /data-person=/);
+  assert.doesNotMatch(html, /stroke-dasharray/);
+});
+
+/** 多人折线读数走跟随 tooltip；原生 legend 关闭、改自绘「每人一项」图例，一项联动该人 5h+7d 两条 series。 */
+test("buildAggregateDashboardHtml moves multi-person readouts to a follow tooltip with per-person legend", () => {
+  const html = buildAggregateDashboardHtml(detailRows, dailyRows, weeklyRows, new Date("2026-05-27T08:00:00.000Z"));
+  assert.match(html, /legend: \{ show: false \}/);
+  assert.match(html, /ccus-tooltip/);
+  assert.match(html, /dataIdx: nearestPointIdx/);
+  assert.match(html, /buildLegend/);
+  // alice 在 5h/7d 详细曲线里有 5h + 7d 两条 series，图例分组把两条索引归到一个人名（小写 alice）下。
+  assert.match(html, /"label":"alice","color":"[^"]+","seriesIdx":\[\d+,\d+\]/);
+  // 人名不强制大写：CSS 不对图例项做 uppercase
+  assert.match(html, /\.ccus-legend-item \{[^}]*text-transform: none/);
+});
+
+/** 周累计横向排行榜仍自绘 SVG：保留 bar-fill / bar-track 与百分比标注（不迁 uPlot）。 */
+test("buildAggregateDashboardHtml keeps the cumulative ranking as self-drawn SVG", () => {
+  const html = buildAggregateDashboardHtml(detailRows, dailyRows, weeklyRows, new Date("2026-05-27T08:00:00.000Z"));
+  assert.match(html, /class="bar-fill"/);
+  assert.match(html, /class="bar-track"/);
+  // 横向排行榜是 SVG，bob 累计 70% 的条与标注仍在
+  assert.match(html, /aria-label="周使用量累计对比"/);
+});
+
+/** 离线自包含：uPlot 库与官方 CSS 内联进多人看板 HTML。 */
+test("buildAggregateDashboardHtml inlines the uPlot library and CSS for offline use", () => {
+  const html = buildAggregateDashboardHtml(detailRows, dailyRows, weeklyRows, new Date("2026-05-27T08:00:00.000Z"));
+  assert.match(html, /uPlot \(v1\.6\.32\)/);
+  assert.match(html, /var uPlot=function/);
+  assert.match(html, /\.u-legend/);
+  // 不走 CDN：没有任何外链 script/style
+  assert.doesNotMatch(html, /<script[^>]+src=/);
+  assert.doesNotMatch(html, /<link[^>]+href=/);
 });
 
 test("cumulative chart keeps a 100% full scale when no one exceeds 100%", () => {
@@ -237,4 +281,34 @@ test("buildAggregateDashboardHtml stays graceful with empty rows", () => {
   const html = buildAggregateDashboardHtml([], [], [], new Date("2026-05-27T08:00:00.000Z"));
   assert.match(html, /<!doctype html>/i);
   assert.match(html, /人数：0/);
+});
+
+/** 多人时间戳并集对齐：不同 series 的不规则时间戳合成统一 x 轴，缺失点填 null。 */
+test("alignTimeSeries unions irregular timestamps and fills gaps with null", () => {
+  const a = [
+    { t: 10, v: 1 },
+    { t: 30, v: 3 },
+  ];
+  const b = [
+    { t: 20, v: 2 },
+    { t: 30, v: 5 },
+  ];
+  const { xs, columns } = alignTimeSeries([a, b]);
+  assert.deepEqual(xs, [10, 20, 30]);
+  // a 在 t=20 没有采样 → null；b 在 t=10 没有采样 → null；t=30 两者都有。
+  assert.deepEqual(columns[0], [1, null, 3]);
+  assert.deepEqual(columns[1], [null, 2, 5]);
+});
+
+/** 端到端：两个人时间戳完全不同，5h/7d 详细曲线内联数据应是并集 x + 缺失填 null。 */
+test("multi-person 5h/7d uPlot data aligns different people's timestamps with null gaps", () => {
+  const rows: AggregatedEventRow[] = [
+    makeDetailRow("alice", "2026-05-27T01:00:00.000Z", 12),
+    makeDetailRow("bob", "2026-05-27T02:00:00.000Z", 40),
+  ];
+  const html = buildAggregateDashboardHtml(rows, dailyRows, weeklyRows, new Date("2026-05-27T08:00:00.000Z"));
+  assert.match(html, /class="uplot-host" id="chart-usage-detail"/);
+  // people 按消息数降序为 [bob, alice]；bob 5h 在 alice 的时间点为 null、alice 5h 在 bob 的时间点为 null。
+  assert.match(html, /\[null,40\]/);
+  assert.match(html, /\[12,null\]/);
 });
