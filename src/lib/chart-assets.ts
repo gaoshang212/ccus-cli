@@ -46,6 +46,8 @@ export interface ChartSeriesSpec {
   /** 虚线 dash 数组（如 [6, 4]）；省略为实线。 */
   dash?: number[];
   width?: number;
+  /** 该 series 绑定的 y scale key（如 "y2"）；省略走默认主轴 "y"。配合 {@link ChartSpec.y2} 使用。 */
+  scale?: string;
 }
 
 /** 一张 uPlot 图表的服务端描述。客户端 bootstrap 据此构造 uPlot opts。 */
@@ -61,6 +63,11 @@ export interface ChartSpec {
   yRange?: [number, number];
   /** 自适应但强制下限为 0（计数类图用）。 */
   yMin0?: boolean;
+  /**
+   * 可选的第二 Y 轴（绘制在右侧），给量纲与主轴差异大的 series 用（如累计 % 可远超 0–100）。
+   * series 通过 `scale` 指向这里的 `scale` key；`range` 固定范围 / `min0` 自适应下限 0，二者省略则纯自适应。
+   */
+  y2?: { scale: string; unit?: string; min0?: boolean; range?: [number, number] };
   /** 单系列纵向柱状图：用 uPlot.paths.bars 画柱并在柱顶标注数值。 */
   bars?: boolean;
   series: ChartSeriesSpec[];
@@ -360,6 +367,7 @@ export function uplotBodyScripts(): string {
             };
             if (s.fill) ser.fill = s.fill;
             if (s.dash) ser.dash = s.dash;
+            if (s.scale) ser.scale = s.scale;
             if (spec.bars) {
               ser.paths = uPlot.paths.bars({ size: [0.62, 48], align: 0 });
               ser.points = { show: false };
@@ -415,12 +423,30 @@ export function uplotBodyScripts(): string {
             };
           }
 
+          var axes = [xAxis, yAxis];
+          if (spec.y2) {
+            var y2unit = spec.y2.unit || "";
+            scales[spec.y2.scale] = spec.y2.range
+              ? { range: spec.y2.range }
+              : (spec.y2.min0
+                  ? { range: function (u, min, max) { var hi = max == null || max <= 0 ? 1 : max; return [0, hi]; } }
+                  : {});
+            axes.push({
+              scale: spec.y2.scale,
+              side: 1,
+              stroke: THEME.axis,
+              grid: { show: false },
+              ticks: { stroke: THEME.grid, width: 1 },
+              values: function (u, splits) { return splits.map(function (v) { return round1(v) + y2unit; }); },
+            });
+          }
+
           var opts = {
             width: el.clientWidth || 920,
             height: spec.height || 280,
             scales: scales,
             series: series,
-            axes: [xAxis, yAxis],
+            axes: axes,
             // 关掉 uPlot 原生底部 legend（每条 series 一行），改用 buildLegend 自绘「每人一项」图例。
             legend: { show: false },
             // dataIdx 2D 吸附：横向重合的尖峰按鼠标高度命中峰顶，稀疏区/缺失退回最近真实点。

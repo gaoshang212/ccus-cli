@@ -146,11 +146,11 @@ ccus aggregate serve --input-dir ./team-exports
 其中：
 
 - `5 小时使用量百分比` 是 **展示指标**，来自 Claude 自身字段 `rate_limits.five_hour.used_percentage`
-- 使用率趋势图会在同一张图上叠加两条线：实线为 5 小时使用率（`rate_limits.five_hour`），虚线为 7 天使用率（`rate_limits.seven_day`），两者各自独立按时间桶聚合
+- 使用率趋势图会在同一张图上叠加三条线：实线为 5 小时使用率（`rate_limits.five_hour`）、虚线为 7 天使用率（`rate_limits.seven_day`），两者各自独立按时间桶聚合、共用固定 0–100% 的左侧 Y 轴；紫色「7d 分区叠加累计」是把 7 天额度锯齿波还原成的累计真实使用量（口径同团队看板的 `sevenDayCumulativeUsagePct`），量纲可超 100%、单独走**右侧自适应 Y 轴**，按分段峰谷和单调非递减地累积上升，终点即顶部卡片的累计值
 - **折线与纵向柱状图均由 [uPlot](https://github.com/leeoniya/uPlot) 渲染**：鼠标在绘图区**任意位置**悬停即可通过十字线 + **跟随鼠标的 tooltip** 看到该处各条线的当前读数（不必精确落在采样点上；遇到几乎垂直的窄尖峰，把鼠标移到竖线顶端即可读到峰值）；纵向柱还会在每根柱顶标注数值。底部为**自绘图例**（实时读数集中在 tooltip 里）。uPlot 库与样式已**内联进生成的 HTML**，`dashboard build` 产物用 `file://` 离线打开也能完整渲染与交互，不依赖任何 CDN
 - 页面新增 **每日用户消息数** 纵向柱状图：按自然日统计的真实用户请求数，口径与导出契约的 `userMessageCount` 一致（来自 `~/.claude/projects/**/*.jsonl`），不是 statusline 采样数，也仅用于页面展示、不进任何导出/聚合契约
 - 跨多天的窗口（如 `this-week` / `last-week`）使用率曲线会自动改用小时桶聚合，避免一周生成上千个点；x 轴刻度由 uPlot 按时间跨度自适应（短窗口显示 `HH:mm` **24 小时制**、跨天的刻度再补一行日期），不用 am/pm
-- 顶部统计卡展示 `Latest 5h usage`、`Peak 5h usage`、`Latest 7d usage`（含峰值）、`用户消息数`（窗口内每日真实用户请求数合计）
+- 顶部统计卡展示 `Latest 5h usage`、`Peak 5h usage`、`7d 分区叠加累计`（主数值为 7 天额度分区叠加累计真实使用量，小字补充峰值与最新值）、`用户消息数`（窗口内每日真实用户请求数合计）
 - `--range today / this-week / last-week / 24h` 是 **你要查看的采样历史时间窗口**（`last-week` 指上一个完整周一到周日）
 - statusline 日志本身主要保存 `rawPayload` 与外部补充字段；默认导出时会同时保留原始事件，并额外汇总 `~/.claude/projects/**/*.jsonl` 中的会话 usage
 

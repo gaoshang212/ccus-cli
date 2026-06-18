@@ -45,6 +45,8 @@ test("summarizeEvents computes headline stats", () => {
   assert.equal(summary.fiveHourPeakUsagePct, 24);
   assert.equal(summary.sevenDayLatestUsagePct, 48);
   assert.equal(summary.sevenDayPeakUsagePct, 48);
+  // 7d 分区叠加累计：44 → 48 一个上升段，贡献 48 − 44 = 4。
+  assert.equal(summary.sevenDayCumulativeUsagePct, 4);
 });
 
 /** 校验 5 分钟固定桶聚合是否稳定，避免曲线错位；同时 5h 与 7d 各自独立聚合。 */
@@ -88,6 +90,10 @@ test("buildDashboardHtml overlays the 7d usage series in the uPlot spec", () => 
   assert.match(html, /"label":"7 天使用率"/);
   assert.match(html, /"dash":\[6,4\]/);
   assert.match(html, /"yRange":\[0,100\]/);
+  // 7d 分区叠加累计单独走右侧 y2 轴：spec 里有第三条 series 且 y2 scale 配置存在。
+  assert.match(html, /"label":"7d 分区叠加累计"/);
+  assert.match(html, /"y2":\{"scale":"y2"/);
+  assert.match(html, /"scale":"y2"/);
 });
 
 /** 顶部统计卡应展示 7d 使用率与用户消息数合计，并移除 Sessions / Workspaces。 */
@@ -96,7 +102,7 @@ test("buildDashboardHtml shows 7d usage and total user messages stats", () => {
     { date: "2026-05-25", userMessageCount: 4 },
     { date: "2026-05-26", userMessageCount: 6 },
   ]);
-  assert.match(html, /Latest 7d usage/);
+  assert.match(html, /7d 分区叠加累计/);
   assert.match(html, /用户消息数/);
   assert.match(html, /<p class="stat-value">10<\/p>/);
   assert.doesNotMatch(html, /Sessions/);

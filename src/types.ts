@@ -67,6 +67,11 @@ export interface DashboardBucket {
   minUsagePct: number | null;
   /** 同一时间桶内的 7 天额度使用率均值，来源 rate_limits.seven_day.used_percentage，与 5h 桶独立聚合。 */
   avgSevenDayUsagePct: number | null;
+  /**
+   * 截至本桶的 7 天额度累计真实使用量（分区叠加 / 分段峰谷和的逐桶快照），单调非递减；该桶无 7d 样本时为 null。
+   * 仅供个人看板趋势图叠加“累计曲线”展示，不进任何导出/聚合契约。
+   */
+  cumulativeSevenDayPct: number | null;
   sampleCount: number;
 }
 
@@ -76,6 +81,8 @@ export interface DashboardSummary {
   fiveHourPeakUsagePct: number | null;
   sevenDayLatestUsagePct: number | null;
   sevenDayPeakUsagePct: number | null;
+  /** 窗口内 7 天额度的分区叠加（分段峰谷和）累计真实使用量，口径与 aggregate 一致；无样本为 null。 */
+  sevenDayCumulativeUsagePct: number | null;
   sampleCount: number;
   uniqueSessions: number;
   uniqueWorkspaces: number;

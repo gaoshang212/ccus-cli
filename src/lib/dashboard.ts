@@ -1,4 +1,5 @@
 import { DashboardBucket, DashboardDailyMessagePoint, DashboardSummary, StatuslineEvent } from "../types";
+import { buildSevenDayCurveFromEvents, computeCumulativeSevenDay, computeCumulativeSevenDayCurve } from "./aggregate";
 import { ChartSpec, renderUplotChart, uplotBodyScripts, uplotHeadAssets } from "./chart-assets";
 import { formatLocalTimestamp, roundNumber } from "./time";
 
@@ -31,12 +32,15 @@ export function summarizeEvents(events: StatuslineEvent[]): DashboardSummary {
   const latestSevenDayUsagePct = [...events]
     .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
     .find((event) => event.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null;
+  // 7d 分区叠加累计：与 aggregate 同一套「去毛刺 + 分段峰谷和」，口径与团队看板一致。
+  const sevenDayCumulativeUsagePct = computeCumulativeSevenDay(buildSevenDayCurveFromEvents(events));
 
   return {
     fiveHourLatestUsagePct: latestUsagePct,
     fiveHourPeakUsagePct: usages.length > 0 ? roundNumber(Math.max(...usages), 1) : null,
     sevenDayLatestUsagePct: sevenDayUsages.length > 0 ? latestSevenDayUsagePct : null,
     sevenDayPeakUsagePct: sevenDayUsages.length > 0 ? roundNumber(Math.max(...sevenDayUsages), 1) : null,
+    sevenDayCumulativeUsagePct,
     sampleCount: events.length,
     uniqueSessions: new Set(events.map((event) => event.sessionId).filter(Boolean)).size,
     uniqueWorkspaces: new Set(events.map((event) => event.workspaceDir).filter(Boolean)).size,
@@ -75,12 +79,25 @@ export function bucketizeEvents(events: StatuslineEvent[], start: Date, end: Dat
     }
   }
 
+  // 7d 累计曲线（去毛刺 + 分段峰谷和的逐点版本）映射到时间桶：曲线已按时间升序，
+  // 同桶内后写覆盖前写，最终每个桶留下落在其区间内最后一个累计点的值（单调，等于桶内最大累计）。
+  const cumulativeByBucket = new Map<number, number>();
+  for (const point of computeCumulativeSevenDayCurve(buildSevenDayCurveFromEvents(events))) {
+    const ts = new Date(point.timestamp).getTime();
+    if (ts < start.getTime() || ts > end.getTime()) {
+      continue;
+    }
+    const bucketStart = start.getTime() + Math.floor((ts - start.getTime()) / bucketMs) * bucketMs;
+    cumulativeByBucket.set(bucketStart, point.cumulative);
+  }
+
   return [...buckets.entries()].map(([bucketStart, slot]) => ({
     bucketStart: new Date(bucketStart).toISOString(),
     avgUsagePct: slot.fiveHour.length > 0 ? roundNumber(average(slot.fiveHour), 1) : null,
     maxUsagePct: slot.fiveHour.length > 0 ? roundNumber(Math.max(...slot.fiveHour), 1) : null,
     minUsagePct: slot.fiveHour.length > 0 ? roundNumber(Math.min(...slot.fiveHour), 1) : null,
     avgSevenDayUsagePct: slot.sevenDay.length > 0 ? roundNumber(average(slot.sevenDay), 1) : null,
+    cumulativeSevenDayPct: cumulativeByBucket.has(bucketStart) ? (cumulativeByBucket.get(bucketStart) as number) : null,
     sampleCount: slot.fiveHour.length,
   }));
 }
@@ -94,8 +111,10 @@ export function bucketizeEvents(events: StatuslineEvent[], start: Date, end: Dat
  * 提供十字线 + legend 跟随显示两条线当前值。
  */
 function renderChart(buckets: DashboardBucket[]): string {
-  // 每条曲线只连有数据的桶：取「5h 或 7d 任一非空」的桶作为统一 x 轴，缺失填 null。
-  const valued = buckets.filter((bucket) => bucket.maxUsagePct !== null || bucket.avgSevenDayUsagePct !== null);
+  // 每条曲线只连有数据的桶：取「5h / 7d / 累计 任一非空」的桶作为统一 x 轴，缺失填 null。
+  const valued = buckets.filter(
+    (bucket) => bucket.maxUsagePct !== null || bucket.avgSevenDayUsagePct !== null || bucket.cumulativeSevenDayPct !== null,
+  );
 
   const noData = valued.length === 0
     ? `<div class="empty-state">当前时间窗口里还没有可绘制的 Claude 使用率样本。</div>`
@@ -104,22 +123,27 @@ function renderChart(buckets: DashboardBucket[]): string {
   const xs = valued.map((bucket) => Math.floor(new Date(bucket.bucketStart).getTime() / 1000));
   const fiveHour = valued.map((bucket) => bucket.maxUsagePct);
   const sevenDay = valued.map((bucket) => bucket.avgSevenDayUsagePct);
+  // 7d 分区叠加累计：量纲可远超 0–100%，单独走右侧 Y 轴（y2 自适应），避免压扁固定 0–100 的 5h/7d 主轴。
+  const cumulative = valued.map((bucket) => bucket.cumulativeSevenDayPct);
 
   const spec: ChartSpec = {
     height: 280,
     xType: "time",
     yUnit: "%",
     yRange: [0, 100],
+    y2: { scale: "y2", unit: "%", min0: true },
     series: [
       { label: "5 小时使用率", stroke: "#5eead4", fill: "rgba(94, 234, 212, 0.14)", width: 3 },
       { label: "7 天使用率", stroke: "#f59e0b", dash: [6, 4], width: 2 },
+      { label: "7d 分区叠加累计", stroke: "#a855f7", width: 2, scale: "y2" },
     ],
     legendGroups: [
       { label: "5 小时使用率", color: "#5eead4", seriesIdx: [1] },
       { label: "7 天使用率", color: "#f59e0b", seriesIdx: [2] },
+      { label: "7d 分区叠加累计", color: "#a855f7", seriesIdx: [3] },
     ],
   };
-  const chart = valued.length > 0 ? renderUplotChart("chart-usage", spec, [xs, fiveHour, sevenDay]) : "";
+  const chart = valued.length > 0 ? renderUplotChart("chart-usage", spec, [xs, fiveHour, sevenDay, cumulative]) : "";
 
   return `
     <section class="panel chart-panel">
@@ -128,7 +152,7 @@ function renderChart(buckets: DashboardBucket[]): string {
           <p class="eyebrow">Recent Trend</p>
           <h2>Claude 使用率趋势</h2>
         </div>
-        <p class="muted">按采样时间聚合，5h 来自 rate_limits.five_hour，7d 来自 rate_limits.seven_day</p>
+        <p class="muted">按采样时间聚合：5h（实线）来自 rate_limits.five_hour，7d（虚线）来自 rate_limits.seven_day；紫色「7d 分区叠加累计」走右侧 Y 轴，是把 7d 锯齿波还原成的累计真实使用量（口径同团队看板）</p>
       </div>
       ${noData}
       ${chart}
@@ -450,9 +474,9 @@ export function buildDashboardHtml(
           <p class="stat-note">窗口内观测到的 5 小时使用率峰值</p>
         </article>
         <article class="panel stat-card">
-          <h2>Latest 7d usage</h2>
-          <p class="stat-value">${escapeHtml(statValue(summary.sevenDayLatestUsagePct))}</p>
-          <p class="stat-note">最新 7 天 usage 样本，峰值 ${escapeHtml(statValue(summary.sevenDayPeakUsagePct))}</p>
+          <h2>7d 分区叠加累计</h2>
+          <p class="stat-value">${escapeHtml(statValue(summary.sevenDayCumulativeUsagePct))}</p>
+          <p class="stat-note">7 天额度分区叠加累计真实使用量 · 峰值 ${escapeHtml(statValue(summary.sevenDayPeakUsagePct))} · 最新 ${escapeHtml(statValue(summary.sevenDayLatestUsagePct))}</p>
         </article>
         <article class="panel stat-card">
           <h2>用户消息数</h2>

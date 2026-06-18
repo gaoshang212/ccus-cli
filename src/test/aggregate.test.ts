@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
-import { buildAggregatedDailyRows, buildAggregatedDetailRows, buildAggregatedWeeklyRows, buildPersonSevenDayCurve, computeCumulativeSevenDay, loadWeeklyExportBundles } from "../lib/aggregate";
+import { buildAggregatedDailyRows, buildAggregatedDetailRows, buildAggregatedWeeklyRows, buildPersonSevenDayCurve, buildSevenDayCurveFromEvents, computeCumulativeSevenDay, deburrSevenDayEvents, loadWeeklyExportBundles } from "../lib/aggregate";
 import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeeklyCsv } from "../lib/export";
 import { StatuslineEvent } from "../types";
 
@@ -553,6 +553,31 @@ test("computeCumulativeSevenDay is robust to same-level ±1 flutter (no naive ov
   // aging 小回落（未跌破段峰一半）不分段：[20,40,30,55] 视为单段，55−20=35（朴素也会把 30→55 计成 25 而少看前半段）。
   const aging = [20, 40, 30, 55].map((value, index) => makeSevenDayEvent(`2026-05-26T0${index}:00:00.000Z`, value));
   assert.equal(computeCumulativeSevenDay(aging), 35);
+});
+
+test("deburrSevenDayEvents drops a short stale spike even when a sampling gap follows it", () => {
+  // 稳定在 11（多样本、跨度 6min）→ 跌到 4（多样本、段内仅 1min）→ 之后一段 5min 采集间隙 → 回到 11 继续涨到 30。
+  // 这个 4 是 stale 尖峰：段内只持续 1min（< 2min 阈值），本该被抹；但它后面紧跟 5min 间隙，
+  // 若按「下一段起始 − 本段起始」(=6min) 度量持续时长会漏抹，残留的 4 会触发假 reset 把累计从 19 抬到 26。
+  const seq = [
+    ["2026-05-26T00:00:00.000Z", 11],
+    ["2026-05-26T00:03:00.000Z", 11],
+    ["2026-05-26T00:06:00.000Z", 11],
+    ["2026-05-26T00:07:00.000Z", 4],
+    ["2026-05-26T00:07:30.000Z", 4],
+    ["2026-05-26T00:08:00.000Z", 4],
+    ["2026-05-26T00:13:00.000Z", 11],
+    ["2026-05-26T00:16:00.000Z", 11],
+    ["2026-05-26T00:20:00.000Z", 30],
+  ].map(([t, v]) => makeSevenDayEvent(t as string, v as number));
+
+  // 中间那三个 4 应被抹成前值 11，曲线不再有跌破段峰一半的点。
+  assert.deepEqual(
+    deburrSevenDayEvents(seq).map((event) => event.sevenDayUsagePct),
+    [11, 11, 11, 11, 11, 11, 11, 11, 30],
+  );
+  // 累计回到真实的单段 30 − 11 = 19（漏抹时会因假 reset 变成 26）。
+  assert.equal(computeCumulativeSevenDay(buildSevenDayCurveFromEvents(seq)), 19);
 });
 
 /** 构造带 seven_day 序列的单人单天 bundle，用于多机合并曲线测试。 */

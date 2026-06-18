@@ -311,8 +311,15 @@ function bundleEventsByDate(bundle: WeeklyExportBundle): Map<string, StatuslineE
  */
 const SEVEN_DAY_RESET_RATIO = 0.5;
 
+/** 7d 累计曲线上的一个点：某采样时刻 + 截至该时刻的分段峰谷累计值（单调非递减）。 */
+export interface CumulativeSevenDayPoint {
+  timestamp: string;
+  cumulative: number;
+}
+
 /**
- * 7 天额度累计真实使用量：对一组事件取非 null `sevenDayUsagePct`、按时间升序，用**分段峰谷和**还原。
+ * 7 天额度累计真实使用量的**逐点曲线**：对一组事件取非 null `sevenDayUsagePct`、按时间升序，用**分段峰谷和**
+ * 还原，并在每个样本处输出「截至此刻的累计值」，得到一条单调非递减曲线。
  *
  * 把曲线按 reset（样本跌破当前段峰值的 {@link SEVEN_DAY_RESET_RATIO}）切成若干上升段，
  * 每段贡献「段内峰值 − 段内谷值」，累计 = 各段贡献之和。等价于「正增量累加，但忽略未跌破段峰一半的小回落」。
@@ -321,21 +328,23 @@ const SEVEN_DAY_RESET_RATIO = 0.5;
  * 朴素累加会把每次上抖都计成真实增长，导致严重高估（实测 gaoshang 102 vs 分段 50）。
  * 分段峰谷和对抖动 / aging 回落鲁棒，又能正确累计「涨到峰 → 归零 → 再涨」的多段真实使用。
  *
- * 无有效样本返回 null（区别于 0：0 表示有样本但无净增长）；单样本返回 0。
+ * 每个点的累计 = 已锁定的各完整段贡献 + 当前段 (segMax − segMin)；段内更新 / reset 都不会让它回落，
+ * 所以曲线单调非递减、终点恒等于 {@link computeCumulativeSevenDay} 的标量返回值。输入建议先经 deburr 去毛刺。
+ * 无有效样本返回空数组；单样本返回单点 0。
  */
-export function computeCumulativeSevenDay(events: StatuslineEvent[]): number | null {
-  const values = [...events]
-    .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime())
-    .map((event) => event.sevenDayUsagePct)
-    .filter((value): value is number => value !== null);
-  if (values.length === 0) {
-    return null;
+export function computeCumulativeSevenDayCurve(events: StatuslineEvent[]): CumulativeSevenDayPoint[] {
+  const sorted = [...events]
+    .filter((event): event is StatuslineEvent & { sevenDayUsagePct: number } => event.sevenDayUsagePct !== null)
+    .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime());
+  if (sorted.length === 0) {
+    return [];
   }
+  const points: CumulativeSevenDayPoint[] = [{ timestamp: sorted[0].timestamp, cumulative: 0 }];
   let cumulative = 0;
-  let segMin = values[0];
-  let segMax = values[0];
-  for (let index = 1; index < values.length; index += 1) {
-    const value = values[index];
+  let segMin = sorted[0].sevenDayUsagePct;
+  let segMax = sorted[0].sevenDayUsagePct;
+  for (let index = 1; index < sorted.length; index += 1) {
+    const value = sorted[index].sevenDayUsagePct;
     if (value > segMax) {
       segMax = value;
     } else if (segMax > 0 && value <= segMax * SEVEN_DAY_RESET_RATIO) {
@@ -347,9 +356,19 @@ export function computeCumulativeSevenDay(events: StatuslineEvent[]): number | n
       // 段内小回落（抖动 / aging）：只更新谷值，不分段、不重复计数。
       segMin = value;
     }
+    points.push({ timestamp: sorted[index].timestamp, cumulative: roundNumber(cumulative + (segMax - segMin), 1) ?? 0 });
   }
-  cumulative += segMax - segMin;
-  return roundNumber(cumulative, 1);
+  return points;
+}
+
+/**
+ * 7 天额度累计真实使用量（标量）：取 {@link computeCumulativeSevenDayCurve} 曲线终点。
+ *
+ * 无有效样本返回 null（区别于 0：0 表示有样本但无净增长）；单样本返回 0。
+ */
+export function computeCumulativeSevenDay(events: StatuslineEvent[]): number | null {
+  const curve = computeCumulativeSevenDayCurve(events);
+  return curve.length === 0 ? null : curve[curve.length - 1].cumulative;
 }
 
 /** 7d 曲线读数去毛刺的最小持续时长：短于此的中间读数段视为 stale / 瞬时异常。 */
@@ -359,24 +378,34 @@ const SEVEN_DAY_MIN_HOLD_MS = 2 * 60 * 1000;
  * 7d 曲线读数去毛刺：真实 7d 信号变化慢、每个档位会被高频采样连续覆盖几十上百个样本，
  * 而 stale 缓存读数 / 瞬时异常只会短暂出现（秒级，如 baseline 很低时偶发跳到 30 又落回）。
  *
- * 把**中间**持续短于 {@link SEVEN_DAY_MIN_HOLD_MS} 的读数段（下一段起始 − 本段起始）替换为最近的已保留前值，
- * 抹掉这些尖峰；首尾段无条件保留（端点缺上下文判断持续性）。这等价于人眼在曲线图上自动忽略短毛刺。
+ * 把**中间**持续短于 {@link SEVEN_DAY_MIN_HOLD_MS} 的读数段替换为最近的已保留前值，抹掉这些尖峰；
+ * 首尾段无条件保留（端点缺上下文判断持续性）。这等价于人眼在曲线图上自动忽略短毛刺。
  *
- * 仅对密集采样的真实曲线生效：稀疏数据（每个值只有一两个样本、间隔很大）的中间段持续时长通常远超阈值，
+ * 持续时长默认按「下一段起始 − 本段起始」度量（密集采样下约等于本段实际持续）；但当**多样本**段后面紧跟一段
+ * 比阈值还大的**采集间隙**时，该度量会把间隙也算进去、把只持续几十秒的短尖峰“撑”过阈值而漏抹，
+ * 此时改用**段内真实跨度（最后样本 − 第一样本）**判定。单样本段无段内跨度、无法据此判断，仍走原度量。
+ *
+ * 仅对密集采样的真实曲线生效：稀疏数据（每个值只有一两个样本、间隔很大）的单样本中间段仍按原度量保留，
  * 不会被误删，所以 spec 的稀疏示例与单样本段不受影响。输入须按 timestamp 升序。
  */
-function deburrSevenDayEvents(events: StatuslineEvent[], minHoldMs: number = SEVEN_DAY_MIN_HOLD_MS): StatuslineEvent[] {
+export function deburrSevenDayEvents(events: StatuslineEvent[], minHoldMs: number = SEVEN_DAY_MIN_HOLD_MS): StatuslineEvent[] {
   if (events.length <= 2) {
     return events;
   }
-  const runs: Array<{ value: number | null; startIdx: number; endIdx: number; startTime: number }> = [];
+  const runs: Array<{ value: number | null; startIdx: number; endIdx: number; startTime: number; endTime: number }> = [];
   let index = 0;
   while (index < events.length) {
     let end = index;
     while (end + 1 < events.length && events[end + 1].sevenDayUsagePct === events[index].sevenDayUsagePct) {
       end += 1;
     }
-    runs.push({ value: events[index].sevenDayUsagePct, startIdx: index, endIdx: end, startTime: new Date(events[index].timestamp).getTime() });
+    runs.push({
+      value: events[index].sevenDayUsagePct,
+      startIdx: index,
+      endIdx: end,
+      startTime: new Date(events[index].timestamp).getTime(),
+      endTime: new Date(events[end].timestamp).getTime(),
+    });
     index = end + 1;
   }
 
@@ -384,7 +413,15 @@ function deburrSevenDayEvents(events: StatuslineEvent[], minHoldMs: number = SEV
   let lastKept = runs[0].value;
   for (let k = 0; k < runs.length; k += 1) {
     const isEdge = k === 0 || k === runs.length - 1;
-    const holdMs = k + 1 < runs.length ? runs[k + 1].startTime - runs[k].startTime : Number.POSITIVE_INFINITY;
+    // 默认持续时长 = 下一段起始 − 本段起始（密集采样下约等于本段实际持续）。
+    const toNext = k + 1 < runs.length ? runs[k + 1].startTime - runs[k].startTime : Number.POSITIVE_INFINITY;
+    // 本段最后样本到下一段起始的采集间隙：密集采样下很小，遇到数据采集中断时会变大。
+    const gapAfter = k + 1 < runs.length ? runs[k + 1].startTime - runs[k].endTime : Number.POSITIVE_INFINITY;
+    // 多样本段（段内本身有跨度）后面若紧跟一段比阈值还大的采集间隙，说明 toNext 把间隙也算进了持续时长，
+    // 会把本只持续几十秒的短尖峰“撑”过阈值而漏抹；此时改用段内真实跨度判定，正确识别这类 stale 尖峰。
+    // 单样本段（无段内跨度）无法据此判断真实持续，仍走 toNext，避免误伤稀疏单样本数据。
+    const multiSample = runs[k].endIdx > runs[k].startIdx;
+    const holdMs = multiSample && gapAfter > minHoldMs ? runs[k].endTime - runs[k].startTime : toNext;
     if (isEdge || holdMs >= minHoldMs) {
       lastKept = runs[k].value;
       continue;
@@ -394,6 +431,29 @@ function deburrSevenDayEvents(events: StatuslineEvent[], minHoldMs: number = SEV
     }
   }
   return result;
+}
+
+/**
+ * 把一组事件整理成一条可用于累计计算的 7d 曲线：取非 null `sevenDayUsagePct`、按时间升序、
+ * 对完全相同 timestamp 去重，再做读数去毛刺。
+ *
+ * 单台机器的本地日志（dashboard 个人看板）与多机合并（aggregate）都走这同一套整理逻辑，
+ * 保证两边的累计口径不会漂移。
+ */
+export function buildSevenDayCurveFromEvents(events: StatuslineEvent[]): StatuslineEvent[] {
+  const sorted = [...events]
+    .filter((event) => event.sevenDayUsagePct !== null)
+    .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime());
+  const seen = new Set<string>();
+  const deduped: StatuslineEvent[] = [];
+  for (const event of sorted) {
+    if (seen.has(event.timestamp)) {
+      continue;
+    }
+    seen.add(event.timestamp);
+    deduped.push(event);
+  }
+  return deburrSevenDayEvents(deduped);
 }
 
 /**
@@ -430,17 +490,7 @@ export function buildPersonSevenDayCurve(bundles: Array<{ filePath: string; bund
 
   const curves = new Map<string, StatuslineEvent[]>();
   for (const [personKey, events] of collected.entries()) {
-    const sorted = [...events].sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime());
-    const seen = new Set<string>();
-    const deduped: StatuslineEvent[] = [];
-    for (const event of sorted) {
-      if (seen.has(event.timestamp)) {
-        continue;
-      }
-      seen.add(event.timestamp);
-      deduped.push(event);
-    }
-    curves.set(personKey, deburrSevenDayEvents(deduped));
+    curves.set(personKey, buildSevenDayCurveFromEvents(events));
   }
 
   personSevenDayCurveCache.set(bundles, curves);
