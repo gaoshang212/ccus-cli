@@ -267,3 +267,74 @@ export interface AggregatedWeeklyRow {
   uniqueSessions: number;
   uniqueWorkspaces: number;
 }
+
+/** API 模式（第三方额度拉取）支持的 provider 类型。 */
+export type ApiModeProvider = "zhipu" | "custom";
+
+/** 智谱 GLM Coding Plan 额度查询配置：内置 extractor，用户只填这几项。 */
+export interface ApiModeZhipuConfig {
+  /** 额度查询接口完整地址（含 query），默认 open.bigmodel.cn。 */
+  url: string;
+  /** bigmodel-project 请求头值，空则不发该头。 */
+  project: string;
+  /** bigmodel-organization 请求头值，空则不发该头。 */
+  organization: string;
+}
+
+/** 自定义 provider 配置：通用 HTTP + 点分字段路径映射，支持其它厂商。 */
+export interface ApiModeCustomConfig {
+  /** 完整请求地址。 */
+  url: string;
+  /** HTTP 方法，默认 GET。 */
+  method: string;
+  /** 额外请求头；值里的 {{token}} / {{apikey}} 占位符会被实际 token 替换。 */
+  headers: Record<string, string>;
+  /** 响应中 5h 额度字段的点分路径（支持数组索引），如 data.limits.0.percentage。 */
+  fiveHourPath: string;
+  /** 响应中 7d 额度字段的点分路径。 */
+  sevenDayPath: string;
+  /**
+   * 自定义 extractor 脚本（JS 函数源码，如 `function(r){...}` 或 `(r)=>{...}`）。
+   *
+   * 配置后优先于 fiveHourPath/sevenDayPath 生效，能处理点分路径表达不了的数组筛选/排序结构。
+   * 函数接收解析后的响应对象，返回 `{ fiveHour, sevenDay }`、`[{used|percentage}, {used|percentage}]`（cc-switch 风格）或 `[number, number]`。
+   * 在 ccus 进程内受限求值，失败静默；只放信任的脚本。
+   */
+  extractor: string;
+}
+
+/**
+ * API 模式配置（写入 api-config.json，允许手编）。
+ *
+ * 当 enabled 且 provider 配置就绪时，statusline emit 会主动拉取第三方额度，
+ * 填进 rawPayload.rate_limits，复用现有展示/落盘/导出/聚合管线，不改变任何契约、不 bump schemaVersion。
+ */
+export interface ApiModeConfig {
+  enabled: boolean;
+  provider: ApiModeProvider;
+  /** 从哪个环境变量读 token（Claude Code 用第三方 API 时通常注入 ANTHROPIC_AUTH_TOKEN）。 */
+  tokenEnv: string;
+  /** 环境变量读不到时的兜底 token；默认 null（走环境变量，不落盘敏感信息）。 */
+  token: string | null;
+  /** 额度缓存 TTL（毫秒），statusline 高频调用必须缓存。默认 5 分钟。 */
+  cacheTtlMs: number;
+  /** 单次请求超时（毫秒），默认 4 秒。 */
+  timeoutMs: number;
+  /** 请求 User-Agent，遇反爬虫可改成浏览器 UA。 */
+  userAgent: string;
+  zhipu: ApiModeZhipuConfig;
+  custom: ApiModeCustomConfig;
+}
+
+/** 从第三方 provider 解析出的额度快照。 */
+export interface ApiQuota {
+  fiveHour: number | null;
+  sevenDay: number | null;
+  /** 套餐等级等附加信息（智谱 data.level），仅展示用，不进任何契约。 */
+  level: string | null;
+}
+
+/** 落盘的额度缓存：quota + 抓取时间。 */
+export interface ApiQuotaCache extends ApiQuota {
+  fetchedAt: string;
+}

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.23] - 2026-06-30
+
+### 新增
+- `ccus api`：第三方 API 模式，走智谱 GLM 等非官方订阅时主动拉取 5h/7d 额度填进 statusline 与导出；内置智谱 provider，支持自定义 provider；token 默认从环境变量读，带缓存、失败静默。
+- `ccus api config --extractor-file`：custom provider 支持自定义 JS extractor 脚本，处理点分路径表达不了的响应结构（数组筛选/排序），返回值兼容 cc-switch 风格。
+
 ## [0.1.22] - 2026-06-18
 
 ### 新增

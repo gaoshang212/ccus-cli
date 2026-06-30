@@ -54,6 +54,16 @@ export function getSyncStatePath(dataDir: string): string {
   return path.join(dataDir, "sync-state.json");
 }
 
+/** API 模式（第三方额度拉取）的用户配置文件，可手编。 */
+export function getApiConfigPath(dataDir: string): string {
+  return path.join(dataDir, "api-config.json");
+}
+
+/** API 模式的额度缓存文件，记录上次抓取的额度与时间。 */
+export function getApiQuotaCachePath(dataDir: string): string {
+  return path.join(dataDir, "api-quota-cache.json");
+}
+
 /** Claude Code 默认本地数据目录。 */
 export function getClaudeDataDir(): string {
   const configured = process.env.CCUS_CLAUDE_DATA_DIR;

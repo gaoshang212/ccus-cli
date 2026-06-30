@@ -155,6 +155,9 @@
 - `ccus sync install`（注册系统调度器：每周五 18:00 跑一次 `ccus sync`；Windows 用 schtasks 真正创建，macOS/Linux 打印 cron 命令引导手动安装；`--print` 只打印不安装）
 - `ccus sync uninstall`（卸载系统调度器；Windows 用 schtasks 删除任务，macOS/Linux 打印 crontab 提示；`--print` 只打印不执行）
 - `ccus sync status`（查看同步配置与上次同步时间）
+- `ccus api config`（读写第三方额度 API 模式配置 `--enable`/`--disable`/`--provider zhipu|custom`/`--token-env`/`--token`/`--url`/`--project`/`--organization`/`--header "K: V; K2: V2"`/`--ttl` 等，不触发拉取；不带参数打印当前配置）
+- `ccus api test`（立即拉取一次第三方额度并打印 5h/7d/level，验证配置是否生效；绕过缓存，失败把原因打到 stderr）
+- `ccus api status`（查看 API 模式配置与额度缓存新鲜度）
 - `ccus --version`
 - `ccus __check-update`（隐藏命令，statusline 路径 spawn 的 detached 后台进程，只刷新更新缓存，不输出 stdout）
 - `ccus __sync`（隐藏命令，statusline 路径 spawn 的 detached 后台进程，静默执行一次同步，不输出 stdout、失败静默）
@@ -199,6 +202,13 @@
   - 任务调用串用绝对 node + cli.js 路径并带显式 `--data-dir`，保证调度环境也能跑
   - `maybeSpawnBackgroundSync`：statusline 路径调用，到周期才 spawn detached `__sync` 后台进程，对单行 stdout 契约零侵入（照搬 update-check 的范式）
   - 本功能是新增编排层，**不改动任何导出/聚合字段，不 bump `schemaVersion`**，导出产物与 `ccus export` 完全一致
+
+- `src/lib/api-mode.ts`
+  - 第三方额度 API 模式：读写 `api-config.json`（provider / token 来源 / 缓存 TTL 等）与 `api-quota-cache.json`（上次额度与抓取时间）
+  - `resolveApiQuota`：statusline 路径调用，缓存优先（默认 5 分钟 TTL），过期同步拉一次（带超时），失败回退旧缓存，全程不抛错、不写 stdout
+  - zhipu 是 custom 的一组内置预设（`ZHIPU_EXTRACTOR` 脚本：`data.limits` 筛 `TOKENS_LIMIT` 按 `nextResetTime` 升序取前两条作 5h / weekly），zhipu / custom 走同一条 `runExtractor`（`new Function` 求值）路径；custom 另可用 `extractCustomQuota`（点分字段路径）或 `custom.extractor` 自定义 JS 函数（返回值兼容 `{fiveHour,sevenDay}` / cc-switch 风格数组 / 数字数组，优先于点分路径）
+  - token 默认从环境变量 `ANTHROPIC_AUTH_TOKEN` 读（`--token-env` 可改），`--token` 兜底（注意会明文落盘）；header 值支持 `{{token}}` / `{{apikey}}` 占位
+  - `cli.ts` `handleStatuslineEmit` 在落盘前调 `applyQuotaToPayload` 把额度填进 `rawPayload.rate_limits`，复用现有展示/落盘/导出/聚合管线，**不 bump export `schemaVersion`**（纯读时填充，与 `recomputeUsage` 同理）
 
 - `src/lib/aggregate.ts`
   - 读取 bundle JSON

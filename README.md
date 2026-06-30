@@ -9,6 +9,7 @@
 - `ccus aggregate`：读取一个目录里的多人 export bundle（`.json.gz` 或 `.json`），输出明细、按天、按周三个 CSV。
 - `ccus aggregate serve`：同样以 bundle 目录为输入，启动本地多人 dashboard 页面，不落地任何文件。
 - `ccus sync`：定时把当前周数据包导出并复制到一个目标目录（如团队共享盘），目标目录下按周自动建子目录；日常由 statusline 兜底触发，也可挂系统计划任务做到严格每天定时。
+- `ccus api`：走第三方 API（如智谱 GLM Coding Plan）而非官方订阅时，主动拉取 5h/7d 额度填进 statusline 与导出；默认从环境变量读 token，带缓存，失败静默。
 - `ccus open`：用系统文件管理器打开 ccus 本地存储目录（事件日志、exports、dashboard 都在里面）；加 `--print` 只输出目录路径、不打开。
 - `ccus update`：主动检查 npm 上是否有新版本，有则提示手动升级命令；`ccus --version` 查看当前版本。
 
@@ -229,6 +230,30 @@ ccus sync status                                 # 查看目标目录、周期�
    - **macOS / Linux** 不自动改系统，`ccus sync install` 会打印一条 cron 命令（`0 18 * * 5 …`）让你手动 `crontab` 安装，避免误改已有 crontab。
 
    > 记得先 `ccus sync config --target DIR` 配好目标目录，调度任务才有地方可同步。
+
+## API 模式（第三方额度）
+
+走第三方 API（如智谱 GLM Coding Plan）而非 Claude 官方订阅时，statusline payload 里没有 `rate_limits`，ccus 默认显示 `5h -- | 7d --`。开启 API 模式后，ccus 会在 `statusline emit` 时主动拉取第三方额度，填进 `rawPayload.rate_limits`，复用现有展示/落盘/导出/聚合管线（不改变 schemaVersion 与导出契约）。
+
+智谱 GLM 同样是「每 5 小时窗口 + 每周窗口」额度，语义与 5h/7d 对应，开箱即用：
+
+```bash
+# token 默认从环境变量 ANTHROPIC_AUTH_TOKEN 读（Claude Code 用第三方 API 时通常已注入）
+ccus api config --enable --provider zhipu --project <项目ID> --organization <组织ID>
+ccus api test      # 立即拉一次，验证配置是否生效、额度是否解析正确
+ccus api status    # 查看配置与缓存新鲜度
+ccus api config    # 不带参数：打印当前配置
+```
+
+要点：
+
+- **开启 / 关闭**：`ccus api config --enable` 开启、`--disable` 关闭（关闭后 statusline 回退成 `5h -- | 7d --` 或官方 `rate_limits`），不带参数只查看当前配置；配置（provider/url/token 等）保留，关了再开不用重填。另有 `--no-token` / `--no-header` / `--no-extractor` 清除对应单项。
+- **Token 来源**：默认读环境变量 `ANTHROPIC_AUTH_TOKEN`（可用 `--token-env NAME` 改）；读不到时可用 `--token VAL` 兜底（注意：兜底 token 会明文写入 `api-config.json`）。
+- **缓存**：statusline 高频调用，额度按 TTL 缓存（默认 5 分钟，`--ttl 5m` 改），拉取失败自动回退上次缓存；缓存文件 `api-quota-cache.json`。
+- **智谱请求头**：除 `Authorization` 外，`--project` / `--organization` 会作为 `bigmodel-project` / `bigmodel-organization` 头发出（团队版需要）。接口对请求来源敏感，若返回空响应疑似被拦，可用 `ccus api config --user-agent "<浏览器UA>"` 改 UA。
+- **自定义 provider**：`--provider custom` 配其它厂商。简单响应用 `--url` / `--method` / `--header "K: V; K2: V2"`（header 值支持 `{{token}}` 占位）/ `--five-hour-path` / `--seven-day-path`（点分路径，如 `data.limits.0.percentage`）映射字段；响应结构复杂（数组筛选/排序）时用 `--extractor-file script.js` 写一段 JS 函数，接收响应对象、返回 `{ fiveHour, sevenDay }` 或 cc-switch 风格的 `[{used}, {used}]`，配了 extractor 就优先于点分路径。脚本在 ccus 进程内执行，只放信任的来源。
+
+> API 模式填充的 5h/7d 会和官方 `rate_limits` 走同一条聚合管线（含 7d 累计去毛刺算法，该算法针对 Claude 官方锯齿波设计）；不同厂商的额度曲线语义可能不完全一致，混用聚合时注意。
 
 ## 调试
 

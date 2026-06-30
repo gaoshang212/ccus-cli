@@ -15,7 +15,9 @@ import { openInBrowser, openPath } from "./lib/open";
 import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, parseStatuslinePayload } from "./lib/payload";
 import { getClaudeSettingsPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
 import { installScheduler, uninstallScheduler } from "./lib/scheduler";
+import { applyQuotaToPayload, fetchQuota, readApiConfig, readApiQuotaCacheSync, resolveApiQuota, resolveApiToken, writeApiConfig } from "./lib/api-mode";
 import { isSyncDue, maybeSpawnBackgroundSync, performSync, readSyncConfig, readSyncStateSync, sanitizeSuffix, writeSyncConfig } from "./lib/sync";
+import type { ApiModeConfig } from "./types";
 import { appendEvent, readEventsForRange } from "./lib/storage";
 import { enumerateDateKeys, expandToFullWeekWindow, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
 import { computeUpdateNotice, fetchLatestVersion, maybeSpawnBackgroundCheck, performUpdateCheck } from "./lib/update-check";
@@ -27,7 +29,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
-  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus sessions [RANGE] [--out FILE] [--data-dir PATH]   (把 ~/.claude/projects 本周活跃 session 打包成 zip，名如 projects_<dates>_<user>.zip)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
+  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus sessions [RANGE] [--out FILE] [--data-dir PATH]   (把 ~/.claude/projects 本周活跃 session 打包成 zip，名如 projects_<dates>_<user>.zip)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus api config [--enable|--disable] [--provider zhipu|custom] [--token-env NAME] [--token VAL] [--url URL] [--project P] [--organization O] [--ttl 5m] [--extractor-file FILE] [--data-dir PATH]\n  ccus api test [--data-dir PATH]   (立即拉取第三方额度并打印，验证配置是否生效)\n  ccus api status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
 /** 一个轻量的参数解析器，当前命令面不复杂，没必要引入额外依赖。 */
@@ -142,6 +144,15 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
     record.gitUserName = gitIdentity.userName;
     record.gitUserEmail = gitIdentity.userEmail;
     record.gitUserAccount = extractGitEmailAccount(gitIdentity.userEmail);
+    // API 模式：若启用，主动拉取第三方额度（智谱等），填进 rawPayload.rate_limits，
+    // 让落盘与 computeStatuslineEvent 都能算出 usage；失败静默回退缓存，绝不污染单行 statusline 契约。
+    const apiConfig = readApiConfig(dataDir);
+    if (apiConfig.enabled) {
+      const quota = await resolveApiQuota(dataDir, apiConfig, process.env);
+      if (quota) {
+        applyQuotaToPayload(record.rawPayload, quota);
+      }
+    }
     if (noStore) {
       debugLog("statusline", "no-store enabled, skipping appendEvent");
     } else {
@@ -889,6 +900,236 @@ async function handleBackgroundSync(options: CliOptions): Promise<void> {
   }
 }
 
+/** 解析时长字面量为毫秒：纯数字按 ms，支持 ms/s/m/h 后缀。非法返回 null。 */
+function parseDurationMs(raw: string | undefined): number | null {
+  if (raw === undefined) {
+    return null;
+  }
+  const text = raw.trim().toLowerCase();
+  if (text === "") {
+    return null;
+  }
+  const match = text.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)?$/);
+  if (!match) {
+    return null;
+  }
+  const n = Number(match[1]);
+  const unit = match[2] ?? "ms";
+  const mult = unit === "ms" ? 1 : unit === "s" ? 1000 : unit === "m" ? 60_000 : 3_600_000;
+  return Math.round(n * mult);
+}
+
+/** 把毫秒时长格式化成人类可读（整分钟显示成 m，否则 ms）。 */
+function formatDurationMs(ms: number): string {
+  if (ms >= 60_000 && ms % 60_000 === 0) {
+    return `${ms / 60_000}m`;
+  }
+  return `${ms}ms`;
+}
+
+/** 解析 --header "K1: V1; K2: V2" 为 header map；按首个冒号拆 K/V，非法条目跳过。 */
+function parseHeaderFlag(raw: string | undefined): Record<string, string> | null {
+  if (raw === undefined) {
+    return null;
+  }
+  const out: Record<string, string> = {};
+  for (const segment of raw.split(";")) {
+    const idx = segment.indexOf(":");
+    if (idx <= 0) {
+      continue;
+    }
+    const key = segment.slice(0, idx).trim();
+    const value = segment.slice(idx + 1).trim();
+    if (key !== "") {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/** 脱敏展示 token：只露首尾各 3 位。 */
+function maskSecret(value: string | null | undefined): string {
+  if (!value) {
+    return "(未配置)";
+  }
+  if (value.length <= 8) {
+    return "***";
+  }
+  return `${value.slice(0, 3)}***${value.slice(-3)}`;
+}
+
+/**
+ * `ccus api config`：只读写 API 模式配置，不触发拉取。
+ *
+ * 带任意参数时合并并持久化到 api-config.json；不带参数仅打印当前配置。
+ * `--url` 按 `--provider` 落到 zhipu 或 custom 段；`--header "K: V; K2: V2"` 仅作用于 custom。
+ */
+async function handleApiConfig(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  const current = readApiConfig(dataDir);
+
+  const enable = getBooleanOption(options, "enable");
+  const disable = getBooleanOption(options, "disable");
+  const provider = getStringOption(options, "provider");
+  const tokenEnv = getStringOption(options, "token-env");
+  const token = getStringOption(options, "token");
+  const clearToken = getBooleanOption(options, "no-token");
+  const ttlMs = parseDurationMs(getStringOption(options, "ttl"));
+  const timeoutMs = parseDurationMs(getStringOption(options, "timeout"));
+  const userAgent = getStringOption(options, "user-agent");
+  const url = getStringOption(options, "url");
+  const project = getStringOption(options, "project");
+  const organization = getStringOption(options, "organization");
+  const method = getStringOption(options, "method");
+  const headers = parseHeaderFlag(getStringOption(options, "header"));
+  const clearHeaders = getBooleanOption(options, "no-header");
+  const fiveHourPath = getStringOption(options, "five-hour-path");
+  const sevenDayPath = getStringOption(options, "seven-day-path");
+  const extractorInline = getStringOption(options, "extractor");
+  const extractorFile = getStringOption(options, "extractor-file");
+  const clearExtractor = getBooleanOption(options, "no-extractor");
+
+  let extractorValue: string | undefined;
+  if (clearExtractor) {
+    extractorValue = "";
+  } else if (extractorInline !== undefined) {
+    extractorValue = extractorInline;
+  } else if (extractorFile !== undefined) {
+    const fsp = await import("node:fs/promises");
+    extractorValue = await fsp.readFile(path.resolve(extractorFile), "utf8");
+  }
+
+  const targetProvider = provider === "custom" || provider === "zhipu" ? provider : current.provider;
+  const next: ApiModeConfig = {
+    ...current,
+    enabled: enable ? true : disable ? false : current.enabled,
+    provider: targetProvider,
+    tokenEnv: tokenEnv ?? current.tokenEnv,
+    token: clearToken ? null : token !== undefined ? token : current.token,
+    cacheTtlMs: ttlMs ?? current.cacheTtlMs,
+    timeoutMs: timeoutMs ?? current.timeoutMs,
+    userAgent: userAgent ?? current.userAgent,
+    zhipu: {
+      url: targetProvider === "zhipu" && url !== undefined ? url : current.zhipu.url,
+      project: project ?? current.zhipu.project,
+      organization: organization ?? current.zhipu.organization,
+    },
+    custom: {
+      url: targetProvider === "custom" && url !== undefined ? url : current.custom.url,
+      method: method ?? current.custom.method,
+      headers: clearHeaders ? {} : headers ?? current.custom.headers,
+      fiveHourPath: fiveHourPath ?? current.custom.fiveHourPath,
+      sevenDayPath: sevenDayPath ?? current.custom.sevenDayPath,
+      extractor: extractorValue !== undefined ? extractorValue : current.custom.extractor,
+    },
+  };
+
+  const changed =
+    enable ||
+    disable ||
+    clearToken ||
+    clearHeaders ||
+    provider !== undefined ||
+    tokenEnv !== undefined ||
+    token !== undefined ||
+    ttlMs !== null ||
+    timeoutMs !== null ||
+    userAgent !== undefined ||
+    url !== undefined ||
+    project !== undefined ||
+    organization !== undefined ||
+    method !== undefined ||
+    headers !== null ||
+    fiveHourPath !== undefined ||
+    sevenDayPath !== undefined ||
+    extractorValue !== undefined;
+
+  if (changed) {
+    await writeApiConfig(dataDir, next);
+    debugLog("api-mode", "config updated", next);
+  }
+
+  const header = changed ? "API 模式配置已更新：" : "当前 API 模式配置：";
+  const lines = [
+    `  启用: ${next.enabled ? "是" : "否"}`,
+    `  provider: ${next.provider}`,
+    `  token 环境变量: ${next.tokenEnv}`,
+    `  token 兜底: ${maskSecret(next.token)}`,
+    `  当前生效 token: ${maskSecret(resolveApiToken(next))}`,
+    `  缓存 TTL: ${formatDurationMs(next.cacheTtlMs)}`,
+    `  请求超时: ${formatDurationMs(next.timeoutMs)}`,
+    `  User-Agent: ${next.userAgent}`,
+    `  [zhipu] url: ${next.zhipu.url}`,
+    `  [zhipu] project: ${next.zhipu.project || "(无)"}`,
+    `  [zhipu] organization: ${next.zhipu.organization || "(无)"}`,
+    `  [custom] url: ${next.custom.url || "(未配置)"}`,
+    `  [custom] method: ${next.custom.method}`,
+    `  [custom] headers: ${Object.keys(next.custom.headers).length > 0 ? JSON.stringify(next.custom.headers) : "(无)"}`,
+    `  [custom] fiveHourPath: ${next.custom.fiveHourPath}`,
+    `  [custom] sevenDayPath: ${next.custom.sevenDayPath}`,
+    `  [custom] extractor: ${next.custom.extractor.trim() !== "" ? `(已配置，${next.custom.extractor.length} 字符；优先于点分路径)` : "(无，用点分路径)"}`,
+  ];
+  process.stdout.write(`${header}\n${lines.join("\n")}\n`);
+}
+
+/**
+ * `ccus api test`：立即拉取一次第三方额度并打印，验证配置是否生效。
+ *
+ * 直接打真实接口（绕过缓存），成功打印 5h/7d/level，失败把原因打到 stderr 并返回非 0 退出码。
+ */
+async function handleApiTest(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  const config = readApiConfig(dataDir);
+  if (!config.enabled) {
+    process.stdout.write("API 模式未启用，先用 `ccus api config --enable` 开启。\n");
+    return;
+  }
+
+  process.stdout.write(`正在用 provider=${config.provider} 拉取额度（超时 ${formatDurationMs(config.timeoutMs)}）...\n`);
+  try {
+    const quota = await fetchQuota(config, process.env);
+    const fiveHour = quota.fiveHour !== null ? `${quota.fiveHour.toFixed(1)}%` : "--";
+    const sevenDay = quota.sevenDay !== null ? `${quota.sevenDay.toFixed(1)}%` : "--";
+    process.stdout.write(`✅ 5h ${fiveHour} | 7d ${sevenDay}${quota.level ? ` | level ${quota.level}` : ""}\n`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`❌ 拉取失败：${message}\n`);
+    process.exitCode = 1;
+  }
+}
+
+/** `ccus api status`：打印当前 API 模式配置摘要与额度缓存新鲜度。 */
+async function handleApiStatus(options: CliOptions): Promise<void> {
+  const dataDir = getDataDir(options);
+  const config = readApiConfig(dataDir);
+  const cache = readApiQuotaCacheSync(dataDir);
+  const now = Date.now();
+  let fresh = false;
+  let ageLabel = "(无缓存)";
+  if (cache) {
+    const fetched = Date.parse(cache.fetchedAt);
+    if (Number.isFinite(fetched)) {
+      const ageMs = now - fetched;
+      fresh = ageMs < config.cacheTtlMs;
+      ageLabel = `${formatDurationMs(ageMs)} 前${fresh ? "" : "（已过期）"}`;
+    }
+  }
+
+  const lines = [
+    `  启用: ${config.enabled ? "是" : "否"}`,
+    `  provider: ${config.provider}`,
+    `  当前生效 token: ${maskSecret(resolveApiToken(config))}`,
+    `  缓存 TTL: ${formatDurationMs(config.cacheTtlMs)}`,
+    `  缓存状态: ${ageLabel}`,
+  ];
+  if (cache) {
+    const fiveHour = cache.fiveHour !== null ? `${cache.fiveHour.toFixed(1)}%` : "--";
+    const sevenDay = cache.sevenDay !== null ? `${cache.sevenDay.toFixed(1)}%` : "--";
+    lines.push(`  缓存额度: 5h ${fiveHour} | 7d ${sevenDay}${cache.level ? ` | level ${cache.level}` : ""}`);
+  }
+  process.stdout.write(`API 模式状态：\n${lines.join("\n")}\n`);
+}
+
 /** 顶层命令分发入口。 */
 async function main(args = process.argv.slice(2)): Promise<void> {
   setDebugEnabled(resolveDebugEnabled(args));
@@ -951,6 +1192,28 @@ async function main(args = process.argv.slice(2)): Promise<void> {
     }
 
     await handleSync(parseOptions(args.slice(1)));
+    return;
+  }
+
+  if (group === "api") {
+    if (action === "config") {
+      await handleApiConfig(parseOptions(rest));
+      return;
+    }
+    if (action === "test") {
+      await handleApiTest(parseOptions(rest));
+      return;
+    }
+    if (action === "status") {
+      await handleApiStatus(parseOptions(rest));
+      return;
+    }
+    if (action && !action.startsWith("--")) {
+      throw new Error(
+        `Unsupported api argument: ${action}. Use \`ccus api config\`, \`ccus api test\` or \`ccus api status\`.`,
+      );
+    }
+    await handleApiStatus(parseOptions(args.slice(1)));
     return;
   }
 
