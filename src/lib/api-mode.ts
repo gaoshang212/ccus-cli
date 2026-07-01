@@ -116,7 +116,9 @@ function renderHeader(value: string, token: string | null): string {
 /**
  * 智谱 GLM Coding Plan 的内置 extractor 脚本（zhipu provider 的预设）。
  *
- * data.limits 里筛 type==="TOKENS_LIMIT"，按 nextResetTime 升序，第 1 条 = 5h、第 2 条 = 每周；
+ * data.limits 里筛 type==="TOKENS_LIMIT"，按 nextResetTime 升序，第 1 条 = 5h、第 2 条 = 每周。
+ * 智谱在 5h 桶利用率=0% 时会省略该条的 nextResetTime，缺字段兜底 -Infinity 排最前（归 5h 桶），
+ * 否则会被当 weekly、和 weekly 槽位互换（对照 cc-switch v3.16.0 的同类修复）。
  * success !== true / code !== 200 / 缺 data.limits 时返回会让归一化判 null 的值。
  * zhipu 不再单独维护提取函数，与 custom 走同一条 `runExtractor` 路径，只是 extractor 用这组内置脚本。
  */
@@ -131,7 +133,9 @@ export const ZHIPU_EXTRACTOR = `function(response) {
   const tokenLimits = limits
     .filter((l) => l && l.type === "TOKENS_LIMIT")
     .map((l) => ({ p: l.percentage, r: l.nextResetTime }))
-    .sort((a, b) => (typeof a.r === "number" ? a.r : Infinity) - (typeof b.r === "number" ? b.r : Infinity));
+    // 缺 nextResetTime 的那条兜底 -Infinity 排最前（= 5h 桶）：智谱在 5h=0% 时会省略该字段，
+    // 若兜底 Infinity 排最后会被当成 weekly，造成 5h/7d 槽位互换（见上方 JSDoc）。
+    .sort((a, b) => (typeof a.r === "number" ? a.r : -Infinity) - (typeof b.r === "number" ? b.r : -Infinity));
   return {
     fiveHour: tokenLimits[0] ? tokenLimits[0].p : null,
     sevenDay: tokenLimits[1] ? tokenLimits[1].p : null,

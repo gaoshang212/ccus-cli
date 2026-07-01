@@ -53,6 +53,22 @@ test("zhipu preset extractor keeps array order when nextResetTime missing", () =
   assert.equal(q?.level, null);
 });
 
+test("zhipu preset extractor maps missing nextResetTime to 5h bucket", () => {
+  // 智谱在 5h 桶=0% 时会省略该条的 nextResetTime；缺字段的那条必须归 5h，否则 5h/weekly 槽位互换
+  // （bug 表现：fiveHour=8、sevenDay=0）。对照 cc-switch v3.16.0 的同类修复。
+  const q = runExtractor(ZHIPU_EXTRACTOR, {
+    success: true,
+    data: {
+      limits: [
+        { type: "TOKENS_LIMIT", percentage: 0 },
+        { type: "TOKENS_LIMIT", percentage: 8, nextResetTime: 1774663282997 },
+      ],
+    },
+  });
+  assert.equal(q?.fiveHour, 0);
+  assert.equal(q?.sevenDay, 8);
+});
+
 test("zhipu preset extractor tolerates single TOKENS_LIMIT", () => {
   const q = runExtractor(ZHIPU_EXTRACTOR, {
     success: true,

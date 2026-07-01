@@ -206,7 +206,7 @@
 - `src/lib/api-mode.ts`
   - 第三方额度 API 模式：读写 `api-config.json`（provider / token 来源 / 缓存 TTL 等）与 `api-quota-cache.json`（上次额度与抓取时间）
   - `resolveApiQuota`：statusline 路径调用，缓存优先（默认 5 分钟 TTL），过期同步拉一次（带超时），失败回退旧缓存，全程不抛错、不写 stdout
-  - zhipu 是 custom 的一组内置预设（`ZHIPU_EXTRACTOR` 脚本：`data.limits` 筛 `TOKENS_LIMIT` 按 `nextResetTime` 升序取前两条作 5h / weekly），zhipu / custom 走同一条 `runExtractor`（`new Function` 求值）路径；custom 另可用 `extractCustomQuota`（点分字段路径）或 `custom.extractor` 自定义 JS 函数（返回值兼容 `{fiveHour,sevenDay}` / cc-switch 风格数组 / 数字数组，优先于点分路径）
+  - zhipu 是 custom 的一组内置预设（`ZHIPU_EXTRACTOR` 脚本：`data.limits` 筛 `TOKENS_LIMIT` 按 `nextResetTime` 升序取前两条作 5h / weekly；智谱在 5h 桶=0% 时会省略该条的 `nextResetTime`，缺字段兜底 `-Infinity` 排最前、归 5h 桶，否则会和 weekly 槽位互换），zhipu / custom 走同一条 `runExtractor`（`new Function` 求值）路径；custom 另可用 `extractCustomQuota`（点分字段路径）或 `custom.extractor` 自定义 JS 函数（返回值兼容 `{fiveHour,sevenDay}` / cc-switch 风格数组 / 数字数组，优先于点分路径）
   - token 默认从环境变量 `ANTHROPIC_AUTH_TOKEN` 读（`--token-env` 可改），`--token` 兜底（注意会明文落盘）；header 值支持 `{{token}}` / `{{apikey}}` 占位
   - `cli.ts` `handleStatuslineEmit` 在落盘前调 `applyQuotaToPayload` 把额度填进 `rawPayload.rate_limits`，复用现有展示/落盘/导出/聚合管线，**不 bump export `schemaVersion`**（纯读时填充，与 `recomputeUsage` 同理）
 

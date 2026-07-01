@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.24] - 2026-07-01
+
+### 修复
+- 智谱额度 extractor 修复 5h/7d 槽位互换：5h 桶=0% 时智谱会省略该条的 `nextResetTime`，此前缺字段的那条被当成 weekly，导致 statusline 出现 `5h <weekly值> | 7d 0.0%` 的错位（对照 cc-switch v3.16.0 同类修复）。
+
 ## [0.1.23] - 2026-06-30
 
 ### 新增
