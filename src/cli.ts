@@ -15,7 +15,7 @@ import { openInBrowser, openPath } from "./lib/open";
 import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, parseStatuslinePayload } from "./lib/payload";
 import { getClaudeSettingsPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
 import { installScheduler, uninstallScheduler } from "./lib/scheduler";
-import { applyQuotaToPayload, fetchQuota, readApiConfig, readApiQuotaCacheSync, resolveApiQuota, resolveApiToken, writeApiConfig } from "./lib/api-mode";
+import { applyQuotaToPayload, fetchQuota, readApiConfig, readApiQuotaCacheSync, readClaudeSettingsEnvTokenSync, resolveApiQuota, resolveApiToken, resolveApiTokenWithSettings, writeApiConfig } from "./lib/api-mode";
 import { isSyncDue, maybeSpawnBackgroundSync, performSync, readSyncConfig, readSyncStateSync, sanitizeSuffix, writeSyncConfig } from "./lib/sync";
 import type { ApiModeConfig } from "./types";
 import { appendEvent, readEventsForRange } from "./lib/storage";
@@ -1055,7 +1055,7 @@ async function handleApiConfig(options: CliOptions): Promise<void> {
     `  provider: ${next.provider}`,
     `  token 环境变量: ${next.tokenEnv}`,
     `  token 兜底: ${maskSecret(next.token)}`,
-    `  当前生效 token: ${maskSecret(resolveApiToken(next))}`,
+    `  当前生效 token: ${maskSecret(resolveApiTokenWithSettings(next))}`,
     `  缓存 TTL: ${formatDurationMs(next.cacheTtlMs)}`,
     `  请求超时: ${formatDurationMs(next.timeoutMs)}`,
     `  User-Agent: ${next.userAgent}`,
@@ -1086,8 +1086,21 @@ async function handleApiTest(options: CliOptions): Promise<void> {
   }
 
   process.stdout.write(`正在用 provider=${config.provider} 拉取额度（超时 ${formatDurationMs(config.timeoutMs)}）...\n`);
+
+  // 环境变量和 config.token 都拿不到 token 时，回退到 ~/.claude/settings.json 的 env 字段。
+  // 手动跑 api test 时不在 Claude Code 进程树下，环境变量里通常没有 ANTHROPIC_AUTH_TOKEN，
+  // 而 settings.json 的 env 是 Claude Code 持久化这些变量的地方，正好作为来源。
+  let env: NodeJS.ProcessEnv = process.env;
+  if (!resolveApiToken(config, env)) {
+    const settingsToken = readClaudeSettingsEnvTokenSync(config.tokenEnv);
+    if (settingsToken) {
+      env = { ...process.env, [config.tokenEnv]: settingsToken };
+      debugLog("api-mode", `token from settings.json env.${config.tokenEnv}`);
+    }
+  }
+
   try {
-    const quota = await fetchQuota(config, process.env);
+    const quota = await fetchQuota(config, env);
     const fiveHour = quota.fiveHour !== null ? `${quota.fiveHour.toFixed(1)}%` : "--";
     const sevenDay = quota.sevenDay !== null ? `${quota.sevenDay.toFixed(1)}%` : "--";
     process.stdout.write(`✅ 5h ${fiveHour} | 7d ${sevenDay}${quota.level ? ` | level ${quota.level}` : ""}\n`);
@@ -1118,7 +1131,7 @@ async function handleApiStatus(options: CliOptions): Promise<void> {
   const lines = [
     `  启用: ${config.enabled ? "是" : "否"}`,
     `  provider: ${config.provider}`,
-    `  当前生效 token: ${maskSecret(resolveApiToken(config))}`,
+    `  当前生效 token: ${maskSecret(resolveApiTokenWithSettings(config))}`,
     `  缓存 TTL: ${formatDurationMs(config.cacheTtlMs)}`,
     `  缓存状态: ${ageLabel}`,
   ];

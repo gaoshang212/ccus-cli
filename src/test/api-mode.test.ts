@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ApiModeConfig } from "../types";
-import { ZHIPU_EXTRACTOR, defaultApiConfig, extractCustomQuota, readApiConfig, resolveApiQuota, runExtractor, writeApiConfig } from "../lib/api-mode";
+import { ZHIPU_EXTRACTOR, defaultApiConfig, extractCustomQuota, readApiConfig, readClaudeSettingsEnvTokenSync, resolveApiQuota, resolveApiTokenWithSettings, runExtractor, writeApiConfig } from "../lib/api-mode";
 import { getApiConfigPath } from "../lib/paths";
 
 /** 造一个临时数据目录，避免污染真实 data-dir。 */
@@ -253,4 +253,87 @@ test("writeApiConfig round-trips custom extractor", async () => {
   await writeApiConfig(dataDir, config);
   const read = readApiConfig(dataDir);
   assert.equal(read.custom.extractor, `(r) => ({ fiveHour: r.a, sevenDay: r.b })`);
+});
+
+// --- ~/.claude/settings.json 的 token 回退（ccus api test 手动路径专用） ---
+
+/** 临时造一个 settings.json 路径，避免污染真实 ~/.claude。 */
+async function makeTempSettings(): Promise<{ dir: string; settingsPath: string }> {
+  const dir = await mkdtemp("ccus-api-settings-");
+  return { dir, settingsPath: path.join(dir, "settings.json") };
+}
+
+test("readClaudeSettingsEnvTokenSync reads token from settings env field", async () => {
+  const { dir, settingsPath } = await makeTempSettings();
+  await fs.writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "tok-from-settings" } }), "utf8");
+  try {
+    assert.equal(readClaudeSettingsEnvTokenSync("ANTHROPIC_AUTH_TOKEN", settingsPath), "tok-from-settings");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readClaudeSettingsEnvTokenSync returns null when env field missing", async () => {
+  const { dir, settingsPath } = await makeTempSettings();
+  await fs.writeFile(settingsPath, JSON.stringify({ model: "opus" }), "utf8");
+  try {
+    assert.equal(readClaudeSettingsEnvTokenSync("ANTHROPIC_AUTH_TOKEN", settingsPath), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readClaudeSettingsEnvTokenSync returns null when settings file missing", async () => {
+  const { dir, settingsPath } = await makeTempSettings();
+  try {
+    assert.equal(readClaudeSettingsEnvTokenSync("ANTHROPIC_AUTH_TOKEN", settingsPath), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readClaudeSettingsEnvTokenSync returns null on unparseable settings", async () => {
+  const { dir, settingsPath } = await makeTempSettings();
+  await fs.writeFile(settingsPath, "{not valid json", "utf8");
+  try {
+    assert.equal(readClaudeSettingsEnvTokenSync("ANTHROPIC_AUTH_TOKEN", settingsPath), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readClaudeSettingsEnvTokenSync ignores blank token value", async () => {
+  const { dir, settingsPath } = await makeTempSettings();
+  await fs.writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "   " } }), "utf8");
+  try {
+    assert.equal(readClaudeSettingsEnvTokenSync("ANTHROPIC_AUTH_TOKEN", settingsPath), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readClaudeSettingsEnvTokenSync does not consult apiKeyHelper", async () => {
+  const { dir, settingsPath } = await makeTempSettings();
+  await fs.writeFile(settingsPath, JSON.stringify({ apiKeyHelper: "echo never-used" }), "utf8");
+  try {
+    assert.equal(readClaudeSettingsEnvTokenSync("ANTHROPIC_AUTH_TOKEN", settingsPath), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveApiTokenWithSettings prefers environment variable over config.token", () => {
+  const config = { ...defaultApiConfig(), token: "config-fallback" };
+  assert.equal(resolveApiTokenWithSettings(config, { ANTHROPIC_AUTH_TOKEN: "from-env" }), "from-env");
+});
+
+test("resolveApiTokenWithSettings falls back to config.token when env missing", () => {
+  // 用一个保证不存在于真实 settings.json 的键名，避免读真实 ~/.claude 干扰断言。
+  const config = { ...defaultApiConfig(), tokenEnv: "CCUS_TEST_MISSING_TOKEN_ENV", token: "config-fallback" };
+  assert.equal(resolveApiTokenWithSettings(config, {}), "config-fallback");
+});
+
+test("resolveApiTokenWithSettings returns null when no source has a token", () => {
+  const config = { ...defaultApiConfig(), tokenEnv: "CCUS_TEST_MISSING_TOKEN_ENV", token: null };
+  assert.equal(resolveApiTokenWithSettings(config, {}), null);
 });

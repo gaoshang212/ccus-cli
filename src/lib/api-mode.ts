@@ -4,7 +4,7 @@ import http from "node:http";
 import https from "node:https";
 import { ApiModeConfig, ApiQuota, ApiQuotaCache } from "../types";
 import { debugLog } from "./debug";
-import { getApiConfigPath, getApiQuotaCachePath } from "./paths";
+import { getApiConfigPath, getApiQuotaCachePath, getClaudeSettingsPath } from "./paths";
 
 /** 默认智谱额度查询地址（团队视图 query）。 */
 const DEFAULT_ZHIPU_URL = "https://open.bigmodel.cn/api/monitor/usage/quota/limit?type=2";
@@ -106,6 +106,48 @@ export function resolveApiToken(config: ApiModeConfig, env: NodeJS.ProcessEnv = 
     return fromEnv;
   }
   return typeof config.token === "string" && config.token.trim() !== "" ? config.token : null;
+}
+
+/**
+ * 从 ~/.claude/settings.json 的 env 字段读 tokenEnv 指定的那个键。
+ *
+ * Claude Code 启动子进程时会把 settings.json 的 env 注入环境变量，但用户在终端手动跑
+ * `ccus api test` 时不在 Claude Code 进程树下，环境变量里通常没有 ANTHROPIC_AUTH_TOKEN ——
+ * 这时回退到 settings.json（env 是 Claude Code 持久化这些变量的地方）读取。
+ * 只读 env 字段（apiKeyHelper 需要 spawn 子进程、有副作用，不在此支持）。任何缺失/异常返回 null。
+ */
+export function readClaudeSettingsEnvTokenSync(
+  tokenEnv: string,
+  settingsPath: string = getClaudeSettingsPath(),
+): string | null {
+  try {
+    const raw = fs.readFileSync(settingsPath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) {
+      return null;
+    }
+    const envField = parsed.env;
+    if (!isRecord(envField)) {
+      return null;
+    }
+    const value = envField[tokenEnv];
+    return typeof value === "string" && value.trim() !== "" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 三层回退解析 token：环境变量 → config.token → ~/.claude/settings.json 的 env 字段。
+ *
+ * 仅供 `api test` / `api status` / `api config` 这类手动命令显示与判断用；statusline 高频路径
+ * 仍走纯 `resolveApiToken`（不读文件），行为不变。
+ */
+export function resolveApiTokenWithSettings(
+  config: ApiModeConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  return resolveApiToken(config, env) ?? readClaudeSettingsEnvTokenSync(config.tokenEnv);
 }
 
 /** 把 header 值里的 {{token}} / {{apikey}} 占位符替换成实际 token；token 为空则替换为空串。 */

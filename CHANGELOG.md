@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.25] - 2026-07-01
+
+### 新增
+- `ccus api test` / `api status` / `api config` 在环境变量无 token 时，自动回退从 `~/.claude/settings.json` 的 `env.ANTHROPIC_AUTH_TOKEN` 读取，免去手动 export。
+
 ## [0.1.24] - 2026-07-01
 
 ### 修复
