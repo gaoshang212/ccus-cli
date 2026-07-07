@@ -17,33 +17,51 @@ function makeConfig(): ApiModeConfig {
   return { ...defaultApiConfig(), enabled: true };
 }
 
-test("zhipu preset extractor maps 5h/7d by nextResetTime order", () => {
-  const sample = {
+test("zhipu preset extractor identifies 5h by number===5 even when weekly resets earlier", () => {
+  // 真实抓包：5h 桶 number===5、percentage 23、nextResetTime 1783425204498；
+  // 周桶 number===1、percentage 75、nextResetTime 1783411179996（比 5h 还小）。
+  // 按 nextResetTime 升序会把周桶当 5h → fiveHour=75/sevenDay=23 反了，必须用 number 字段识别。
+  const q = runExtractor(ZHIPU_EXTRACTOR, {
+    success: true,
     code: 200,
-    msg: "操作成功",
+    data: {
+      limits: [
+        { type: "TIME_LIMIT", unit: 5, number: 1, percentage: 1, nextResetTime: 1785398379977 },
+        { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 23, nextResetTime: 1783425204498 },
+        { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 75, nextResetTime: 1783411179996 },
+      ],
+      level: "max",
+    },
+  });
+  assert.equal(q?.fiveHour, 23);
+  assert.equal(q?.sevenDay, 75);
+  assert.equal(q?.level, "max");
+});
+
+test("zhipu preset extractor maps 5h/weekly by number field", () => {
+  const q = runExtractor(ZHIPU_EXTRACTOR, {
     success: true,
     data: {
       limits: [
-        { type: "TIME_LIMIT", percentage: 7, usage: 1000, currentValue: 72, remaining: 928, nextResetTime: 1774663282997 },
-        { type: "TOKENS_LIMIT", percentage: 44, nextResetTime: 1773734366338 },
-        { type: "TOKENS_LIMIT", percentage: 53, nextResetTime: 1774663282997 },
+        { type: "TOKENS_LIMIT", number: 5, percentage: 44 },
+        { type: "TOKENS_LIMIT", number: 1, percentage: 53 },
       ],
       level: "pro",
     },
-  };
-  const q = runExtractor(ZHIPU_EXTRACTOR, sample);
+  });
   assert.equal(q?.fiveHour, 44);
   assert.equal(q?.sevenDay, 53);
   assert.equal(q?.level, "pro");
 });
 
-test("zhipu preset extractor keeps array order when nextResetTime missing", () => {
+test("zhipu preset extractor falls back to nextResetTime order when number missing", () => {
+  // 老接口无 number 字段：退回 nextResetTime 升序（有值优先、缺值按原序，不强制归前/后）。
   const q = runExtractor(ZHIPU_EXTRACTOR, {
     success: true,
     data: {
       limits: [
-        { type: "TOKENS_LIMIT", percentage: 44 },
-        { type: "TOKENS_LIMIT", percentage: 53 },
+        { type: "TOKENS_LIMIT", percentage: 44, nextResetTime: 1773734366338 },
+        { type: "TOKENS_LIMIT", percentage: 53, nextResetTime: 1774663282997 },
       ],
       level: null,
     },
@@ -51,22 +69,6 @@ test("zhipu preset extractor keeps array order when nextResetTime missing", () =
   assert.equal(q?.fiveHour, 44);
   assert.equal(q?.sevenDay, 53);
   assert.equal(q?.level, null);
-});
-
-test("zhipu preset extractor maps missing nextResetTime to 5h bucket", () => {
-  // 智谱在 5h 桶=0% 时会省略该条的 nextResetTime；缺字段的那条必须归 5h，否则 5h/weekly 槽位互换
-  // （bug 表现：fiveHour=8、sevenDay=0）。对照 cc-switch v3.16.0 的同类修复。
-  const q = runExtractor(ZHIPU_EXTRACTOR, {
-    success: true,
-    data: {
-      limits: [
-        { type: "TOKENS_LIMIT", percentage: 0 },
-        { type: "TOKENS_LIMIT", percentage: 8, nextResetTime: 1774663282997 },
-      ],
-    },
-  });
-  assert.equal(q?.fiveHour, 0);
-  assert.equal(q?.sevenDay, 8);
 });
 
 test("zhipu preset extractor tolerates single TOKENS_LIMIT", () => {
