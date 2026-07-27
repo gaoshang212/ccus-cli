@@ -267,7 +267,12 @@ ccus install --codex --data-dir <目录>    # 让 Codex 事件落到指定数据
 ccus install --codex --uninstall          # 移除 ccus 的 Stop hook
 ```
 
-装完首次需在 Codex 用 `/hooks` 信任该 hook（Codex 对非托管 hook 按 hash 审查）；或临时用 `--dangerously-bypass-hook-trust` 跳过。
+装完**重启 Codex** 后会弹出 `hook need review` 审查提示，二选一通过即可：
+
+- 选 `Trust all and continue`，直接信任全部 hook 并继续；
+- 或选 `1 Review hooks`，在列表里找到 ccus 的 `Stop` hook，按 `t` 允许。
+
+也可启动 Codex 时加 `--dangerously-bypass-hook-trust` 跳过审查。
 
 或手动在 `~/.codex/hooks.json` 的 `Stop` 事件加一条 hook（与一键等价）：
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.2] - 2026-07-27
+
+### 变更
+- README 的 Codex 安装说明订正 hook 信任流程：装完重启 Codex 后按 `hook need review` 提示信任（`Trust all and continue`，或 `1 Review hooks` 里找到 ccus 的 Stop hook 按 `t` 允许），不再需要手动 `/hooks`。
+
 ## [0.2.1] - 2026-07-27
 
 ### 变更
