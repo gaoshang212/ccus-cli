@@ -1,6 +1,7 @@
 import { DashboardBucket, DashboardDailyMessagePoint, DashboardSummary, StatuslineEvent } from "../types";
-import { buildSevenDayCurveFromEvents, computeCumulativeSevenDay, computeCumulativeSevenDayCurve } from "./aggregate";
+import { addNullable, buildSevenDayCurveFromEvents, computeCumulativeSevenDay, computeCumulativeSevenDayCurve } from "./aggregate";
 import { ChartSpec, renderUplotChart, uplotBodyScripts, uplotHeadAssets } from "./chart-assets";
+import { isCodexSourceEvent } from "./payload";
 import { formatLocalTimestamp, roundNumber } from "./time";
 
 /** 所有插入到 HTML/SVG 的动态文本都先转义，避免本地页面被注入内容。 */
@@ -24,14 +25,20 @@ function average(values: number[]): number {
  * 这里的 usage 指 Claude 的 5 小时额度使用率，而不是 context window 百分比。
  */
 export function summarizeEvents(events: StatuslineEvent[]): DashboardSummary {
+  // 额度叠加 Codex（与 aggregate 同口径）：peak 取所有读数 max、latest 按 source 分流后相加、7d 累计走合并曲线。
   const usages = events.map((event) => event.usagePct).filter((value): value is number => value !== null);
   const sevenDayUsages = events.map((event) => event.sevenDayUsagePct).filter((value): value is number => value !== null);
-  const latestUsagePct = [...events]
-    .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
-    .find((event) => event.usagePct !== null)?.usagePct ?? null;
-  const latestSevenDayUsagePct = [...events]
-    .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
-    .find((event) => event.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null;
+  const byDesc = (left: StatuslineEvent, right: StatuslineEvent) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime();
+  const claudeByDesc = events.filter((event) => !isCodexSourceEvent(event)).sort(byDesc);
+  const codexByDesc = events.filter(isCodexSourceEvent).sort(byDesc);
+  const latestUsagePct = addNullable(
+    claudeByDesc.find((event) => event.usagePct !== null)?.usagePct ?? null,
+    codexByDesc.find((event) => event.usagePct !== null)?.usagePct ?? null,
+  );
+  const latestSevenDayUsagePct = addNullable(
+    claudeByDesc.find((event) => event.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null,
+    codexByDesc.find((event) => event.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null,
+  );
   // 7d 分区叠加累计：与 aggregate 同一套「去毛刺 + 分段峰谷和」，口径与团队看板一致。
   const sevenDayCumulativeUsagePct = computeCumulativeSevenDay(buildSevenDayCurveFromEvents(events));
 
@@ -184,11 +191,13 @@ function renderDailyMessages(points: DashboardDailyMessagePoint[]): string {
   }
 
   const total = points.reduce((sum, point) => sum + point.userMessageCount, 0);
+  const codexTotal = points.reduce((sum, point) => sum + (point.codexUserMessageCount ?? 0), 0);
 
-  // 离散「天」用 category x（索引 0..n-1 + 月-日标签），单系列纵向柱；uPlot.paths.bars
+  // 离散「天」用 category x（索引 0..n-1 + 月-日标签），双系列纵向柱（Claude / Codex）；uPlot.paths.bars
   // 画柱、draw-hook 在柱顶标数值，cursor 悬停某天在 legend 显示当日计数。
   const xs = points.map((_, index) => index);
   const counts = points.map((point) => point.userMessageCount);
+  const codexCounts = points.map((point) => point.codexUserMessageCount ?? 0);
   const xLabels = points.map((point) => point.date.slice(5));
 
   const spec: ChartSpec = {
@@ -197,13 +206,19 @@ function renderDailyMessages(points: DashboardDailyMessagePoint[]): string {
     xLabels,
     yMin0: true,
     bars: true,
-    series: [{ label: "用户消息数", stroke: "#5eead4", fill: "rgba(94, 234, 212, 0.55)", width: 1 }],
-    legendGroups: [{ label: "用户消息数", color: "#5eead4", seriesIdx: [1] }],
+    series: [
+      { label: "Claude 消息数", stroke: "#5eead4", fill: "rgba(94, 234, 212, 0.55)", width: 1 },
+      { label: "Codex 消息数", stroke: "#f59e0b", fill: "rgba(245, 158, 11, 0.55)", width: 1 },
+    ],
+    legendGroups: [
+      { label: "Claude 消息数", color: "#5eead4", seriesIdx: [1] },
+      { label: "Codex 消息数", color: "#f59e0b", seriesIdx: [2] },
+    ],
   };
-  const chart = renderUplotChart("chart-daily-messages", spec, [xs, counts]);
+  const chart = renderUplotChart("chart-daily-messages", spec, [xs, counts, codexCounts]);
 
-  const noData = total === 0
-    ? `<div class="empty-state">当前时间窗口里还没有统计到 Claude 用户消息。</div>`
+  const noData = total === 0 && codexTotal === 0
+    ? `<div class="empty-state">当前时间窗口里还没有统计到 Claude / Codex 用户消息。</div>`
     : "";
 
   return `
@@ -213,7 +228,7 @@ function renderDailyMessages(points: DashboardDailyMessagePoint[]): string {
           <p class="eyebrow">Daily Messages</p>
           <h2>每日用户消息数</h2>
         </div>
-        <p class="muted">按自然日统计的真实用户请求数（口径同导出 userMessageCount），共 ${total} 条</p>
+        <p class="muted">按自然日统计的真实用户请求数（口径同导出 userMessageCount），共 ${total} 条 Claude · ${codexTotal} 条 Codex</p>
       </div>
       ${noData}
       ${chart}
@@ -287,6 +302,8 @@ export function buildDashboardHtml(
   const summary = summarizeEvents(events);
   const buckets = bucketizeEvents(events, start, end, pickBucketMinutes(start, end));
   const totalUserMessages = dailyUserMessages.reduce((sum, point) => sum + point.userMessageCount, 0);
+  const codexTotalUserMessages = dailyUserMessages.reduce((sum, point) => sum + (point.codexUserMessageCount ?? 0), 0);
+  const combinedUserMessages = totalUserMessages + codexTotalUserMessages;
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -480,8 +497,8 @@ export function buildDashboardHtml(
         </article>
         <article class="panel stat-card">
           <h2>用户消息数</h2>
-          <p class="stat-value">${totalUserMessages}</p>
-          <p class="stat-note">窗口内每日真实用户请求数合计</p>
+          <p class="stat-value">${combinedUserMessages}</p>
+          <p class="stat-note">窗口内每日真实用户请求数合计（Claude ${totalUserMessages} · Codex ${codexTotalUserMessages}）</p>
         </article>
       </section>
       ${renderChart(buckets)}

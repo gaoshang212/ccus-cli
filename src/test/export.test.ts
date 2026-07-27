@@ -78,6 +78,7 @@ test("buildWeeklySummaryJson renders weekly summary document", () => {
     identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
     counts: { userMessageCount: 12, apiRequestCount: 7 },
     tokens: { inputTokens: 1200, outputTokens: 340, cacheReadInputTokens: 890 },
+    codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
       statusline: {
         sampleCount: 5,
         uniqueSessions: 2,
@@ -124,6 +125,7 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
       identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
       counts: { userMessageCount: 12, apiRequestCount: 7 },
       tokens: { inputTokens: 1200, outputTokens: 340, cacheReadInputTokens: 890 },
+    codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
       statusline: {
         sampleCount: 5,
         uniqueSessions: 2,
@@ -157,6 +159,7 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
         sevenDayPeakUsagePct: 71,
         uniqueSessions: 2,
         uniqueWorkspaces: 1,
+        codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
       },
     ],
   };
@@ -193,6 +196,7 @@ test("aggregated daily/weekly csv include sevenDayCumulativeUsagePct column", ()
     sevenDayCumulativeUsagePct: 80,
     uniqueSessions: 1,
     uniqueWorkspaces: 1,
+    codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
   };
   const weeklyRow: AggregatedWeeklyRow = {
     personKey: "alice",
@@ -210,6 +214,7 @@ test("aggregated daily/weekly csv include sevenDayCumulativeUsagePct column", ()
     sevenDayCumulativeUsagePct: 95,
     uniqueSessions: 1,
     uniqueWorkspaces: 1,
+    codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
   };
 
   const dailyCsv = buildAggregatedDailyCsv([dailyRow]);
@@ -218,7 +223,7 @@ test("aggregated daily/weekly csv include sevenDayCumulativeUsagePct column", ()
   // 列顺序：sevenDayLatestUsagePct 之后紧跟 sevenDayCumulativeUsagePct，再到 uniqueSessions。
   assert.match(dailyCsv, /sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions/);
   assert.match(weeklyCsv, /sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions/);
-  // 数值落在 7d latest(40) 与 uniqueSessions(1) 之间。
+  // 数值落在 7d latest(40) 与 uniqueSessions(1) 之间；CSV 行到 uniqueWorkspaces 结束（codex 已并入主字段，不再单列）。
   assert.match(dailyCsv, /,40,80,1,1$/m);
   assert.match(weeklyCsv, /,40,95,1,1$/m);
 

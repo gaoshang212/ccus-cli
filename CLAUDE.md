@@ -75,9 +75,9 @@
 
 当前导出契约版本：
 
-- `schemaVersion: 6`
+- `schemaVersion: 8`
 
-当前对外 usage 字段：
+当前对外 usage 字段（Claude 额度，只算 `source!="codex"` 的事件）：
 
 - `weeklySummary.statusline.fiveHourLatestUsagePct`
 - `weeklySummary.statusline.fiveHourPeakUsagePct`
@@ -88,6 +88,12 @@
 - `dailySummaries[].sevenDayLatestUsagePct`
 - `dailySummaries[].sevenDayPeakUsagePct`
 
+Codex 统计（与 Claude 字段单列）：
+
+- `weeklySummary.codex`：`{ userMessageCount, apiRequestCount, inputTokens, outputTokens, cacheReadInputTokens, fiveHourPeakUsagePct, fiveHourLatestUsagePct, sevenDayPeakUsagePct, sevenDayLatestUsagePct }`
+- `dailySummaries[].codex`：同结构，每天一条
+- token/消息来自 Codex sessions rollout（累加）；额度（5h/7d peak/latest）从 `source="codex"` 事件重算（快照，v8 起单列）
+
 `averageUsagePct` 已从对外汇总/导出契约中移除。
 旧的 `sevenDayUsagePct` 单字段已在 schemaVersion 6 拆成 `sevenDayPeakUsagePct` + `sevenDayLatestUsagePct`，不要再合回去。
 
@@ -95,12 +101,12 @@
 
 ### 2.5 aggregate 输入契约
 
-`ccus aggregate` 当前只接受：
+`ccus aggregate` 当前接受：
 
-- `schemaVersion: 6` 的 bundle JSON
+- `schemaVersion: 6/7/8` 的 bundle JSON（v8 含 codex 额度字段；v7 codex 无额度、读时按 null；v6 无 codex 子结构、读时回退零值）
 - 通过 `ccus export` 导出的 `.json.gz`（gzip 压缩，默认）或明文 `.json` 文件，`.gz` 读取时自动 gunzip
 
-旧 schema bundle 现在会被明确拒绝，不再静默读取。
+schemaVersion 6/7/8 以外的 bundle 会被明确拒绝，不再静默读取。
 不支持把 raw-event jsonl 直接作为 `aggregate` 输入。
 
 ### 2.6 aggregate 输出契约
@@ -122,11 +128,12 @@
 
 这套合并只改变行的去重 / 取值逻辑，CSV 列集合与 `schemaVersion` 都不变（`sevenDayCumulativeUsagePct` 纯在 aggregate 层从 `rawEvents` 重算，与 `recomputeUsage` 同理，**不 bump export `schemaVersion`**）。winner 判定依赖 bundle 顶层已有的 `generatedAt`，不需要给导出加机器标识字段。实现见 `selectDailyWinners` / `buildAggregatedWeeklyRows` / `recomputeUsage` / `buildPersonSevenDayCurve` / `computeCumulativeSevenDay`。
 
-- `detail.csv` 列：`personKey, timestamp, week, date, sessionId, workspaceName, modelName, fiveHourUsagePct, contextWindowPct, contextUsedM, contextMaxM, inputTokensM, outputTokensM, cacheReadInputTokensM`
+- `detail.csv` 列：`personKey, timestamp, week, date, sessionId, workspaceName, modelName, source, fiveHourUsagePct, contextWindowPct, contextUsedM, contextMaxM, inputTokensM, outputTokensM, cacheReadInputTokensM`
+  - `source` 标记事件来源（`claude` / `codex`）；codex 行的 `*TokensM` 留 0（codex 无单事件 token 语义，token 在 daySummary.codex 按天聚合）
   - 历史上有的 `sourceFile`、`workspaceDir`、`statusLine`、`gitUserName`、`gitUserEmail` 已移除，不要再加回来
   - `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 是**该事件所在自然日**的 token 总量（从同一 bundle 的 `dailySummaries` 按 `date` join 而来），不是单条事件的 token。同一天的多条 detail 行会重复同一组日总量，所以这三列不能直接按行求和
   - `contextUsedM` / `contextMaxM` 是单条事件的 context window token（来自 `rawPayload`），同样换算成 M；`contextWindowPct` 仍是百分比，不换算
-- `daily.csv` / `weekly.csv` 都包含 `fiveHourPeakUsagePct` / `fiveHourLatestUsagePct` / `sevenDayPeakUsagePct` / `sevenDayLatestUsagePct` 四个 usage 列、`sevenDayCumulativeUsagePct` 累计列（紧跟在 `sevenDayLatestUsagePct` 之后），以及 `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 三个 token 列
+- `daily.csv` / `weekly.csv` 都包含 `fiveHourPeakUsagePct` / `fiveHourLatestUsagePct` / `sevenDayPeakUsagePct` / `sevenDayLatestUsagePct` 四个 usage 列、`sevenDayCumulativeUsagePct` 累计列（紧跟在 `sevenDayLatestUsagePct` 之后），以及 `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 三个 token 列。这些主字段都是 **Claude+Codex 合计**：token/消息/请求数直接相加，额度 peak 取两源 max、latest 两源相加，7d 累计曲线含 Claude 与 Codex 两源读数（codex 事件不再按 source 过滤）。不再单列 `codex*` 列（codex 明细只在 `aggregate serve` 看板表格里保留）
 - 所有以 token 计的列（detail 的 `contextUsedM` / `contextMaxM` / `*TokensM`，daily/weekly 的 `*TokensM`）都以**百万（M）为单位**：原始整数除以 1_000_000 后写出（`export.ts` 的 `toMillions`，保留 6 位小数，null 仍写空）。bundle JSON 里仍是原始整数，M 换算只发生在 CSV 展示层，所以本次改动不动 `schemaVersion`。`*M` 后缀就是单位标记，不要去掉
 
 `ccus aggregate serve` 与 `ccus aggregate` 共用同一个 bundle 输入目录，但不写文件，只在内存里渲染多人 dashboard HTML 并通过本地 HTTP 端口提供页面。新增字段时，serve 路径的 HTML 也要同步更新，避免对外契约和页面展示脱节。
@@ -161,6 +168,9 @@
 - `ccus --version`
 - `ccus __check-update`（隐藏命令，statusline 路径 spawn 的 detached 后台进程，只刷新更新缓存，不输出 stdout）
 - `ccus __sync`（隐藏命令，statusline 路径 spawn 的 detached 后台进程，静默执行一次同步，不输出 stdout、失败静默）
+- `ccus __codex-notify`（隐藏命令，Codex `notify`（config.toml）每 turn 结束 spawn 的回调程序；从末尾 argv 读 notify JSON 的 `cwd`/`thread-id` → `recordCodexEvent`（拉额度 + 构造 `source="codex"` 事件落盘 + 心跳 + 兜底 sync）；不写 stdout、失败 debugLog 到 stderr 后静默退出 0。**orca 等会覆盖 config.toml 的环境 notify 不持久，改用 `__codex-hook`**）
+- `ccus __codex-hook`（隐藏命令，Codex hooks.json 的 `Stop` 事件回调程序，orca 等 hook-only 环境的触发入口；从 stdin 读 hook payload 的 `cwd`/`session_id` → `recordCodexEvent`（与 notify 共享同一采集/落盘/sync 逻辑）；不写 stdout（Stop 要求 stdout 空或 JSON，ccus 选空 + exit 0 = success 不干预 Codex）、失败静默；stdin 非法 JSON（Windows Stop 偶发 #23784）容错；`finally` 调 `maybeSpawnBackgroundSync` 兜底触发 3h 定时同步，与 Claude statusline 路径对称）
+- `ccus install --codex`（一键把 `ccus __codex-hook`（Windows 用 `ccus.cmd`）挂进 `~/.codex/hooks.json` 的 `Stop` 事件，与现有 Stop hook 并列并发；`--data-dir` 追加、`--codex --uninstall` 移除、`--config PATH` 覆盖 hooks.json 路径；首次需在 Codex `/hooks` 信任该 hook；不带 `--codex` 时仍装 Claude statusLine）
 
 ### 3.2 核心库
 
@@ -211,10 +221,31 @@
   - 手动命令（`api test` 拉取、`api status` / `api config` 显示）在环境变量与 `--token` 都没有时，经 `resolveApiTokenWithSettings` → `readClaudeSettingsEnvTokenSync` 回退读 `~/.claude/settings.json` 的 `env[tokenEnv]`；statusline 高频路径仍走纯 `resolveApiToken`（不读文件），行为不变
   - `cli.ts` `handleStatuslineEmit` 在落盘前调 `applyQuotaToPayload` 把额度填进 `rawPayload.rate_limits`，复用现有展示/落盘/导出/聚合管线，**不 bump export `schemaVersion`**（纯读时填充，与 `recomputeUsage` 同理）
 
+- `src/lib/codex-fetcher.ts`
+  - Codex CLI 额度采集：`fetchCodexQuota` spawn `codex -s read-only -a untrusted app-server`，JSON-RPC 握手（`initialize` → 收响应 → 发 `initialized` 通知 → `account/rateLimits/read`，**不发 initialized 会被拒为 Not initialized**），解析 `result.rateLimits.primary`→5h / `secondary`→weekly
+  - 字段名实测是**驼峰** `usedPercent` / `resetsAt`（Unix 秒），**不是** design 文档写的 `used_percent` / `reset_at`（后者是 backend wham/usage 直连路径的字段，本路径不走）；解析时驼峰优先、`used_percentage`/`usedPercentage` fallback，clamp 0–100；ENOENT→`unavailable`、超时/RPC error/进程提前退出→`error`，全程不抛错
+  - `resolveCodexQuota`：TTL 缓存（默认 5min，`codex-quota-cache.json`），命中秒回、过期才 spawn（带 ~10s 超时）、失败回退旧缓存、全失败或无有效数据返回 null；`options.fetcher` 供测试注入
+  - spawn 用 `env: { ...process.env, CODEX_HOME }` 继承（`CODEX_HOME` 默认 `~/.codex`）；Windows 上 codex 多为 codex.cmd，`shell:true` 兜底
+  - 由 `cli.ts` 的 `recordCodexEvent` 调用（`__codex-notify` argv 回调与 `__codex-hook` stdin 回调共享同一采集逻辑），拉到额度后经 `applyQuotaToPayload` 填 `rawPayload.rate_limits`（`primary`→`five_hour`、`secondary`→`seven_day`）+ `appendEvent` 落盘，打 `rawPayload.source="codex"` 标记；v8 起按 source 分流进 export/aggregate——Claude usage 只算 claude 事件、Codex 额度单列到 `weeklySummary.codex` / `dailySummaries[].codex` 的 5h/7d peak/latest（从 source=codex 事件重算），detail.csv 加 `source` 列、aggregate daily/weekly CSV 加 codex 额度列
+  - 依赖 Codex 内部 app-server 协议，**易碎**：协议字段随版本变，解析层宽松、字段缺失返回 null、失败静默；Codex 桌面版 app 不在本期范围（无 notify 触发点）
+
+- `src/lib/codex-install.ts`
+  - `ccus install --codex` 的实现：`installCodexHook` / `uninstallCodexHook` 读写 `~/.codex/hooks.json`，把 ccus 的 command hook 追加进 `hooks.Stop` 第一个分组的 `hooks` 数组（与 orca 等现有 Stop hook 并列、由 Codex 并发执行，互不阻塞），保留其它事件 / 其它 hook / description / 格式；Stop 已有相同 command 则不动文件（幂等），Stop 不存在则新建一个分组；卸载只移除 command 含 `__codex-hook` 的条目、保留其它 hook；非法 hooks.json 抛错不覆盖（避免破坏 orca 写入的文件）
+  - hook command 默认 `ccus __codex-hook`（Windows 用 `ccus.cmd __codex-hook`），`--data-dir` 追加 `--data-dir <path>`（cli 层构造）；timeout 60s（缓存命中秒回、过期拉额度 ~10s）
+  - 选 hooks.json 而非 config.toml notify 的原因：orca 等外部工具会重写 config.toml（实测把 ccus 的 notify 顶成自己的弹窗 notify），hooks.json 不被频繁重写、是 hook-only 环境的持久触发入口；首次装完需在 Codex `/hooks` 信任该 hook
+  - `installCodexNotify` / `uninstallCodexNotify`（文本操作 config.toml 顶层 notify，找第一个 table 头之前的 notify 赋值行，保留其它 key/table/注释/格式；跨行数组拒绝改写）仍作为库函数保留供非 orca 环境或手配 notify 使用，但 `install --codex` 不再走它
+  - 纯写 hooks.json / config.toml，不碰 export/aggregate 契约，不 bump `schemaVersion`
+
+- `src/lib/codex-sessions.ts`
+  - 扫 `<CODEX_HOME>/sessions` 下递归的 rollout jsonl（仿 `claude.ts`），统计 Codex 的 userMessageCount / apiRequestCount / inputTokens / outputTokens / cacheReadInputTokens
+  - 口径：`payload.type=="user_message"` 计消息；`payload.type=="token_count"` 取 `info.last_token_usage`（本次增量，**不**用 `total_token_usage` 累计，否则重复计）累加 token、+1 请求；timestamp 在 top-level
+  - `summarizeCodexSessionUsage` / `summarizeCodexSessionUsageByDay` 由 `cli.ts` 的 `runExport` 与 `loadDashboardData` 调用，填进 `weeklySummary.codex` / `dailySummaries[].codex`（export）和每日消息柱图（dashboard）
+  - rollout 协议随 Codex 版本变，**易碎**：解析宽松、缺字段按 0
+
 - `src/lib/aggregate.ts`
   - 读取 bundle JSON
   - 从 bundle 展开 detail/daily/weekly 行
-  - 当前会校验 `schemaVersion: 6`
+  - 当前校验 `schemaVersion` 为 6/7/8（v8 含 codex 额度；v7/v6 容错：codex 额度字段缺失按 null/零值）
   - 同一个人多台电脑导出多个 bundle 时按 personKey 合并去重（见 2.6）
 
 - `src/lib/claude.ts`
@@ -266,6 +297,12 @@
 - `src/test/aggregate-dashboard.test.ts`
 - `src/test/install.test.ts`
 - `src/test/api-mode.test.ts`
+- `src/test/codex-fetcher.test.ts`
+- `src/test/codex-sessions.test.ts`
+- `src/test/codex-install.test.ts`
+- `src/test/cli-codex-notify.test.ts`
+- `src/test/cli-codex-hook.test.ts`
+- `src/test/cli-install-codex.test.ts`
 - `src/test/debug.test.ts`
 
 ## 4. 常用开发命令
@@ -344,14 +381,16 @@ node dist/cli.js aggregate --input-dir "$env:LOCALAPPDATA\ccus\exports" --out-di
 6. 更新 `README.md`
 7. 视情况 bump `schemaVersion`
 
-### 5.4 aggregate 不做宽松兼容
+### 5.4 aggregate 向后兼容
 
-当前策略是 fail-fast：
+当前接受 `schemaVersion: 6/7/8`，对旧版本做显式容错映射（不默默放宽）：
 
-- 只接受 `schemaVersion: 5`
-- 旧 bundle 直接报错，让用户重新导出
+- v8：完整（codex 含额度字段）
+- v7：codex 有 token/消息、无额度字段 → 额度按 null
+- v6：无 codex 子结构 → codex 回退零值
+- 6/7/8 以外：拒绝，让用户重新导出
 
-如果你要改成向后兼容，请显式实现映射，不要默默放宽校验。
+codex 额度在 aggregate 层从 `rawEvents` 的 `source="codex"` 事件重算，所以 v6/v7 时期混进 rawEvents 的 codex 事件也能被正确分流（Claude usage 变干净、codex 额度算出）。
 
 ## 6. 当前已知产品语义
 

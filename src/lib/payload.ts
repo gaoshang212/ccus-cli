@@ -332,6 +332,16 @@ export function createPersistedStatuslineEvent(payload: RawStatuslinePayload, no
   };
 }
 
+/** 判断事件是否来自 Codex（rawPayload.source === "codex"）；Claude statusline 事件无该字段，视为 claude。 */
+export function isCodexSourceRecord(record: PersistedStatuslineEvent): boolean {
+  return record.rawPayload?.source === "codex";
+}
+
+/** StatuslineEvent 视图版的 Codex 来源判断（event.rawPayload 透传自 record）。 */
+export function isCodexSourceEvent(event: StatuslineEvent): boolean {
+  return event.rawPayload?.source === "codex";
+}
+
 /**
  * 从持久化事件计算出 dashboard/export/statusline 使用的完整视图。
  *

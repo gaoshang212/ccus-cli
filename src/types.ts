@@ -10,6 +10,11 @@ export interface RawStatuslinePayload {
   context_window?: unknown;
   rate_limits?: unknown;
   cwd?: unknown;
+  /**
+   * 事件来源标记：Codex 事件打 `"codex"`，Claude Code statusline 事件无此字段（读时视为 `"claude"`）。
+   * export/aggregate 按 source 分流——Claude usage 只算 claude 事件、Codex 额度单列；detail.csv 的 source 列也取此字段。
+   */
+  source?: unknown;
   [key: string]: unknown;
 }
 
@@ -97,6 +102,8 @@ export interface DashboardSummary {
 export interface DashboardDailyMessagePoint {
   date: string;
   userMessageCount: number;
+  /** Codex 的每日用户消息数，与 Claude 的 userMessageCount 单列（缺失视为 0）。 */
+  codexUserMessageCount?: number;
 }
 
 /** 导出 summary 模式时按天汇总的行结构。 */
@@ -110,6 +117,23 @@ export interface ExportSummaryRow {
   sevenDayPeakUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
+}
+
+/**
+ * Codex CLI 的统计快照，与 Claude 对应字段单列。
+ * - 消息/请求/token：来自 CODEX_HOME 下 sessions rollout（按天/按周累加）。
+ * - 额度（5h/7d peak/latest）：从 source="codex" 的 statusline 事件重算（快照，非累加）。
+ */
+export interface CodexUsageSnapshot {
+  userMessageCount: number;
+  apiRequestCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  fiveHourPeakUsagePct: number | null;
+  fiveHourLatestUsagePct: number | null;
+  sevenDayPeakUsagePct: number | null;
+  sevenDayLatestUsagePct: number | null;
 }
 
 /** 默认导出使用的本周汇总结构。 */
@@ -134,6 +158,8 @@ export interface WeeklyExportSummary {
     outputTokens: number;
     cacheReadInputTokens: number;
   };
+  /** Codex CLI 的消息/请求/token 统计，与上面的 Claude counts/tokens 单列。 */
+  codex: CodexUsageSnapshot;
   statusline: {
     sampleCount: number;
     uniqueSessions: number;
@@ -168,6 +194,8 @@ export interface WeeklyExportDaySummary {
   sevenDayPeakUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
+  /** Codex CLI 的消息/请求/token 统计（单列）。 */
+  codex: CodexUsageSnapshot;
 }
 
 /** 默认导出文件结构：保留原始事件，同时附带按天周汇总。 */
@@ -193,6 +221,8 @@ export interface AggregatedEventRow extends StatuslineEvent {
   personKey: string;
   weekKey: string;
   dateKey: string;
+  /** 事件来源："claude"（statusline）或 "codex"（Codex 额度事件），用于 detail.csv 的 source 列。 */
+  source: "claude" | "codex";
   /** 该事件所在自然日的 token 总量，来自同一 bundle 的 dailySummaries（按天总量，非单事件）。 */
   inputTokens: number;
   outputTokens: number;
@@ -220,6 +250,8 @@ export interface AggregatedDailyRow {
   sevenDayCumulativeUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
+  /** Codex CLI 的消息/请求/token 统计（单列，跟随 winner 的 daySummary）。 */
+  codex: CodexUsageSnapshot;
 }
 
 /**
@@ -266,6 +298,8 @@ export interface AggregatedWeeklyRow {
   sevenDayCumulativeUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
+  /** Codex CLI 的消息/请求/token 统计（单列，跟随 winner 的 daySummary）。 */
+  codex: CodexUsageSnapshot;
 }
 
 /** API 模式（第三方额度拉取）支持的 provider 类型。 */

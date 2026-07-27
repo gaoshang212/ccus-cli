@@ -162,7 +162,7 @@ ccus aggregate serve --input-dir ./team-exports
 - 默认输出一个 `json` 数据包，里面同时包含 `rawEvents`、`weeklySummary`、`dailySummaries`
 - 导出文件内容为**紧凑 JSON**（无缩进），并默认 **gzip 压缩**后写成 `.json.gz`；gzip 与紧凑化都只是存储/展示层变化，解压后的字段集合与 `schemaVersion` 不变
 - 默认写 `.json.gz`；若用 `--out` 指定一个非 `.gz` 结尾的路径，则按明文 JSON 写出（不压缩）
-- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `6`，用于标识已使用 `fiveHourLatestUsagePct`、`fiveHourPeakUsagePct`、`sevenDayLatestUsagePct`、`sevenDayPeakUsagePct` 字段的新导出契约
+- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `8`：v7 起新增 `weeklySummary.codex` 与 `dailySummaries[].codex`（Codex CLI 的消息/请求/token 统计），v8 起该 codex 段再加 5h/7d 的 peak/latest 额度（从 `source="codex"` 事件重算、与 Claude 额度分开看）；aggregate daily/weekly CSV 的主字段（消息/请求/token/额度）已把 Codex **叠加进 Claude 合计**（累加量相加、额度 peak 取两源 max、latest 两源相加、7d 累计含两源读数），不再单列 `codex*` 列，detail.csv 加 `source` 列区分来源
 - 默认文件名会带 git email 的帐号名前缀和起止日期，例如：`alice_export_2026-05-26_to_2026-06-01.json.gz`
 - `userMessageCount` 来自 `~/.claude/projects/**/*.jsonl` 的非 meta `type:user` 事件
 - `apiRequestCount` 与 token 指标来自 `~/.claude/projects/**/*.jsonl` 中带 `message.usage` 的 `type:assistant` 事件
@@ -172,15 +172,15 @@ ccus aggregate serve --input-dir ./team-exports
 ## 多人汇总
 
 - 输入目录放很多通过 `ccus export` 导出的 bundle 文件，`.json.gz`（gzip 压缩）与明文 `.json` 都能识别，gzip 文件读取时自动解压
-- `aggregate` 目前只接受 `schemaVersion: 6` 的 bundle；旧导出请先用当前版本重新 `ccus export`
-- 同一个人在多台电脑上各自导出 bundle 时会自动合并去重：去重以**天**为粒度，对每个「同人同天」取 `generatedAt` 最新的那份导出，避免同一台机器重复导出或周与周重叠造成翻倍；**周汇总不取整周单份，而是把按天去重后的各天数据上卷累加**，所以多台电脑在不同天产生的用量会正确合进同一周。usage（5h / 7d）从选中事件按真实时间戳重算（peak 取 max、latest 取最新）
+- `aggregate` 接受 `schemaVersion: 6/7/8` 的 bundle（v8 含 codex 额度，v7/v6 容错回退 null/零值）；更旧的导出请先用当前版本重新 `ccus export`
+- 同一个人在多台电脑上各自导出 bundle 时会自动合并去重：去重以**天**为粒度，对每个「同人同天」取 `generatedAt` 最新的那份导出，避免同一台机器重复导出或周与周重叠造成翻倍；**周汇总不取整周单份，而是把按天去重后的各天数据上卷累加**，所以多台电脑在不同天产生的用量会正确合进同一周。usage（5h / 7d）从选中事件按真实时间戳重算，Claude+Codex 合并：peak 取两源 max、latest 两源相加
 - `ccus aggregate --input-dir DIR --out-dir DIR`
 - 输出三个文件：
   - `detail.csv`：来自 winner bundle 的 `rawEvents`（同人同天只展开最新那份的事件），`contextUsedM` / `contextMaxM` 为单条事件的 context window token；另附带 `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM`（按 `date` 取自当天 `dailySummaries` 的日总量，同一天多行会重复，不能按行求和）
   - `daily.csv`：同人同天取最新导出 bundle 的 `dailySummaries`，usage 从该 bundle 当天事件重算
   - `weekly.csv`：把同人同周的各天 winner（已按天去重）上卷累加得到，usage 从该周全部 winner 天的事件重算
 - `daily.csv` / `weekly.csv` 还各带一列 `sevenDayCumulativeUsagePct`：7 天额度的**累计真实使用量**，把锯齿波（涨到峰值→窗口重置归零→再涨）还原成实际消耗。计算分两层：先**去毛刺**（把持续短于 2 分钟的 stale 瞬时读数尖峰抹平，只保留真实持续的水平），再做**分段峰谷和**（按 reset 跌破段峰值一半切成上升段，每段累加「段内峰值−谷值」）。以百分比累加表达、可大于 100（用掉多于一个 7d 额度）。对 ±1 采样抖动和 stale 读数尖峰都鲁棒，不会被噪声虚增
-  - 该列**绕开按天 winner**，对同一个人**所有机器、所有周**的 bundle `rawEvents` 先按时间合并去重成一条账号级曲线再算，绝不分机相加（同账号 7d 额度共享）
+  - 该列**绕开按天 winner**，对同一个人**所有机器、所有周**的 bundle `rawEvents`（含 Claude 与 Codex 两源 7d 读数，codex 事件不再过滤）先按时间合并去重成一条账号级曲线再算，绝不分机相加（同账号 7d 额度共享）
   - 区间内第一个有效样本无前值、不贡献增量，所以 **`daily.csv` 逐行相加只是对全局总量的近似**（跨天边界增量不计入单天）；`weekly.csv` 在整周连续算、把跨天增量也计入，更连续，恒有 `weekly ≥ Σ 同周 daily`，想要更准的总量请看 weekly 这列
   - 无有效样本写空（`null`），有样本但无净增长写 `0`；`detail.csv` 不含此列（单事件行不承载区间累计语义）
 - CSV 里所有以 token 计的列（context 与 in/out/cache）都以百万（M）为单位（原始值除以 1,000,000），列名统一带 `M` 后缀；`contextWindowPct` 仍是百分比
@@ -254,6 +254,48 @@ ccus api config    # 不带参数：打印当前配置
 - **自定义 provider**：`--provider custom` 配其它厂商。简单响应用 `--url` / `--method` / `--header "K: V; K2: V2"`（header 值支持 `{{token}}` 占位）/ `--five-hour-path` / `--seven-day-path`（点分路径，如 `data.limits.0.percentage`）映射字段；响应结构复杂（数组筛选/排序）时用 `--extractor-file script.js` 写一段 JS 函数，接收响应对象、返回 `{ fiveHour, sevenDay }` 或 cc-switch 风格的 `[{used}, {used}]`，配了 extractor 就优先于点分路径。脚本在 ccus 进程内执行，只放信任的来源。
 
 > API 模式填充的 5h/7d 会和官方 `rate_limits` 走同一条聚合管线（含 7d 累计去毛刺算法，该算法针对 Claude 官方锯齿波设计）；不同厂商的额度曲线语义可能不完全一致，混用聚合时注意。
+
+## Codex 额度采集（Codex CLI）
+
+ccus 也能采集 Codex CLI 的 5 小时 / 周额度，复用同一条 statusline 落盘管线。Codex 没有 statusline hook，改用它的 **hooks.json `Stop` 事件**（每个 turn 结束触发）调起 ccus 的隐藏命令，再 spawn `codex app-server` 走 JSON-RPC `account/rateLimits/read` 拉额度。
+
+**一键安装（推荐）**：
+
+```bash
+ccus install --codex                      # 把 Stop hook 挂进 ~/.codex/hooks.json
+ccus install --codex --data-dir <目录>    # 让 Codex 事件落到指定数据目录
+ccus install --codex --uninstall          # 移除 ccus 的 Stop hook
+```
+
+装完首次需在 Codex 用 `/hooks` 信任该 hook（Codex 对非托管 hook 按 hash 审查）；或临时用 `--dangerously-bypass-hook-trust` 跳过。
+
+或手动在 `~/.codex/hooks.json` 的 `Stop` 事件加一条 hook（与一键等价）：
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "ccus __codex-hook", "timeout": 60 } ] }
+    ]
+  }
+}
+```
+
+之后每个 Codex turn 结束都会调起 `ccus __codex-hook`，把 hook payload（含 `cwd`、`session_id`，不含 usage）作为 stdin 的一个 JSON 对象传入。ccus 拉额度、落盘一条 `source="codex"` 的事件，**不写 stdout、不干预 Codex**（Stop 要求 stdout 空或 JSON，ccus 选空 + exit 0 = success；失败静默退出 0）。`ccus install --codex` 只往 `Stop` 追加一条 hook，保留其它事件 / 其它 hook / description / 格式；已是目标则提示已配置、不动文件。
+
+> **为什么是 hooks.json 而不是 config.toml 的 notify？** Codex 原生也支持 `config.toml` 的 `notify`，但 orca 等会重写 `config.toml`（实测把 ccus 的 notify 顶成它自己的弹窗 notify，ccus 永远收不到回调）。hooks.json 不被频繁重写，是 hook-only 环境的持久触发入口；同一 `Stop` 事件下多条 hook 由 Codex 并发执行，ccus 与 orca 自带的 hook 互不干扰。
+
+要点：
+
+- **只支持 Codex CLI**：hooks 与 `codex app-server` 都是 CLI 能力。Codex 桌面版 app（已并入 ChatGPT 桌面 app）不一定触发 CLI 的 hooks、也不一定随附可 spawn 的 `codex` 二进制，不在本期范围。
+- **代理继承**：ccus 由 Codex 直接 spawn，已继承 Codex 的代理 / `CODEX_HOME`；它再 spawn `codex app-server` 时透传 `process.env`，整条链同环境。必须让 codex 子进程发请求（它读 `HTTP_PROXY`/`HTTPS_PROXY`），不能用 ccus 自己的 Node `fetch`（裸 fetch 不读代理、代理环境下直连失败）。
+- **定时同步**：Stop hook 还兜底触发 `ccus sync`（与 Claude statusline 对称）——配过 `ccus sync config --target` 后，Codex 每 turn 结束都会检查 3h 周期，到期自动 export + 复制 bundle（含 Codex token/消息）到目标目录。只用 Codex、不开 Claude Code 时也能自动同步。
+- **缓存节流**：Stop 每 turn 触发，额度按 5 分钟 TTL 缓存（`codex-quota-cache.json`），命中秒回不 spawn；过期才拉一次（带 ~10s 超时），失败回退旧缓存。
+- **字段映射**：app-server 返回 `primary`（5h）/ `secondary`（weekly）两窗口，取各自的 `usedPercent`（驼峰，clamp 0–100）；ccus 填进 `rate_limits.five_hour` / `seven_day` 的 `used_percentage`，`computeStatuslineEvent` 读时自动算出 usage。
+- **token / 消息 / 额度都进 export / aggregate**：Codex 的 token、用户消息数、API 请求数从 `<CODEX_HOME>/sessions` 的 rollout 统计，进 `ccus export` 的 `weeklySummary.codex` / `dailySummaries[].codex` 段；Stop 落盘的额度快照（`source="codex"` 事件）也进 export/aggregate——export bundle 里 Codex 额度单列到 codex 段、与 Claude 分开看，aggregate daily/weekly CSV 则把 Codex **叠加进 Claude 主字段**合计（累加量相加、额度 peak 取两源 max、latest 两源相加、7d 累计含两源），不再单列 `codex*` 列；detail.csv 的 `source` 列区分来源。
+- **Windows**：`install --codex` 在 Windows 写 `ccus.cmd __codex-hook`（npm 全局装会生成 `ccus.cmd`）；Windows 上 Stop hook 偶发收到非法 JSON（已知 bug #23784），ccus 容错按无 payload 处理、仍照常拉额度 + 落盘。
+
+> 该路径依赖 Codex 内部 app-server 协议（`account/rateLimits/read` 的返回结构）与 hooks payload schema，随版本变；解析层宽松，字段缺失返回 null、失败静默。
 
 ## 调试
 

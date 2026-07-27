@@ -5,6 +5,7 @@ import { buildDashboardHtml } from "./lib/dashboard";
 import { summarizeEvents } from "./lib/dashboard";
 import { buildAggregateDashboardHtml } from "./lib/aggregate-dashboard";
 import { findActiveSessionFiles, summarizeClaudeProjectUsage, summarizeClaudeProjectUsageByDay } from "./lib/claude";
+import { summarizeCodexSessionUsage, summarizeCodexSessionUsageByDay } from "./lib/codex-sessions";
 import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeeklyCsv, buildSummaryRows, buildWeeklyExportBundleJson, writeGzipFile, writeTextFile } from "./lib/export";
 import { buildAggregatedDailyRows, buildAggregatedDetailRows, buildAggregatedWeeklyRows, loadWeeklyExportBundles } from "./lib/aggregate";
 import { debugLog, resolveDebugEnabled, setDebugEnabled } from "./lib/debug";
@@ -12,12 +13,14 @@ import { readGitBranch, readGitIdentity } from "./lib/git";
 import { installStatusline } from "./lib/install";
 import { readStdin } from "./lib/io";
 import { openInBrowser, openPath } from "./lib/open";
-import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, parseStatuslinePayload } from "./lib/payload";
-import { getClaudeSettingsPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
+import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, isCodexSourceEvent, parseStatuslinePayload } from "./lib/payload";
+import { getClaudeSettingsPath, getCodexHooksPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
 import { installScheduler, uninstallScheduler } from "./lib/scheduler";
 import { applyQuotaToPayload, fetchQuota, readApiConfig, readApiQuotaCacheSync, readClaudeSettingsEnvTokenSync, resolveApiQuota, resolveApiToken, resolveApiTokenWithSettings, writeApiConfig } from "./lib/api-mode";
+import { resolveCodexQuota } from "./lib/codex-fetcher";
+import { installCodexHook, uninstallCodexHook } from "./lib/codex-install";
 import { isSyncDue, maybeSpawnBackgroundSync, performSync, readSyncConfig, readSyncStateSync, sanitizeSuffix, writeSyncConfig } from "./lib/sync";
-import type { ApiModeConfig } from "./types";
+import type { ApiModeConfig, RawStatuslinePayload } from "./types";
 import { appendEvent, readEventsForRange } from "./lib/storage";
 import { enumerateDateKeys, expandToFullWeekWindow, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
 import { computeUpdateNotice, fetchLatestVersion, maybeSpawnBackgroundCheck, performUpdateCheck } from "./lib/update-check";
@@ -29,7 +32,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
-  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus sessions [RANGE] [--out FILE] [--data-dir PATH]   (把 ~/.claude/projects 本周活跃 session 打包成 zip，名如 projects_<dates>_<user>.zip)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus api config [--enable|--disable] [--provider zhipu|custom] [--token-env NAME] [--token VAL] [--url URL] [--project P] [--organization O] [--ttl 5m] [--extractor-file FILE] [--data-dir PATH]\n  ccus api test [--data-dir PATH]   (立即拉取第三方额度并打印，验证配置是否生效)\n  ccus api status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
+  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]   (默认装 Claude statusLine；--codex 改写 Codex 的 ~/.codex/config.toml notify，配 --uninstall 移除)\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus sessions [RANGE] [--out FILE] [--data-dir PATH]   (把 ~/.claude/projects 本周活跃 session 打包成 zip，名如 projects_<dates>_<user>.zip)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus api config [--enable|--disable] [--provider zhipu|custom] [--token-env NAME] [--token VAL] [--url URL] [--project P] [--organization O] [--ttl 5m] [--extractor-file FILE] [--data-dir PATH]\n  ccus api test [--data-dir PATH]   (立即拉取第三方额度并打印，验证配置是否生效)\n  ccus api status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
 /** 一个轻量的参数解析器，当前命令面不复杂，没必要引入额外依赖。 */
@@ -102,6 +105,9 @@ function buildDefaultStatuslineCommand(dataDir: string | undefined): string {
  * 默认写 `~/.claude/settings.json`，只覆盖 statusLine 字段，其它设置原样保留。
  */
 async function handleInstall(options: CliOptions): Promise<void> {
+  if (getBooleanOption(options, "codex")) {
+    return handleCodexInstall(options);
+  }
   const settingsPath = path.resolve(getStringOption(options, "settings") ?? getClaudeSettingsPath());
   const explicitCommand = getStringOption(options, "command");
   const dataDirOption = getStringOption(options, "data-dir");
@@ -119,6 +125,44 @@ async function handleInstall(options: CliOptions): Promise<void> {
   if (result.previousCommand && !result.unchanged) {
     process.stdout.write(`  replaced: ${result.previousCommand}\n`);
   }
+}
+
+/**
+ * `ccus install --codex`：把 Stop hook 挂进 Codex 的 hooks.json，让 Codex 每 turn 结束调起 ccus 采集额度。
+ *
+ * 默认挂 `ccus __codex-hook`（Windows 用 `ccus.cmd`）到 `hooks.Stop`；带 `--data-dir` 时追加，让事件落到指定目录。
+ * `--codex --uninstall` 移除 ccus 的 Stop hook；`--config PATH` 覆盖 hooks.json 路径。
+ * hooks.json 是 orca 等 hook-only 环境的持久触发入口（config.toml 的 notify 会被 orca 覆盖，hooks.json 不会频繁重写）。
+ */
+async function handleCodexInstall(options: CliOptions): Promise<void> {
+  const hooksPath = path.resolve(getStringOption(options, "config") ?? getCodexHooksPath());
+  const dataDirOption = getStringOption(options, "data-dir");
+  const uninstall = getBooleanOption(options, "uninstall");
+  const baseArgs = dataDirOption
+    ? `__codex-hook --data-dir ${path.resolve(dataDirOption).replaceAll("\\", "/")}`
+    : `__codex-hook`;
+  const command = process.platform === "win32" ? `ccus.cmd ${baseArgs}` : `ccus ${baseArgs}`;
+
+  if (uninstall) {
+    const result = await uninstallCodexHook(hooksPath);
+    process.stdout.write(
+      result.removed
+        ? `已从 Codex hooks.json 移除 Stop hook：${result.hooksPath}\n`
+        : `Codex hooks.json 里未找到 ccus Stop hook：${result.hooksPath}\n`,
+    );
+    return;
+  }
+
+  const result = await installCodexHook(hooksPath, command);
+  const header = result.created
+    ? `已创建 Codex hooks.json 并挂载 Stop hook：${result.hooksPath}`
+    : result.unchanged
+      ? `Codex Stop hook 已挂载：${result.hooksPath}`
+      : `已在 Codex hooks.json 挂载 Stop hook：${result.hooksPath}`;
+  process.stdout.write(`${header}\n  Stop → ${JSON.stringify(command)}\n`);
+  process.stdout.write(
+    `  首次需在 Codex 用 /hooks 信任该 hook；若 hooks.json 被 orca 等外部工具覆盖，重新执行本命令即可。\n`,
+  );
 }
 
 /**
@@ -202,11 +246,16 @@ async function loadDashboardData(
   // this-week 固定补齐到完整一周（周一到周日），即使本周还没过完，曲线 x 轴也按 7 天逐日展示；
   // 其它范围（today / last-week / 5h）不受影响。
   const window = expandToFullWeekWindow(resolveRange(range, now));
-  const events = (await readEventsForRange(dataDir, range, now)).map((record) => computeStatuslineEvent(record));
+  // events 含 Claude 与 Codex：个人看板额度叠加 Codex（peak max、latest 相加、7d 累计合并），与 aggregate 同口径。
+  // codex 消息柱图走 dailyUserMessages，不受影响。
+  const events = (await readEventsForRange(dataDir, range, now))
+    .map((record) => computeStatuslineEvent(record));
   const claudeDailyUsage = await summarizeClaudeProjectUsageByDay(window.start, window.end);
+  const codexDailyUsage = await summarizeCodexSessionUsageByDay(window.start, window.end);
   const dailyUserMessages = enumerateDateKeys(window.start, window.end).map((date) => ({
     date,
     userMessageCount: claudeDailyUsage.get(date)?.userMessageCount ?? 0,
+    codexUserMessageCount: codexDailyUsage.get(date)?.userMessageCount ?? 0,
   }));
   debugLog("dashboard", "events loaded", { range, label: window.label, sampleCount: events.length, days: dailyUserMessages.length });
   const html = buildDashboardHtml(events, window.label, window.start, window.end, dailyUserMessages);
@@ -325,10 +374,17 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
   debugLog("export", "range resolved", { range, label: window.label, start: window.start.toISOString(), end: window.end.toISOString() });
   const records = await readEventsForRange(dataDir, range, now);
   const events = records.map((record) => computeStatuslineEvent(record));
-  const statuslineSummary = summarizeEvents(events);
-  const statuslineDailyRows = buildSummaryRows(events);
+  // 按 source 分流：Claude usage 只算 claude 事件，Codex 额度单列（避免 codex 额度污染 claude usage）。
+  const claudeEvents = events.filter((event) => !isCodexSourceEvent(event));
+  const codexEvents = events.filter(isCodexSourceEvent);
+  const statuslineSummary = summarizeEvents(claudeEvents);
+  const statuslineDailyRows = buildSummaryRows(claudeEvents);
+  const codexStatuslineSummary = summarizeEvents(codexEvents);
+  const codexStatuslineDailyRows = buildSummaryRows(codexEvents);
   const claudeUsage = await summarizeClaudeProjectUsage(window.start, window.end);
   const claudeDailyUsage = await summarizeClaudeProjectUsageByDay(window.start, window.end);
+  const codexUsage = await summarizeCodexSessionUsage(window.start, window.end);
+  const codexDailyUsage = await summarizeCodexSessionUsageByDay(window.start, window.end);
   debugLog("export", "data collected", {
     statuslineSamples: records.length,
     claudeProjectFiles: claudeUsage.matchedFileCount,
@@ -346,7 +402,7 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
     exportUserName = gitIdentity.userName;
   }
   const weeklySummary = {
-    schemaVersion: 6,
+    schemaVersion: 8,
     generatedAt: new Date().toISOString(),
     range: {
       label: window.label,
@@ -365,6 +421,17 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
       inputTokens: claudeUsage.inputTokens,
       outputTokens: claudeUsage.outputTokens,
       cacheReadInputTokens: claudeUsage.cacheReadInputTokens,
+    },
+    codex: {
+      userMessageCount: codexUsage.userMessageCount,
+      apiRequestCount: codexUsage.apiRequestCount,
+      inputTokens: codexUsage.inputTokens,
+      outputTokens: codexUsage.outputTokens,
+      cacheReadInputTokens: codexUsage.cacheReadInputTokens,
+      fiveHourPeakUsagePct: codexStatuslineSummary.fiveHourPeakUsagePct,
+      fiveHourLatestUsagePct: codexStatuslineSummary.fiveHourLatestUsagePct,
+      sevenDayPeakUsagePct: codexStatuslineSummary.sevenDayPeakUsagePct,
+      sevenDayLatestUsagePct: codexStatuslineSummary.sevenDayLatestUsagePct,
     },
     statusline: {
       sampleCount: statuslineSummary.sampleCount,
@@ -385,9 +452,12 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
     },
   };
   const statuslineDailyMap = new Map(statuslineDailyRows.map((row) => [row.date, row]));
+  const codexStatuslineDailyMap = new Map(codexStatuslineDailyRows.map((row) => [row.date, row]));
   const dailySummaries = enumerateDateKeys(window.start, window.end).map((date) => {
     const row = statuslineDailyMap.get(date);
     const claudeDay = claudeDailyUsage.get(date);
+    const codexDay = codexDailyUsage.get(date);
+    const codexRow = codexStatuslineDailyMap.get(date);
     return {
       date,
       userMessageCount: claudeDay?.userMessageCount ?? 0,
@@ -395,6 +465,17 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
       inputTokens: claudeDay?.inputTokens ?? 0,
       outputTokens: claudeDay?.outputTokens ?? 0,
       cacheReadInputTokens: claudeDay?.cacheReadInputTokens ?? 0,
+      codex: {
+        userMessageCount: codexDay?.userMessageCount ?? 0,
+        apiRequestCount: codexDay?.apiRequestCount ?? 0,
+        inputTokens: codexDay?.inputTokens ?? 0,
+        outputTokens: codexDay?.outputTokens ?? 0,
+        cacheReadInputTokens: codexDay?.cacheReadInputTokens ?? 0,
+        fiveHourPeakUsagePct: codexRow?.fiveHourPeakUsagePct ?? null,
+        fiveHourLatestUsagePct: codexRow?.fiveHourLatestUsagePct ?? null,
+        sevenDayPeakUsagePct: codexRow?.sevenDayPeakUsagePct ?? null,
+        sevenDayLatestUsagePct: codexRow?.sevenDayLatestUsagePct ?? null,
+      },
       sampleCount: row?.sampleCount ?? 0,
       fiveHourLatestUsagePct: row?.fiveHourLatestUsagePct ?? null,
       fiveHourPeakUsagePct: row?.fiveHourPeakUsagePct ?? null,
@@ -405,7 +486,7 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
     };
   });
   const bundle = {
-    schemaVersion: 6,
+    schemaVersion: 8,
     generatedAt: new Date().toISOString(),
     range: {
       label: window.label,
@@ -900,6 +981,140 @@ async function handleBackgroundSync(options: CliOptions): Promise<void> {
   }
 }
 
+/**
+ * Codex 回调（notify / hook）共享的采集入口：拉额度（走缓存）→ 构造 source=codex 事件落盘 → 心跳 → 兜底 sync。
+ *
+ * 全程不写 stdout（Codex 继承的 stdio 写了会污染终端）；失败 debugLog 到 stderr 后静默。
+ * 拉不到额度（未安装 / 未登录 / 无缓存）时不落空事件，静默返回。
+ */
+async function recordCodexEvent(
+  dataDir: string,
+  identity: { cwd: string | null; sessionId: string | null },
+): Promise<void> {
+  debugLog("codex-event", "start", { dataDir, cwd: identity.cwd, sessionId: identity.sessionId });
+  try {
+    const quota = await resolveCodexQuota(dataDir);
+    if (quota === null) {
+      debugLog("codex-event", "no quota available, skip persist");
+      return;
+    }
+    const payload: RawStatuslinePayload = { source: "codex" };
+    if (identity.sessionId) {
+      payload.session_id = identity.sessionId;
+    }
+    if (identity.cwd) {
+      payload.workspace = { current_dir: identity.cwd };
+    }
+    const record = createPersistedStatuslineEvent(payload);
+    const gitIdentity = await readGitIdentity();
+    record.gitUserName = gitIdentity.userName;
+    record.gitUserEmail = gitIdentity.userEmail;
+    record.gitUserAccount = extractGitEmailAccount(gitIdentity.userEmail);
+    applyQuotaToPayload(record.rawPayload, { fiveHour: quota.fiveHour, sevenDay: quota.sevenDay, level: null });
+    await appendEvent(dataDir, record);
+    debugLog("codex-event", "persisted", { fiveHour: quota.fiveHour, sevenDay: quota.sevenDay });
+  } catch (error) {
+    debugLog("codex-event", "failed", error instanceof Error ? (error.stack ?? error.message) : String(error));
+  } finally {
+    // Codex 继承的 stdio 写 stdout/stderr 会污染终端；改写心跳文件留痕，证明回调被触发（notify 与 hook 共用）。
+    try {
+      const fsp = await import("node:fs/promises");
+      await fsp.writeFile(path.join(dataDir, "codex-notify.heartbeat"), `${new Date().toISOString()}\n`, "utf8");
+    } catch {
+      // 心跳写失败静默，不影响主流程。
+    }
+    // Codex 没有 statusline，回调兜底触发定时同步（与 Claude statusline 的 maybeSpawnBackgroundSync 对称）：
+    // 每 turn 检查一次 sync 周期，到期才 spawn detached __sync，不阻塞、不写 stdout。
+    maybeSpawnBackgroundSync(dataDir);
+  }
+}
+
+/**
+ * 隐藏命令 `__codex-notify`：Codex `notify`（config.toml，agent-turn-complete）回调入口。
+ *
+ * Codex 每 turn 结束 spawn 本命令，把 notify JSON 作为最后一个 argv 追加（含 cwd / thread-id）。
+ * 从 argv 解析身份 → recordCodexEvent。orca 等会覆盖 config.toml 的环境改用 `__codex-hook`（hooks.json）。
+ */
+async function handleCodexNotify(args: string[]): Promise<void> {
+  const options = parseOptions(args);
+  const dataDir = getDataDir(options);
+  const notify = parseCodexNotify(extractCodexNotifyJson(args));
+  await recordCodexEvent(dataDir, { cwd: notify.cwd, sessionId: notify.threadId });
+}
+
+/** `__codex-hook` 的可注入依赖，测试用来替换 stdin 读取。 */
+export interface CodexHookDeps {
+  readStdin?: () => Promise<string>;
+}
+
+/**
+ * 隐藏命令 `__codex-hook`：Codex hooks.json 的 Stop 事件回调入口（orca 等 hook-only 环境用）。
+ *
+ * Codex 把 hook payload 作为 stdin 的一个 JSON 对象传入（含 cwd / session_id / hook_event_name）。
+ * 解析身份 → recordCodexEvent。不写 stdout（Stop 要求 stdout 空或 JSON；ccus 选空 + exit 0 = success，不干预 Codex）。
+ * stdin 非法 JSON（Windows Stop 偶发 #23784）容错：当无 payload 处理，仍照常拉额度 + 落盘。
+ */
+export async function handleCodexHook(args: string[], deps: CodexHookDeps = {}): Promise<void> {
+  const options = parseOptions(args);
+  const dataDir = getDataDir(options);
+  const read = deps.readStdin ?? readStdin;
+  let cwd: string | null = null;
+  let sessionId: string | null = null;
+  try {
+    const raw = await read();
+    if (raw.trim()) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        if (typeof record["cwd"] === "string") {
+          cwd = record["cwd"];
+        }
+        if (typeof record["session_id"] === "string") {
+          sessionId = record["session_id"];
+        }
+      }
+    }
+  } catch (error) {
+    debugLog("codex-hook", "stdin parse failed", error instanceof Error ? error.message : String(error));
+  }
+  await recordCodexEvent(dataDir, { cwd, sessionId });
+}
+
+/** Codex 把 notify JSON 作为最后一个 argv 追加；取末尾首个以 `{` 开头的参数。 */
+function extractCodexNotifyJson(args: string[]): string | null {
+  for (let index = args.length - 1; index >= 0; index -= 1) {
+    if (args[index].trim().startsWith("{")) {
+      return args[index];
+    }
+  }
+  return null;
+}
+
+interface CodexNotify {
+  cwd: string | null;
+  threadId: string | null;
+}
+
+/** 宽松解析 notify JSON：cwd + thread-id（兼容 threadId 驼峰）；非法返回空。 */
+function parseCodexNotify(json: string | null): CodexNotify {
+  if (!json) {
+    return { cwd: null, threadId: null };
+  }
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return { cwd: null, threadId: null };
+    }
+    const record = parsed as Record<string, unknown>;
+    const cwd = typeof record["cwd"] === "string" ? record["cwd"] : null;
+    const rawThreadId = record["thread-id"] ?? record["threadId"];
+    const threadId = typeof rawThreadId === "string" ? rawThreadId : null;
+    return { cwd, threadId };
+  } catch {
+    return { cwd: null, threadId: null };
+  }
+}
+
 /** 解析时长字面量为毫秒：纯数字按 ms，支持 ms/s/m/h 后缀。非法返回 null。 */
 function parseDurationMs(raw: string | undefined): number | null {
   if (raw === undefined) {
@@ -1144,7 +1359,7 @@ async function handleApiStatus(options: CliOptions): Promise<void> {
 }
 
 /** 顶层命令分发入口。 */
-async function main(args = process.argv.slice(2)): Promise<void> {
+export async function main(args = process.argv.slice(2)): Promise<void> {
   setDebugEnabled(resolveDebugEnabled(args));
 
   const [group, action, ...rest] = args;
@@ -1232,6 +1447,16 @@ async function main(args = process.argv.slice(2)): Promise<void> {
 
   if (group === "__sync") {
     await handleBackgroundSync(parseOptions(args.slice(1)));
+    return;
+  }
+
+  if (group === "__codex-notify") {
+    await handleCodexNotify(args.slice(1));
+    return;
+  }
+
+  if (group === "__codex-hook") {
+    await handleCodexHook(args.slice(1));
     return;
   }
 

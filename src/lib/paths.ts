@@ -64,6 +64,26 @@ export function getApiQuotaCachePath(dataDir: string): string {
   return path.join(dataDir, "api-quota-cache.json");
 }
 
+/** Codex 额度缓存文件，记录上次 app-server 拉取的额度与时间。 */
+export function getCodexQuotaCachePath(dataDir: string): string {
+  return path.join(dataDir, "codex-quota-cache.json");
+}
+
+/** Codex CLI 默认本地数据目录（`CODEX_HOME` 环境变量可覆盖，默认 `~/.codex`）。 */
+export function getCodexHome(): string {
+  return process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+}
+
+/** Codex CLI 用户级 config.toml 路径，`ccus install --codex` 往里写 notify。 */
+export function getCodexConfigPath(): string {
+  return path.join(getCodexHome(), "config.toml");
+}
+
+/** Codex CLI 用户级 hooks.json 路径，`ccus install --codex` 往 Stop 事件挂 hook（orca 等 hook-only 环境用）。 */
+export function getCodexHooksPath(): string {
+  return path.join(getCodexHome(), "hooks.json");
+}
+
 /** Claude Code 默认本地数据目录。 */
 export function getClaudeDataDir(): string {
   const configured = process.env.CCUS_CLAUDE_DATA_DIR;

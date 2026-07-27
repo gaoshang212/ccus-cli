@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0] - 2026-07-27
+
+### 新增
+- 新增 Codex 额度采集：Codex `notify` / hooks.json `Stop` 回调调起隐藏命令 `__codex-hook` / `__codex-notify`，spawn `codex app-server` 经 JSON-RPC `account/rateLimits/read` 拉 5h / weekly 额度并落盘 `source="codex"` 事件，带 5 分钟 TTL 缓存、失败静默、Stop 路径兜底后台同步。
+- 新增 `ccus install --codex`：一键把 ccus hook 挂进 `~/.codex/hooks.json` 的 `Stop` 事件（与 orca 等现有 hook 并列并发执行），支持 `--uninstall` / `--data-dir` / `--config`。
+- 新增 Codex sessions 统计：扫描 `~/.codex/sessions` rollout，统计消息数 / 请求数 / token，接入导出与看板每日消息柱图。
+- export / aggregate 接入 Codex：bundle 按 `source` 分流，Codex 额度单列到 `weeklySummary.codex` / `dailySummaries[].codex` 的 5h/7d peak/latest；`detail.csv` 加 `source` 列，daily/weekly CSV 额度列改为 Claude+Codex 合计。
+
+### 变更
+- export `schemaVersion` 升至 8；`aggregate` 兼容 v6/7/8，v6/v7 缺失的 codex 额度字段按 null/零值容错并从 `rawEvents` 重算。
+
 ## [0.1.26] - 2026-07-07
 
 ### 修复

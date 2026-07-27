@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { gunzip } from "node:zlib";
-import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow, PersistedStatuslineEvent, StatuslineEvent, WeeklyExportBundle, WeeklyExportDaySummary } from "../types";
-import { computeStatuslineEvent } from "./payload";
+import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow, PersistedStatuslineEvent, StatuslineEvent, WeeklyExportBundle, WeeklyExportDaySummary, CodexUsageSnapshot } from "../types";
+import { computeStatuslineEvent, isCodexSourceEvent } from "./payload";
 import { extractGitEmailAccount, roundNumber } from "./time";
 
 const gunzipAsync = promisify(gunzip);
@@ -11,6 +11,12 @@ const gunzipAsync = promisify(gunzip);
 function maxOrNull(values: Array<number | null>): number | null {
   const numbers = values.filter((v): v is number => v !== null);
   return numbers.length > 0 ? Math.max(...numbers) : null;
+}
+
+/** 两个可空数值相加：null 视为 0；两者皆 null 返回 null（表示两源都无该指标）。用于 codex+claude latest 叠加。 */
+export function addNullable(a: number | null, b: number | null): number | null {
+  if (a === null && b === null) return null;
+  return (a ?? 0) + (b ?? 0);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -39,7 +45,7 @@ function isWeeklyExportBundle(value: unknown): value is WeeklyExportBundle {
     return false;
   }
 
-  if (value.schemaVersion !== 6) {
+  if (typeof value.schemaVersion !== "number" || ![6, 7, 8].includes(value.schemaVersion)) {
     return false;
   }
 
@@ -135,7 +141,7 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
 
   if (invalidFiles.length > 0) {
     throw new Error(
-      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 6 bundles.`,
+      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 6/7/8 bundles.`,
     );
   }
 
@@ -474,7 +480,8 @@ export function buildPersonSevenDayCurve(bundles: Array<{ filePath: string; bund
   const collected = new Map<string, StatuslineEvent[]>();
   for (const { bundle } of bundles) {
     const personKey = bundlePersonKey(bundle);
-    for (const record of bundle.rawEvents.filter(isPersistedStatuslineEvent)) {
+    // 含 Claude + Codex 两源读数：codex 7d 读数不再过滤，并入同一条曲线算累计
+    for (const record of bundle.rawEvents.filter((r) => isPersistedStatuslineEvent(r))) {
       const event = computeStatuslineEvent(record);
       if (event.sevenDayUsagePct === null) {
         continue;
@@ -536,20 +543,30 @@ export function buildAggregatedDetailRows(bundles: Array<{ filePath: string; bun
     for (const rep of reps) {
       const events = bundleEventsByDate(rep.bundle).get(rep.date) ?? [];
       for (const event of events) {
+        const isCodex = isCodexSourceEvent(event);
         rows.push({
           ...event,
           personKey: rep.personKey,
           weekKey: weekKey(new Date(event.timestamp)),
           dateKey: rep.date,
-          inputTokens: rep.day.inputTokens,
-          outputTokens: rep.day.outputTokens,
-          cacheReadInputTokens: rep.day.cacheReadInputTokens,
+          source: isCodex ? "codex" : "claude",
+          // codex 事件无单事件 token 语义（token 在 daySummary.codex 按天聚合），不附 claude 的日总量。
+          inputTokens: isCodex ? 0 : rep.day.inputTokens,
+          outputTokens: isCodex ? 0 : rep.day.outputTokens,
+          cacheReadInputTokens: isCodex ? 0 : rep.day.cacheReadInputTokens,
         });
       }
     }
   }
 
   return rows.sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+}
+
+const ZERO_CODEX: CodexUsageSnapshot = { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null };
+
+/** 取 daySummary 的 codex 快照；缺字段（手编 bundle）回退零值，避免 reduce 抛错或 NaN。 */
+function codexOf(day: WeeklyExportDaySummary): CodexUsageSnapshot {
+  return day.codex ?? ZERO_CODEX;
 }
 
 /**
@@ -565,22 +582,37 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
     const { personKey, date } = reps[0];
 
     // 不同机器的独立数据直接叠加
-    const userMessageCount = reps.reduce((sum, r) => sum + r.day.userMessageCount, 0);
-    const apiRequestCount = reps.reduce((sum, r) => sum + r.day.apiRequestCount, 0);
-    const inputTokens = reps.reduce((sum, r) => sum + r.day.inputTokens, 0);
-    const outputTokens = reps.reduce((sum, r) => sum + r.day.outputTokens, 0);
-    const cacheReadInputTokens = reps.reduce((sum, r) => sum + r.day.cacheReadInputTokens, 0);
+    // 累加量含 Codex：Claude + Codex 同字段相加（row.codex 仍单独保留明细）
+    const userMessageCount = reps.reduce((sum, r) => sum + r.day.userMessageCount + codexOf(r.day).userMessageCount, 0);
+    const apiRequestCount = reps.reduce((sum, r) => sum + r.day.apiRequestCount + codexOf(r.day).apiRequestCount, 0);
+    const inputTokens = reps.reduce((sum, r) => sum + r.day.inputTokens + codexOf(r.day).inputTokens, 0);
+    const outputTokens = reps.reduce((sum, r) => sum + r.day.outputTokens + codexOf(r.day).outputTokens, 0);
+    const cacheReadInputTokens = reps.reduce((sum, r) => sum + r.day.cacheReadInputTokens + codexOf(r.day).cacheReadInputTokens, 0);
     const sampleCount = reps.reduce((sum, r) => sum + r.day.sampleCount, 0);
     const uniqueSessions = reps.reduce((sum, r) => sum + r.day.uniqueSessions, 0);
     const uniqueWorkspaces = reps.reduce((sum, r) => sum + r.day.uniqueWorkspaces, 0);
+    // Codex 计数/token 是累加量，跟随 winner 的 daySummary 各机相加；不进 winner 判定。
+    const codex = reps.reduce(
+      (acc, r) => {
+        const c = codexOf(r.day);
+        acc.userMessageCount += c.userMessageCount;
+        acc.apiRequestCount += c.apiRequestCount;
+        acc.inputTokens += c.inputTokens;
+        acc.outputTokens += c.outputTokens;
+        acc.cacheReadInputTokens += c.cacheReadInputTokens;
+        return acc;
+      },
+      { ...ZERO_CODEX },
+    );
 
-    // usage 从所有机器该天事件合并后重算；rawEvents 缺失时用各代表 daySummary 回退
+    // 按 source 分流：Claude usage 只算 claude 事件，Codex usage 单列重算（避免 codex 额度污染 claude usage）。
     const allEvents = reps.flatMap((r) => bundleEventsByDate(r.bundle).get(date) ?? []);
-    const usage = recomputeUsage(allEvents);
-    const fiveHourPeakFallback = maxOrNull(reps.map((r) => r.day.fiveHourPeakUsagePct));
-    const sevenDayPeakFallback = maxOrNull(reps.map((r) => r.day.sevenDayPeakUsagePct));
-    const fiveHourLatestFallback = reps.find((r) => r.day.fiveHourLatestUsagePct !== null)?.day.fiveHourLatestUsagePct ?? null;
-    const sevenDayLatestFallback = reps.find((r) => r.day.sevenDayLatestUsagePct !== null)?.day.sevenDayLatestUsagePct ?? null;
+    const claudeEvents = allEvents.filter((event) => !isCodexSourceEvent(event));
+    const codexEvents = allEvents.filter(isCodexSourceEvent);
+    const usage = recomputeUsage(claudeEvents);
+    const codexUsage = recomputeUsage(codexEvents);
+    // 额度回退：rawEvents 缺时从 daySummary 取（Claude+Codex 合并，见 fallbackWeeklyUsage）
+    const fallback = fallbackWeeklyUsage(reps.map((r) => r.day));
 
     // 累计指标走全样本合并曲线，不走单机的 recomputeUsage，避免漏掉另一台机器的样本。
     const sevenDayCumulativeUsagePct = computeCumulativeSevenDay(sliceCurveByDate(curves.get(personKey) ?? [], date));
@@ -593,13 +625,14 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
       outputTokens,
       cacheReadInputTokens,
       sampleCount,
-      fiveHourPeakUsagePct: usage.fiveHourPeakUsagePct ?? fiveHourPeakFallback,
-      fiveHourLatestUsagePct: usage.fiveHourLatestUsagePct ?? fiveHourLatestFallback,
-      sevenDayPeakUsagePct: usage.sevenDayPeakUsagePct ?? sevenDayPeakFallback,
-      sevenDayLatestUsagePct: usage.sevenDayLatestUsagePct ?? sevenDayLatestFallback,
+      fiveHourPeakUsagePct: maxOrNull([usage.fiveHourPeakUsagePct, codexUsage.fiveHourPeakUsagePct]) ?? fallback.fiveHourPeakUsagePct,
+      fiveHourLatestUsagePct: addNullable(usage.fiveHourLatestUsagePct, codexUsage.fiveHourLatestUsagePct) ?? fallback.fiveHourLatestUsagePct,
+      sevenDayPeakUsagePct: maxOrNull([usage.sevenDayPeakUsagePct, codexUsage.sevenDayPeakUsagePct]) ?? fallback.sevenDayPeakUsagePct,
+      sevenDayLatestUsagePct: addNullable(usage.sevenDayLatestUsagePct, codexUsage.sevenDayLatestUsagePct) ?? fallback.sevenDayLatestUsagePct,
       sevenDayCumulativeUsagePct,
       uniqueSessions,
       uniqueWorkspaces,
+      codex: { ...codex, ...codexUsage },
     });
   }
 
@@ -607,15 +640,23 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
 }
 
 /** 周级 usage 回退：rawEvents 缺失时从各天 daySummary 自带值取 peak（max）/ latest（date 最新非空）。 */
+/**
+ * rawEvents 缺失时的额度回退：从各天 daySummary 取。
+ * Claude 与 Codex 合并：peak 取两源 max、latest 两源相加（与主字段叠加口径一致）。daily/weekly 共用。
+ */
 function fallbackWeeklyUsage(days: WeeklyExportDaySummary[]): RecomputedUsage {
   const byDateDesc = [...days].sort((left, right) => right.date.localeCompare(left.date));
-  const fivePeaks = days.map((day) => day.fiveHourPeakUsagePct).filter((value): value is number => value !== null);
-  const sevenPeaks = days.map((day) => day.sevenDayPeakUsagePct).filter((value): value is number => value !== null);
+  const fivePeaks = days.flatMap((day) => [day.fiveHourPeakUsagePct, codexOf(day).fiveHourPeakUsagePct]);
+  const sevenPeaks = days.flatMap((day) => [day.sevenDayPeakUsagePct, codexOf(day).sevenDayPeakUsagePct]);
+  const claudeFiveLatest = byDateDesc.find((day) => day.fiveHourLatestUsagePct !== null)?.fiveHourLatestUsagePct ?? null;
+  const codexFiveDay = byDateDesc.find((day) => codexOf(day).fiveHourLatestUsagePct !== null);
+  const claudeSevenLatest = byDateDesc.find((day) => day.sevenDayLatestUsagePct !== null)?.sevenDayLatestUsagePct ?? null;
+  const codexSevenDay = byDateDesc.find((day) => codexOf(day).sevenDayLatestUsagePct !== null);
   return {
-    fiveHourPeakUsagePct: fivePeaks.length > 0 ? roundNumber(Math.max(...fivePeaks), 1) : null,
-    fiveHourLatestUsagePct: byDateDesc.find((day) => day.fiveHourLatestUsagePct !== null)?.fiveHourLatestUsagePct ?? null,
-    sevenDayPeakUsagePct: sevenPeaks.length > 0 ? roundNumber(Math.max(...sevenPeaks), 1) : null,
-    sevenDayLatestUsagePct: byDateDesc.find((day) => day.sevenDayLatestUsagePct !== null)?.sevenDayLatestUsagePct ?? null,
+    fiveHourPeakUsagePct: roundNumber(maxOrNull(fivePeaks), 1),
+    fiveHourLatestUsagePct: addNullable(claudeFiveLatest, codexFiveDay ? codexOf(codexFiveDay).fiveHourLatestUsagePct : null),
+    sevenDayPeakUsagePct: roundNumber(maxOrNull(sevenPeaks), 1),
+    sevenDayLatestUsagePct: addNullable(claudeSevenLatest, codexSevenDay ? codexOf(codexSevenDay).sevenDayLatestUsagePct : null),
   };
 }
 
@@ -630,6 +671,7 @@ interface WeeklyAccumulator {
   sampleCount: number;
   uniqueSessions: number;
   uniqueWorkspaces: number;
+  codex: CodexUsageSnapshot;
   days: WeeklyExportDaySummary[];
   events: StatuslineEvent[];
 }
@@ -660,20 +702,28 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
           sampleCount: 0,
           uniqueSessions: 0,
           uniqueWorkspaces: 0,
+          codex: { ...ZERO_CODEX },
           days: [],
           events: [],
         };
         groups.set(key, acc);
       }
       const day = rep.day;
-      acc.userMessageCount += day.userMessageCount;
-      acc.apiRequestCount += day.apiRequestCount;
-      acc.inputTokens += day.inputTokens;
-      acc.outputTokens += day.outputTokens;
-      acc.cacheReadInputTokens += day.cacheReadInputTokens;
+      const codexDay = codexOf(day);
+      // 累加量含 Codex：Claude + Codex 同字段相加（acc.codex 仍单独保留明细）
+      acc.userMessageCount += day.userMessageCount + codexDay.userMessageCount;
+      acc.apiRequestCount += day.apiRequestCount + codexDay.apiRequestCount;
+      acc.inputTokens += day.inputTokens + codexDay.inputTokens;
+      acc.outputTokens += day.outputTokens + codexDay.outputTokens;
+      acc.cacheReadInputTokens += day.cacheReadInputTokens + codexDay.cacheReadInputTokens;
       acc.sampleCount += day.sampleCount;
       acc.uniqueSessions += day.uniqueSessions;
       acc.uniqueWorkspaces += day.uniqueWorkspaces;
+      acc.codex.userMessageCount += codexDay.userMessageCount;
+      acc.codex.apiRequestCount += codexDay.apiRequestCount;
+      acc.codex.inputTokens += codexDay.inputTokens;
+      acc.codex.outputTokens += codexDay.outputTokens;
+      acc.codex.cacheReadInputTokens += codexDay.cacheReadInputTokens;
       acc.days.push(day);
       acc.events.push(...(bundleEventsByDate(rep.bundle).get(rep.date) ?? []));
     }
@@ -681,7 +731,11 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
 
   const rows: AggregatedWeeklyRow[] = [];
   for (const acc of groups.values()) {
-    const usage = recomputeUsage(acc.events);
+    // 按 source 分流：Claude usage 只算 claude 事件，Codex usage 单列重算。
+    const claudeEvents = acc.events.filter((event) => !isCodexSourceEvent(event));
+    const codexEvents = acc.events.filter(isCodexSourceEvent);
+    const usage = recomputeUsage(claudeEvents);
+    const codexUsage = recomputeUsage(codexEvents);
     const fallback = fallbackWeeklyUsage(acc.days);
     // 整周累计：在整周合并曲线上一次性求正增量，跨天边界增量被计入，故 weekly ≥ Σ daily。
     const sevenDayCumulativeUsagePct = computeCumulativeSevenDay(sliceCurveByWeek(curves.get(acc.personKey) ?? [], acc.week));
@@ -694,13 +748,14 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
       outputTokens: acc.outputTokens,
       cacheReadInputTokens: acc.cacheReadInputTokens,
       sampleCount: acc.sampleCount,
-      fiveHourPeakUsagePct: usage.fiveHourPeakUsagePct ?? fallback.fiveHourPeakUsagePct,
-      fiveHourLatestUsagePct: usage.fiveHourLatestUsagePct ?? fallback.fiveHourLatestUsagePct,
-      sevenDayPeakUsagePct: usage.sevenDayPeakUsagePct ?? fallback.sevenDayPeakUsagePct,
-      sevenDayLatestUsagePct: usage.sevenDayLatestUsagePct ?? fallback.sevenDayLatestUsagePct,
+      fiveHourPeakUsagePct: maxOrNull([usage.fiveHourPeakUsagePct, codexUsage.fiveHourPeakUsagePct]) ?? fallback.fiveHourPeakUsagePct,
+      fiveHourLatestUsagePct: addNullable(usage.fiveHourLatestUsagePct, codexUsage.fiveHourLatestUsagePct) ?? fallback.fiveHourLatestUsagePct,
+      sevenDayPeakUsagePct: maxOrNull([usage.sevenDayPeakUsagePct, codexUsage.sevenDayPeakUsagePct]) ?? fallback.sevenDayPeakUsagePct,
+      sevenDayLatestUsagePct: addNullable(usage.sevenDayLatestUsagePct, codexUsage.sevenDayLatestUsagePct) ?? fallback.sevenDayLatestUsagePct,
       sevenDayCumulativeUsagePct,
       uniqueSessions: acc.uniqueSessions,
       uniqueWorkspaces: acc.uniqueWorkspaces,
+      codex: { ...acc.codex, ...codexUsage },
     });
   }
 

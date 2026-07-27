@@ -19,6 +19,11 @@ export interface AggregatePersonSummary {
   sevenDayLatestUsagePct: number | null;
   /** 与 weekly.csv 同源：把该人各周 weekly 行的 sevenDayCumulativeUsagePct 相加（无有效值则 null）。 */
   sevenDayCumulativeUsagePct: number | null;
+  /** Codex 额度（从 source="codex" 事件重算的快照），与 Claude usage 单列展示。 */
+  codexFiveHourPeakUsagePct: number | null;
+  codexFiveHourLatestUsagePct: number | null;
+  codexSevenDayPeakUsagePct: number | null;
+  codexSevenDayLatestUsagePct: number | null;
   activeDays: number;
   firstDate: string | null;
   lastDate: string | null;
@@ -132,6 +137,12 @@ export function summarizePeople(dailyRows: AggregatedDailyRow[], weeklyRows: Agg
     const latestRowWithSevenDay = [...sortedByDate]
       .reverse()
       .find((row) => row.sevenDayLatestUsagePct !== null);
+    const latestRowWithCodexFive = [...sortedByDate]
+      .reverse()
+      .find((row) => row.codex.fiveHourLatestUsagePct !== null);
+    const latestRowWithCodexSevenDay = [...sortedByDate]
+      .reverse()
+      .find((row) => row.codex.sevenDayLatestUsagePct !== null);
     const activeDays = items.filter((row) => row.sampleCount > 0 || row.userMessageCount > 0 || row.apiRequestCount > 0).length;
 
     summaries.push({
@@ -149,6 +160,10 @@ export function summarizePeople(dailyRows: AggregatedDailyRow[], weeklyRows: Agg
       sevenDayPeakUsagePct: maxOrNull(items.map((row) => row.sevenDayPeakUsagePct)),
       sevenDayLatestUsagePct: latestRowWithSevenDay?.sevenDayLatestUsagePct ?? null,
       sevenDayCumulativeUsagePct: cumulativeByPerson.get(personKey) ?? null,
+      codexFiveHourPeakUsagePct: maxOrNull(items.map((row) => row.codex.fiveHourPeakUsagePct)),
+      codexFiveHourLatestUsagePct: latestRowWithCodexFive?.codex.fiveHourLatestUsagePct ?? null,
+      codexSevenDayPeakUsagePct: maxOrNull(items.map((row) => row.codex.sevenDayPeakUsagePct)),
+      codexSevenDayLatestUsagePct: latestRowWithCodexSevenDay?.codex.sevenDayLatestUsagePct ?? null,
       activeDays,
       firstDate: sortedByDate[0]?.date ?? null,
       lastDate: sortedByDate.at(-1)?.date ?? null,
@@ -356,7 +371,7 @@ function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: 
   const built = people
     .map((person, index) => {
       const personRows = detailRows
-        .filter((row) => row.personKey === person.personKey)
+        .filter((row) => row.personKey === person.personKey && row.source !== "codex")
         .map((row) => ({ t: new Date(row.timestamp).getTime(), five: row.usagePct, seven: row.sevenDayUsagePct }))
         .filter((point) => Number.isFinite(point.t))
         .sort((left, right) => left.t - right.t);
@@ -463,6 +478,10 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[]): string {
         <td>${escapeHtml(statValue(person.sevenDayPeakUsagePct))}</td>
         <td>${escapeHtml(statValue(person.sevenDayLatestUsagePct))}</td>
         <td>${escapeHtml(statValue(person.sevenDayCumulativeUsagePct))}</td>
+        <td>${escapeHtml(statValue(person.codexFiveHourPeakUsagePct))}</td>
+        <td>${escapeHtml(statValue(person.codexFiveHourLatestUsagePct))}</td>
+        <td>${escapeHtml(statValue(person.codexSevenDayPeakUsagePct))}</td>
+        <td>${escapeHtml(statValue(person.codexSevenDayLatestUsagePct))}</td>
         <td>${person.activeDays}</td>
         <td class="muted-col">${formatNumber(person.apiRequestCount)}</td>
       </tr>`,
@@ -493,6 +512,10 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[]): string {
               <th>7d Peak</th>
               <th>7d Latest</th>
               <th>7d 累计</th>
+              <th>Codex 5h Peak</th>
+              <th>Codex 5h Latest</th>
+              <th>Codex 7d Peak</th>
+              <th>Codex 7d Latest</th>
               <th>活跃天数</th>
               <th class="muted-col">API 请求</th>
             </tr>
@@ -580,6 +603,10 @@ function renderWeeklyTable(weeklyRows: AggregatedWeeklyRow[]): string {
         <td>${escapeHtml(statValue(row.sevenDayPeakUsagePct))}</td>
         <td>${escapeHtml(statValue(row.sevenDayLatestUsagePct))}</td>
         <td>${escapeHtml(statValue(row.sevenDayCumulativeUsagePct))}</td>
+        <td>${escapeHtml(statValue(row.codex.fiveHourPeakUsagePct))}</td>
+        <td>${escapeHtml(statValue(row.codex.fiveHourLatestUsagePct))}</td>
+        <td>${escapeHtml(statValue(row.codex.sevenDayPeakUsagePct))}</td>
+        <td>${escapeHtml(statValue(row.codex.sevenDayLatestUsagePct))}</td>
         <td class="muted-col">${formatNumber(row.apiRequestCount)}</td>
       </tr>`,
     )
@@ -609,6 +636,10 @@ function renderWeeklyTable(weeklyRows: AggregatedWeeklyRow[]): string {
               <th>7d Peak</th>
               <th>7d Latest</th>
               <th>7d 累计</th>
+              <th>Codex 5h Peak</th>
+              <th>Codex 5h Latest</th>
+              <th>Codex 7d Peak</th>
+              <th>Codex 7d Latest</th>
               <th class="muted-col">API 请求</th>
             </tr>
           </thead>

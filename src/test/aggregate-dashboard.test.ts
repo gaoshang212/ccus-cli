@@ -21,6 +21,7 @@ const dailyRows: AggregatedDailyRow[] = [
     sevenDayCumulativeUsagePct: 12,
     uniqueSessions: 1,
     uniqueWorkspaces: 1,
+    codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
   },
   {
     personKey: "alice",
@@ -38,6 +39,7 @@ const dailyRows: AggregatedDailyRow[] = [
     sevenDayCumulativeUsagePct: 8,
     uniqueSessions: 1,
     uniqueWorkspaces: 1,
+    codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
   },
   {
     personKey: "bob",
@@ -55,6 +57,7 @@ const dailyRows: AggregatedDailyRow[] = [
     sevenDayCumulativeUsagePct: 50,
     uniqueSessions: 2,
     uniqueWorkspaces: 1,
+    codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
   },
 ];
 
@@ -75,6 +78,7 @@ const weeklyRows: AggregatedWeeklyRow[] = [
     sevenDayCumulativeUsagePct: 40,
     uniqueSessions: 1,
     uniqueWorkspaces: 1,
+    codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
   },
   {
     personKey: "bob",
@@ -92,6 +96,7 @@ const weeklyRows: AggregatedWeeklyRow[] = [
     sevenDayCumulativeUsagePct: 70,
     uniqueSessions: 2,
     uniqueWorkspaces: 1,
+    codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
   },
 ];
 
@@ -116,6 +121,7 @@ function makeDetailRow(personKey: string, timestamp: string, usagePct: number | 
     personKey,
     weekKey: "2026-05-25",
     dateKey: timestamp.slice(0, 10),
+    source: "claude",
     inputTokens: 300,
     outputTokens: 40,
     cacheReadInputTokens: 20,

@@ -49,6 +49,23 @@ test("summarizeEvents computes headline stats", () => {
   assert.equal(summary.sevenDayCumulativeUsagePct, 4);
 });
 
+/** 额度叠加 Codex（与 aggregate 同口径）：peak 取两源 max、latest 两源相加。 */
+test("summarizeEvents stacks codex usage onto claude (peak max, latest add)", () => {
+  // claude events 的 5h latest=24（t01:05）；codex 5h=30（t02:00，更新）。
+  // 叠加后：peak=max(24,30)=30、latest=24+30=54。
+  const codexEvent = computeStatuslineEvent({
+    schemaVersion: 3,
+    timestamp: "2026-05-26T02:00:00.000Z",
+    gitUserName: "alice",
+    gitUserEmail: "alice@example.com",
+    gitUserAccount: "alice",
+    rawPayload: { source: "codex", session_id: "codex-1", rate_limits: { five_hour: { used_percentage: 30 } } },
+  });
+  const summary = summarizeEvents([...events, codexEvent]);
+  assert.equal(summary.fiveHourPeakUsagePct, 30);
+  assert.equal(summary.fiveHourLatestUsagePct, 54);
+});
+
 /** 校验 5 分钟固定桶聚合是否稳定，避免曲线错位；同时 5h 与 7d 各自独立聚合。 */
 test("bucketizeEvents creates fixed 5-minute buckets", () => {
   const buckets = bucketizeEvents(events, new Date("2026-05-26T01:00:00.000Z"), new Date("2026-05-26T01:10:00.000Z"), 5);

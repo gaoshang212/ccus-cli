@@ -11,7 +11,7 @@ import { StatuslineEvent } from "../types";
 /** 构造一个最小可用的 schemaVersion 6 bundle，供 gzip 兼容性测试使用。 */
 function buildMinimalBundle(personKey: string) {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     generatedAt: "2026-05-27T08:00:00.000Z",
     range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
     identity: { gitUserName: personKey, gitUserEmail: `${personKey}@example.com` },
@@ -32,7 +32,7 @@ function buildMinimalBundle(personKey: string) {
       },
     ],
     weeklySummary: {
-      schemaVersion: 6,
+      schemaVersion: 7,
       generatedAt: "2026-05-27T08:00:00.000Z",
       range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
       identity: { gitUserName: personKey, gitUserEmail: `${personKey}@example.com` },
@@ -68,6 +68,97 @@ function buildMinimalBundle(personKey: string) {
   };
 }
 
+/** 含 Claude + Codex 混合事件的 v8 bundle，用于验证 source 分流（Claude usage 与 Codex 额度各算各的）。 */
+function buildMixedBundle() {
+  const makeEvent = (timestamp: string, five: number, seven: number, codex: boolean) => ({
+    schemaVersion: 3,
+    timestamp,
+    gitUserName: "alice",
+    gitUserEmail: "alice@example.com",
+    gitUserAccount: "alice",
+    rawPayload: codex
+      ? { source: "codex", rate_limits: { five_hour: { used_percentage: five }, seven_day: { used_percentage: seven } } }
+      : { session_id: "a-1", rate_limits: { five_hour: { used_percentage: five }, seven_day: { used_percentage: seven } } },
+  });
+  return {
+    schemaVersion: 8,
+    generatedAt: "2026-05-27T08:00:00.000Z",
+    range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-31T00:00:00.000Z" },
+    identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
+    rawEvents: [
+      makeEvent("2026-05-26T01:00:00.000Z", 80, 90, false),
+      makeEvent("2026-05-26T02:00:00.000Z", 30, 40, true),
+    ],
+    weeklySummary: {
+      schemaVersion: 8,
+      generatedAt: "2026-05-27T08:00:00.000Z",
+      range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-31T00:00:00.000Z" },
+      identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
+      counts: { userMessageCount: 1, apiRequestCount: 1 },
+      tokens: { inputTokens: 100, outputTokens: 10, cacheReadInputTokens: 5 },
+      codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
+      statusline: { sampleCount: 1, uniqueSessions: 1, uniqueWorkspaces: 1, fiveHourLatestUsagePct: 80, fiveHourPeakUsagePct: 80, sevenDayLatestUsagePct: 90, sevenDayPeakUsagePct: 90 },
+      sources: { ccusDataDir: "D:/ccus", claudeDataDir: "C:/Users/test/.claude", projectFilesMatched: 1, messageCountSource: "claude-projects:user-events", apiRequestCountSource: "claude-projects:assistant-usage-events", tokenSource: "claude-projects:assistant-usage-events" },
+    },
+    dailySummaries: [
+      {
+        date: "2026-05-26",
+        userMessageCount: 1,
+        apiRequestCount: 1,
+        inputTokens: 100,
+        outputTokens: 10,
+        cacheReadInputTokens: 5,
+        sampleCount: 1,
+        fiveHourLatestUsagePct: 80,
+        fiveHourPeakUsagePct: 80,
+        sevenDayLatestUsagePct: 90,
+        sevenDayPeakUsagePct: 90,
+        uniqueSessions: 1,
+        uniqueWorkspaces: 1,
+        codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
+      },
+    ],
+  };
+}
+
+/** Claude 与 Codex 事件混在同一 bundle 时，usage 必须按 source 分流，不能把 codex 额度算进 claude usage。 */
+test("aggregate separates claude and codex usage by source", () => {
+  const bundles = [{ filePath: "mixed.json", bundle: buildMixedBundle() }];
+  const daily = buildAggregatedDailyRows(bundles);
+  assert.equal(daily.length, 1);
+  // Claude usage 只算 claude 事件（80/90），不含 codex 的 30/40。
+  assert.equal(daily[0].fiveHourPeakUsagePct, 80);
+  assert.equal(daily[0].sevenDayPeakUsagePct, 90);
+  // Codex usage 单列（从 source=codex 事件重算）。
+  assert.equal(daily[0].codex.fiveHourPeakUsagePct, 30);
+  assert.equal(daily[0].codex.sevenDayPeakUsagePct, 40);
+  // detail 行保留两类事件，source 标记正确；codex 行 token 留 0（无单事件 token 语义）。
+  const detail = buildAggregatedDetailRows(bundles);
+  assert.equal(detail.length, 2);
+  const claudeRow = detail.find((row) => row.source === "claude");
+  const codexRow = detail.find((row) => row.source === "codex");
+  assert.equal(claudeRow?.usagePct, 80);
+  assert.equal(codexRow?.usagePct, 30);
+  assert.equal(codexRow?.inputTokens, 0);
+});
+
+/** aggregate 接受 schemaVersion 6/7/8 的 bundle（向后兼容旧导出）。 */
+test("loadWeeklyExportBundles accepts schemaVersion 6/7/8 bundles", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-versions-"));
+  try {
+    for (const sv of [6, 7, 8]) {
+      const b = buildMinimalBundle(`p${sv}`);
+      b.schemaVersion = sv;
+      b.weeklySummary.schemaVersion = sv;
+      await fs.writeFile(path.join(root, `p${sv}.json`), JSON.stringify(b), "utf8");
+    }
+    const bundles = await loadWeeklyExportBundles(root);
+    assert.equal(bundles.length, 3);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("aggregate loaders and csv builders support multi-person bundle json input", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-"));
   const aliceFile = path.join(root, "alice.json");
@@ -78,7 +169,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
       aliceFile,
       JSON.stringify(
         {
-          schemaVersion: 6,
+          schemaVersion: 7,
           generatedAt: "2026-05-27T08:00:00.000Z",
           range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
           identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
@@ -98,7 +189,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
             },
           ],
           weeklySummary: {
-            schemaVersion: 6,
+            schemaVersion: 7,
             generatedAt: "2026-05-27T08:00:00.000Z",
             range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
             identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
@@ -142,7 +233,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
       bobFile,
       JSON.stringify(
         {
-          schemaVersion: 6,
+          schemaVersion: 7,
           generatedAt: "2026-05-27T08:00:00.000Z",
           range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
           identity: { gitUserName: "bob", gitUserEmail: "bob@example.com" },
@@ -162,7 +253,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
             },
           ],
           weeklySummary: {
-            schemaVersion: 6,
+            schemaVersion: 7,
             generatedAt: "2026-05-27T08:00:00.000Z",
             range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
             identity: { gitUserName: "bob", gitUserEmail: "bob@example.com" },
@@ -213,7 +304,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
     assert.equal(detailRows.length, 2);
     assert.equal(dailyRows.length, 2);
     assert.equal(weeklyRows.length, 2);
-    assert.match(detailCsv, /^personKey,timestamp,week,date,sessionId,workspaceName,modelName,fiveHourUsagePct,contextWindowPct,contextUsedM,contextMaxM,inputTokensM,outputTokensM,cacheReadInputTokensM$/m);
+    assert.match(detailCsv, /^personKey,timestamp,week,date,sessionId,workspaceName,modelName,source,fiveHourUsagePct,contextWindowPct,contextUsedM,contextMaxM,inputTokensM,outputTokensM,cacheReadInputTokensM$/m);
     assert.equal(detailCsv.includes("statusLine"), false);
     assert.equal(detailCsv.includes("workspaceDir"), false);
     assert.equal(detailCsv.includes("sourceFile"), false);
@@ -260,7 +351,7 @@ function buildBundleForMerge(options: {
 }) {
   const { personKey, generatedAt, date, eventTimestamp, userMessageCount, inputTokens, fiveHour, sessionId } = options;
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     generatedAt,
     range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-31T23:59:59.999Z" },
     identity: { gitUserName: personKey, gitUserEmail: `${personKey}@example.com` },
@@ -281,7 +372,7 @@ function buildBundleForMerge(options: {
       },
     ],
     weeklySummary: {
-      schemaVersion: 6,
+      schemaVersion: 7,
       generatedAt,
       range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-31T23:59:59.999Z" },
       identity: { gitUserName: personKey, gitUserEmail: `${personKey}@example.com` },
@@ -392,6 +483,104 @@ test("aggregate same day different machines: stacks up independently", async () 
   }
 });
 
+test("aggregate stacks codex counts/usage into claude main fields", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-codex-stack-"));
+  try {
+    // 一台机器：claude msgs=5 / codex msgs=3；claude 5h=40、codex 5h=30。
+    // 累加量相加：msgs=8、tokens=150；额度 peak=max(40,30)=40、latest=40+30=70。
+    const bundle = {
+      schemaVersion: 8,
+      generatedAt: "2026-05-27T08:00:00.000Z",
+      range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-31T23:59:59.999Z" },
+      identity: { gitUserName: "zoe", gitUserEmail: "zoe@example.com" },
+      rawEvents: [
+        {
+          schemaVersion: 3,
+          timestamp: "2026-05-26T01:00:00.000Z",
+          gitUserName: "zoe",
+          gitUserEmail: "zoe@example.com",
+          gitUserAccount: "zoe",
+          rawPayload: {
+            session_id: "zoe-claude",
+            model: { display_name: "Opus" },
+            workspace: { current_dir: "/repo/zoe" },
+            rate_limits: { five_hour: { used_percentage: 40 } },
+          },
+        },
+        {
+          schemaVersion: 3,
+          timestamp: "2026-05-26T02:00:00.000Z",
+          gitUserName: "zoe",
+          gitUserEmail: "zoe@example.com",
+          gitUserAccount: "zoe",
+          rawPayload: {
+            source: "codex",
+            session_id: "zoe-codex",
+            rate_limits: { five_hour: { used_percentage: 30 } },
+          },
+        },
+      ],
+      weeklySummary: {
+        schemaVersion: 8,
+        generatedAt: "2026-05-27T08:00:00.000Z",
+        range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-31T23:59:59.999Z" },
+        identity: { gitUserName: "zoe", gitUserEmail: "zoe@example.com" },
+        counts: { userMessageCount: 5, apiRequestCount: 1 },
+        tokens: { inputTokens: 100, outputTokens: 10, cacheReadInputTokens: 5 },
+        codex: { userMessageCount: 3, apiRequestCount: 1, inputTokens: 50, outputTokens: 5, cacheReadInputTokens: 2, fiveHourPeakUsagePct: 30, fiveHourLatestUsagePct: 30, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
+        statusline: { sampleCount: 1, uniqueSessions: 1, uniqueWorkspaces: 1, fiveHourLatestUsagePct: 40, fiveHourPeakUsagePct: 40, sevenDayLatestUsagePct: null, sevenDayPeakUsagePct: null },
+        sources: {
+          ccusDataDir: "D:/ccus",
+          claudeDataDir: "C:/Users/test/.claude",
+          projectFilesMatched: 1,
+          messageCountSource: "claude-projects:user-events",
+          apiRequestCountSource: "claude-projects:assistant-usage-events",
+          tokenSource: "claude-projects:assistant-usage-events",
+        },
+      },
+      dailySummaries: [
+        {
+          date: "2026-05-26",
+          userMessageCount: 5,
+          apiRequestCount: 1,
+          inputTokens: 100,
+          outputTokens: 10,
+          cacheReadInputTokens: 5,
+          sampleCount: 1,
+          fiveHourLatestUsagePct: 40,
+          fiveHourPeakUsagePct: 40,
+          sevenDayLatestUsagePct: null,
+          sevenDayPeakUsagePct: null,
+          uniqueSessions: 1,
+          uniqueWorkspaces: 1,
+          codex: { userMessageCount: 3, apiRequestCount: 1, inputTokens: 50, outputTokens: 5, cacheReadInputTokens: 2, fiveHourPeakUsagePct: 30, fiveHourLatestUsagePct: 30, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
+        },
+      ],
+    };
+    await fs.writeFile(path.join(root, "zoe.json"), JSON.stringify(bundle), "utf8");
+
+    const bundles = await loadWeeklyExportBundles(root);
+    const dailyRows = buildAggregatedDailyRows(bundles);
+    const weeklyRows = buildAggregatedWeeklyRows(bundles);
+
+    // 累加量：claude + codex 相加
+    assert.equal(dailyRows[0].userMessageCount, 8);
+    assert.equal(dailyRows[0].inputTokens, 150);
+    // 额度 peak 取两源 max
+    assert.equal(dailyRows[0].fiveHourPeakUsagePct, 40);
+    // 额度 latest 两源相加
+    assert.equal(dailyRows[0].fiveHourLatestUsagePct, 70);
+    // weekly 同口径
+    assert.equal(weeklyRows[0].userMessageCount, 8);
+    assert.equal(weeklyRows[0].fiveHourPeakUsagePct, 40);
+    assert.equal(weeklyRows[0].fiveHourLatestUsagePct, 70);
+    // row.codex 明细仍保留
+    assert.equal(dailyRows[0].codex.userMessageCount, 3);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("aggregate weekly rolls up multi-machine days within the same week", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-weekroll-"));
   try {
@@ -495,7 +684,7 @@ test("loadWeeklyExportBundles rejects old schema bundles explicitly", async () =
 
     await assert.rejects(
       () => loadWeeklyExportBundles(root),
-      /schemaVersion 6 bundles/,
+      /schemaVersion 6\/7\/8 bundles/,
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -584,7 +773,7 @@ test("deburrSevenDayEvents drops a short stale spike even when a sampling gap fo
 function buildSevenDayBundle(options: { personKey: string; generatedAt: string; date: string; samples: Array<{ timestamp: string; sevenDay: number }> }) {
   const { personKey, generatedAt, date, samples } = options;
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     generatedAt,
     range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-31T23:59:59.999Z" },
     identity: { gitUserName: personKey, gitUserEmail: `${personKey}@example.com` },
@@ -603,7 +792,7 @@ function buildSevenDayBundle(options: { personKey: string; generatedAt: string; 
       },
     })),
     weeklySummary: {
-      schemaVersion: 6,
+      schemaVersion: 7,
       generatedAt,
       range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-31T23:59:59.999Z" },
       identity: { gitUserName: personKey, gitUserEmail: `${personKey}@example.com` },
