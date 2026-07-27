@@ -177,6 +177,79 @@ test("fetchCodexQuota clamps usedPercent to 0-100", async () => {
   assert.equal(out.sevenDay, 0);
 });
 
+test("fetchCodexQuota classifies windows by windowDurationMins regardless of primary/secondary order", async () => {
+  // 实测 app-server 可能把周额度放 primary、5h 放 secondary（这正是 ccus 旧硬映射 7d 恒 null 的根因）。
+  const child = rpcChild((msg, emit) => {
+    if (msg.method === "initialize") {
+      emit(INIT_RESULT_LINE(msg.id));
+    } else if (msg.method === "account/rateLimits/read") {
+      emit(
+        JSON.stringify({
+          id: msg.id,
+          result: {
+            rateLimits: {
+              primary: { usedPercent: 4, windowDurationMins: 10080, resetsAt: 1730947200 },
+              secondary: { usedPercent: 60, windowDurationMins: 300 },
+            },
+          },
+        }) + "\n",
+      );
+    }
+  });
+  const out = await fetchCodexQuota({ spawn: () => asChild(child), timeoutMs: 1000 });
+
+  assert.equal(out.status, "ok");
+  assert.equal(out.fiveHour, 60);
+  assert.equal(out.sevenDay, 4);
+  assert.equal(out.resetsAt, 1730947200 * 1000);
+});
+
+test("fetchCodexQuota maps a lone weekly window to sevenDay with fiveHour null", async () => {
+  // 只有周窗（primary，duration=10080）、没有 5h 窗：fiveHour 应为 null，sevenDay 取该窗。
+  const child = rpcChild((msg, emit) => {
+    if (msg.method === "initialize") {
+      emit(INIT_RESULT_LINE(msg.id));
+    } else if (msg.method === "account/rateLimits/read") {
+      emit(
+        JSON.stringify({
+          id: msg.id,
+          result: { rateLimits: { primary: { usedPercent: 4, windowDurationMins: 10080 } } },
+        }) + "\n",
+      );
+    }
+  });
+  const out = await fetchCodexQuota({ spawn: () => asChild(child), timeoutMs: 1000 });
+
+  assert.equal(out.status, "ok");
+  assert.equal(out.fiveHour, null);
+  assert.equal(out.sevenDay, 4);
+});
+
+test("fetchCodexQuota falls back to legacy primary/secondary mapping when duration is unknown", async () => {
+  // duration 都是无法归类的时长（60/120），退回 legacy：primary→5h、secondary→7d。
+  const child = rpcChild((msg, emit) => {
+    if (msg.method === "initialize") {
+      emit(INIT_RESULT_LINE(msg.id));
+    } else if (msg.method === "account/rateLimits/read") {
+      emit(
+        JSON.stringify({
+          id: msg.id,
+          result: {
+            rateLimits: {
+              primary: { usedPercent: 42, windowDurationMins: 60 },
+              secondary: { usedPercent: 18, windowDurationMins: 120 },
+            },
+          },
+        }) + "\n",
+      );
+    }
+  });
+  const out = await fetchCodexQuota({ spawn: () => asChild(child), timeoutMs: 1000 });
+
+  assert.equal(out.fiveHour, 42);
+  assert.equal(out.sevenDay, 18);
+});
+
 test("fetchCodexQuota returns error when rateLimits/read reports rpc error", async () => {
   const child = rpcChild((msg, emit) => {
     if (msg.method === "initialize") {

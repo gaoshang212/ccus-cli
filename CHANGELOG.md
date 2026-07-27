@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.3] - 2026-07-27
+
+### 修复
+- Codex 额度解析改按各窗口 `windowDurationMins` 认桶（300→5h、10080→7d），不再硬映射 primary→5h / secondary→7d：实测 app-server 可能把周额度放在 primary，旧逻辑导致 7d 恒为 null、5h 误填周值；`windowDurationMins` 缺失时退回原映射。
+
 ## [0.2.2] - 2026-07-27
 
 ### 变更

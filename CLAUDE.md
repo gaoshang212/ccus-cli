@@ -222,7 +222,7 @@ schemaVersion 6/7/8 以外的 bundle 会被明确拒绝，不再静默读取。
   - `cli.ts` `handleStatuslineEmit` 在落盘前调 `applyQuotaToPayload` 把额度填进 `rawPayload.rate_limits`，复用现有展示/落盘/导出/聚合管线，**不 bump export `schemaVersion`**（纯读时填充，与 `recomputeUsage` 同理）
 
 - `src/lib/codex-fetcher.ts`
-  - Codex CLI 额度采集：`fetchCodexQuota` spawn `codex -s read-only -a untrusted app-server`，JSON-RPC 握手（`initialize` → 收响应 → 发 `initialized` 通知 → `account/rateLimits/read`，**不发 initialized 会被拒为 Not initialized**），解析 `result.rateLimits.primary`→5h / `secondary`→weekly
+  - Codex CLI 额度采集：`fetchCodexQuota` spawn `codex -s read-only -a untrusted app-server`，JSON-RPC 握手（`initialize` → 收响应 → 发 `initialized` 通知 → `account/rateLimits/read`，**不发 initialized 会被拒为 Not initialized**），解析 `result.rateLimits.{primary, secondary}` 各窗口，优先按窗口自带 `windowDurationMins` 认桶（300→5h、10080→7d，±1 容差，不依赖 primary/secondary 顺序——实测 app-server 可能把周额度放 primary）；`windowDurationMins` 缺失/未知时退回 legacy `primary→5h / secondary→weekly`
   - 字段名实测是**驼峰** `usedPercent` / `resetsAt`（Unix 秒），**不是** design 文档写的 `used_percent` / `reset_at`（后者是 backend wham/usage 直连路径的字段，本路径不走）；解析时驼峰优先、`used_percentage`/`usedPercentage` fallback，clamp 0–100；ENOENT→`unavailable`、超时/RPC error/进程提前退出→`error`，全程不抛错
   - `resolveCodexQuota`：TTL 缓存（默认 5min，`codex-quota-cache.json`），命中秒回、过期才 spawn（带 ~10s 超时）、失败回退旧缓存、全失败或无有效数据返回 null；`options.fetcher` 供测试注入
   - spawn 用 `env: { ...process.env, CODEX_HOME }` 继承（`CODEX_HOME` 默认 `~/.codex`）；Windows 上 codex 多为 codex.cmd，`shell:true` 兜底

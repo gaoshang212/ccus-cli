@@ -95,19 +95,81 @@ function readResetsAtMs(window: unknown): number | null {
   return n < 10_000_000_000 ? n * 1000 : n;
 }
 
+// Codex app-server 各 rate-limit 窗口自带的时长（分钟）：5h 窗 300、周窗 10080。
+const CODEX_SESSION_WINDOW_MINUTES = 300;
+const CODEX_WEEKLY_WINDOW_MINUTES = 10080;
+// 容忍老版本 bucket 长度 off-by-one-minute 的漂移，不吸收其它时长。
+const CODEX_WINDOW_DURATION_TOLERANCE_MINUTES = 1;
+
+/** 读窗口时长（分钟）：驼峰 windowDurationMins 优先，兼容下划线变体。 */
+function readWindowDurationMins(window: unknown): number | null {
+  if (!isRecord(window)) {
+    return null;
+  }
+  return toFiniteNumber(window.windowDurationMins ?? window.window_duration_mins ?? window.windowDurationMinutes);
+}
+
+/** 按时长认桶：300→session（5h）、10080→weekly（7d），未知时长返回 null。 */
+function classifyWindowByDuration(durationMins: number | null): "session" | "weekly" | null {
+  if (durationMins === null) {
+    return null;
+  }
+  if (Math.abs(durationMins - CODEX_SESSION_WINDOW_MINUTES) <= CODEX_WINDOW_DURATION_TOLERANCE_MINUTES) {
+    return "session";
+  }
+  if (Math.abs(durationMins - CODEX_WEEKLY_WINDOW_MINUTES) <= CODEX_WINDOW_DURATION_TOLERANCE_MINUTES) {
+    return "weekly";
+  }
+  return null;
+}
+
 /**
- * 解析 account/rateLimits/read 的 result：primary→5h、secondary→weekly（Codex 约定）。
- * 字段缺失时对应窗口为 null，不阻断另一窗口。
+ * 解析 account/rateLimits/read 的 result。
+ *
+ * 首选按各窗口自带的 `windowDurationMins` 认桶（300→5h、10080→7d，±1 容差），不依赖
+ * primary/secondary 顺序——实测 app-server 可能把周额度放在 primary。`windowDurationMins`
+ * 缺失或无法归类时，退回 legacy `primary→5h、secondary→weekly`。字段缺失时对应窗口为 null。
  */
 function parseRateLimitsResult(result: unknown): CodexQuota {
   const wrapper = isRecord(result) && isRecord(result.rateLimits) ? result.rateLimits : null;
   if (!wrapper) {
     return { fiveHour: null, sevenDay: null, resetsAt: null };
   }
-  const fiveHour = readUsedPercent(wrapper.primary);
-  const sevenDay = readUsedPercent(wrapper.secondary);
-  const resetsAt = readResetsAtMs(wrapper.primary) ?? readResetsAtMs(wrapper.secondary);
-  return { fiveHour, sevenDay, resetsAt };
+  const mappable = (window: unknown): Record<string, unknown> | null => {
+    if (!isRecord(window) || readUsedPercent(window) === null) {
+      return null;
+    }
+    return window;
+  };
+  const primary = mappable(wrapper.primary);
+  const secondary = mappable(wrapper.secondary);
+
+  let session: Record<string, unknown> | null = null;
+  let weekly: Record<string, unknown> | null = null;
+  for (const window of [primary, secondary]) {
+    if (!window) {
+      continue;
+    }
+    const kind = classifyWindowByDuration(readWindowDurationMins(window));
+    if (kind === "session" && !session) {
+      session = window;
+    } else if (kind === "weekly" && !weekly) {
+      weekly = window;
+    }
+  }
+  // duration 缺失/未知时退回 legacy 位置映射（primary→5h、secondary→7d）。
+  if (!session && primary && classifyWindowByDuration(readWindowDurationMins(primary)) === null) {
+    session = primary;
+  }
+  if (!weekly && secondary && classifyWindowByDuration(readWindowDurationMins(secondary)) === null) {
+    weekly = secondary;
+  }
+
+  return {
+    fiveHour: readUsedPercent(session),
+    sevenDay: readUsedPercent(weekly),
+    resetsAt: readResetsAtMs(session) ?? readResetsAtMs(weekly),
+  };
 }
 
 function getCodexHome(codexHomePath: string | null | undefined): string {
