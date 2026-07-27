@@ -196,7 +196,6 @@ test("aggregated daily/weekly csv include sevenDayCumulativeUsagePct column", ()
     sevenDayCumulativeUsagePct: 80,
     uniqueSessions: 1,
     uniqueWorkspaces: 1,
-    codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
   };
   const weeklyRow: AggregatedWeeklyRow = {
     personKey: "alice",
@@ -214,7 +213,6 @@ test("aggregated daily/weekly csv include sevenDayCumulativeUsagePct column", ()
     sevenDayCumulativeUsagePct: 95,
     uniqueSessions: 1,
     uniqueWorkspaces: 1,
-    codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
   };
 
   const dailyCsv = buildAggregatedDailyCsv([dailyRow]);

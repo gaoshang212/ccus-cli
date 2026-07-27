@@ -129,9 +129,6 @@ test("aggregate separates claude and codex usage by source", () => {
   // Claude usage 只算 claude 事件（80/90），不含 codex 的 30/40。
   assert.equal(daily[0].fiveHourPeakUsagePct, 80);
   assert.equal(daily[0].sevenDayPeakUsagePct, 90);
-  // Codex usage 单列（从 source=codex 事件重算）。
-  assert.equal(daily[0].codex.fiveHourPeakUsagePct, 30);
-  assert.equal(daily[0].codex.sevenDayPeakUsagePct, 40);
   // detail 行保留两类事件，source 标记正确；codex 行 token 留 0（无单事件 token 语义）。
   const detail = buildAggregatedDetailRows(bundles);
   assert.equal(detail.length, 2);
@@ -574,8 +571,6 @@ test("aggregate stacks codex counts/usage into claude main fields", async () => 
     assert.equal(weeklyRows[0].userMessageCount, 8);
     assert.equal(weeklyRows[0].fiveHourPeakUsagePct, 40);
     assert.equal(weeklyRows[0].fiveHourLatestUsagePct, 70);
-    // row.codex 明细仍保留
-    assert.equal(dailyRows[0].codex.userMessageCount, 3);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

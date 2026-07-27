@@ -582,7 +582,7 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
     const { personKey, date } = reps[0];
 
     // 不同机器的独立数据直接叠加
-    // 累加量含 Codex：Claude + Codex 同字段相加（row.codex 仍单独保留明细）
+    // 累加量含 Codex：Claude + Codex 同字段相加
     const userMessageCount = reps.reduce((sum, r) => sum + r.day.userMessageCount + codexOf(r.day).userMessageCount, 0);
     const apiRequestCount = reps.reduce((sum, r) => sum + r.day.apiRequestCount + codexOf(r.day).apiRequestCount, 0);
     const inputTokens = reps.reduce((sum, r) => sum + r.day.inputTokens + codexOf(r.day).inputTokens, 0);
@@ -591,19 +591,6 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
     const sampleCount = reps.reduce((sum, r) => sum + r.day.sampleCount, 0);
     const uniqueSessions = reps.reduce((sum, r) => sum + r.day.uniqueSessions, 0);
     const uniqueWorkspaces = reps.reduce((sum, r) => sum + r.day.uniqueWorkspaces, 0);
-    // Codex 计数/token 是累加量，跟随 winner 的 daySummary 各机相加；不进 winner 判定。
-    const codex = reps.reduce(
-      (acc, r) => {
-        const c = codexOf(r.day);
-        acc.userMessageCount += c.userMessageCount;
-        acc.apiRequestCount += c.apiRequestCount;
-        acc.inputTokens += c.inputTokens;
-        acc.outputTokens += c.outputTokens;
-        acc.cacheReadInputTokens += c.cacheReadInputTokens;
-        return acc;
-      },
-      { ...ZERO_CODEX },
-    );
 
     // 按 source 分流：Claude usage 只算 claude 事件，Codex usage 单列重算（避免 codex 额度污染 claude usage）。
     const allEvents = reps.flatMap((r) => bundleEventsByDate(r.bundle).get(date) ?? []);
@@ -632,7 +619,6 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
       sevenDayCumulativeUsagePct,
       uniqueSessions,
       uniqueWorkspaces,
-      codex: { ...codex, ...codexUsage },
     });
   }
 
@@ -671,7 +657,6 @@ interface WeeklyAccumulator {
   sampleCount: number;
   uniqueSessions: number;
   uniqueWorkspaces: number;
-  codex: CodexUsageSnapshot;
   days: WeeklyExportDaySummary[];
   events: StatuslineEvent[];
 }
@@ -702,7 +687,6 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
           sampleCount: 0,
           uniqueSessions: 0,
           uniqueWorkspaces: 0,
-          codex: { ...ZERO_CODEX },
           days: [],
           events: [],
         };
@@ -710,7 +694,7 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
       }
       const day = rep.day;
       const codexDay = codexOf(day);
-      // 累加量含 Codex：Claude + Codex 同字段相加（acc.codex 仍单独保留明细）
+      // 累加量含 Codex：Claude + Codex 同字段相加
       acc.userMessageCount += day.userMessageCount + codexDay.userMessageCount;
       acc.apiRequestCount += day.apiRequestCount + codexDay.apiRequestCount;
       acc.inputTokens += day.inputTokens + codexDay.inputTokens;
@@ -719,11 +703,6 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
       acc.sampleCount += day.sampleCount;
       acc.uniqueSessions += day.uniqueSessions;
       acc.uniqueWorkspaces += day.uniqueWorkspaces;
-      acc.codex.userMessageCount += codexDay.userMessageCount;
-      acc.codex.apiRequestCount += codexDay.apiRequestCount;
-      acc.codex.inputTokens += codexDay.inputTokens;
-      acc.codex.outputTokens += codexDay.outputTokens;
-      acc.codex.cacheReadInputTokens += codexDay.cacheReadInputTokens;
       acc.days.push(day);
       acc.events.push(...(bundleEventsByDate(rep.bundle).get(rep.date) ?? []));
     }
@@ -755,7 +734,6 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
       sevenDayCumulativeUsagePct,
       uniqueSessions: acc.uniqueSessions,
       uniqueWorkspaces: acc.uniqueWorkspaces,
-      codex: { ...acc.codex, ...codexUsage },
     });
   }
 

@@ -250,8 +250,6 @@ export interface AggregatedDailyRow {
   sevenDayCumulativeUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
-  /** Codex CLI 的消息/请求/token 统计（单列，跟随 winner 的 daySummary）。 */
-  codex: CodexUsageSnapshot;
 }
 
 /**
@@ -298,8 +296,6 @@ export interface AggregatedWeeklyRow {
   sevenDayCumulativeUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
-  /** Codex CLI 的消息/请求/token 统计（单列，跟随 winner 的 daySummary）。 */
-  codex: CodexUsageSnapshot;
 }
 
 /** API 模式（第三方额度拉取）支持的 provider 类型。 */

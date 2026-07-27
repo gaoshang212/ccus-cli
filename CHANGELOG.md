@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.1] - 2026-07-27
+
+### 变更
+- 移除 aggregate 看板与聚合行结构中已无消费方的 Codex 额度明细列（看板排行榜 / 周表的 Codex 5h/7d 列、`AggregatedDailyRow.codex` / `AggregatedWeeklyRow.codex`）；Codex 额度仍叠加在 daily/weekly 主 usage 字段，bundle 导出的 `weeklySummary.codex` / `dailySummaries[].codex` 不变。
+
 ## [0.2.0] - 2026-07-27
 
 ### 新增

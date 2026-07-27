@@ -133,7 +133,7 @@ schemaVersion 6/7/8 以外的 bundle 会被明确拒绝，不再静默读取。
   - 历史上有的 `sourceFile`、`workspaceDir`、`statusLine`、`gitUserName`、`gitUserEmail` 已移除，不要再加回来
   - `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 是**该事件所在自然日**的 token 总量（从同一 bundle 的 `dailySummaries` 按 `date` join 而来），不是单条事件的 token。同一天的多条 detail 行会重复同一组日总量，所以这三列不能直接按行求和
   - `contextUsedM` / `contextMaxM` 是单条事件的 context window token（来自 `rawPayload`），同样换算成 M；`contextWindowPct` 仍是百分比，不换算
-- `daily.csv` / `weekly.csv` 都包含 `fiveHourPeakUsagePct` / `fiveHourLatestUsagePct` / `sevenDayPeakUsagePct` / `sevenDayLatestUsagePct` 四个 usage 列、`sevenDayCumulativeUsagePct` 累计列（紧跟在 `sevenDayLatestUsagePct` 之后），以及 `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 三个 token 列。这些主字段都是 **Claude+Codex 合计**：token/消息/请求数直接相加，额度 peak 取两源 max、latest 两源相加，7d 累计曲线含 Claude 与 Codex 两源读数（codex 事件不再按 source 过滤）。不再单列 `codex*` 列（codex 明细只在 `aggregate serve` 看板表格里保留）
+- `daily.csv` / `weekly.csv` 都包含 `fiveHourPeakUsagePct` / `fiveHourLatestUsagePct` / `sevenDayPeakUsagePct` / `sevenDayLatestUsagePct` 四个 usage 列、`sevenDayCumulativeUsagePct` 累计列（紧跟在 `sevenDayLatestUsagePct` 之后），以及 `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM` 三个 token 列。这些主字段都是 **Claude+Codex 合计**：token/消息/请求数直接相加，额度 peak 取两源 max、latest 两源相加，7d 累计曲线含 Claude 与 Codex 两源读数（codex 事件不再按 source 过滤）。不再单列 `codex*` 列
 - 所有以 token 计的列（detail 的 `contextUsedM` / `contextMaxM` / `*TokensM`，daily/weekly 的 `*TokensM`）都以**百万（M）为单位**：原始整数除以 1_000_000 后写出（`export.ts` 的 `toMillions`，保留 6 位小数，null 仍写空）。bundle JSON 里仍是原始整数，M 换算只发生在 CSV 展示层，所以本次改动不动 `schemaVersion`。`*M` 后缀就是单位标记，不要去掉
 
 `ccus aggregate serve` 与 `ccus aggregate` 共用同一个 bundle 输入目录，但不写文件，只在内存里渲染多人 dashboard HTML 并通过本地 HTTP 端口提供页面。新增字段时，serve 路径的 HTML 也要同步更新，避免对外契约和页面展示脱节。
