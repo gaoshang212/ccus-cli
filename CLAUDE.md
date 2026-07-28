@@ -92,7 +92,7 @@ Codex 统计（与 Claude 字段单列）：
 
 - `weeklySummary.codex`：`{ userMessageCount, apiRequestCount, inputTokens, outputTokens, cacheReadInputTokens, fiveHourPeakUsagePct, fiveHourLatestUsagePct, sevenDayPeakUsagePct, sevenDayLatestUsagePct }`
 - `dailySummaries[].codex`：同结构，每天一条
-- token/消息来自 Codex sessions rollout（累加）；额度（5h/7d peak/latest）从 `source="codex"` 事件重算（快照，v8 起单列）
+- token 来自 Codex sessions rollout（累加）；消息数 = `task_started` 的 distinct `turn_id`（Codex fork/sub-agent/resume 会把历史 `task_started` 跨文件重放，必须全局去重，按最早 timestamp 归天）；额度（5h/7d peak/latest）从 `source="codex"` 事件重算（快照，v8 起单列）
 
 `averageUsagePct` 已从对外汇总/导出契约中移除。
 旧的 `sevenDayUsagePct` 单字段已在 schemaVersion 6 拆成 `sevenDayPeakUsagePct` + `sevenDayLatestUsagePct`，不要再合回去。
@@ -238,7 +238,7 @@ schemaVersion 6/7/8 以外的 bundle 会被明确拒绝，不再静默读取。
 
 - `src/lib/codex-sessions.ts`
   - 扫 `<CODEX_HOME>/sessions` 下递归的 rollout jsonl（仿 `claude.ts`），统计 Codex 的 userMessageCount / apiRequestCount / inputTokens / outputTokens / cacheReadInputTokens
-  - 口径：`payload.type=="user_message"` 计消息；`payload.type=="token_count"` 取 `info.last_token_usage`（本次增量，**不**用 `total_token_usage` 累计，否则重复计）累加 token、+1 请求；timestamp 在 top-level
+  - 口径：`payload.type=="task_started"` 取 `turn_id` 计消息（**跨文件全局 distinct**，按最早 timestamp 归天——Codex fork/spawn sub-agent/resume 会把历史 `task_started` 重写到新 rollout 文件，同一 `turn_id` 出现在多个文件，数 `user_message` 会严重虚高，实测 871→177）；`payload.type=="token_count"` 取 `info.last_token_usage`（本次增量，**不**用 `total_token_usage` 累计，否则重复计）累加 token、+1 请求；timestamp 在 top-level
   - `summarizeCodexSessionUsage` / `summarizeCodexSessionUsageByDay` 由 `cli.ts` 的 `runExport` 与 `loadDashboardData` 调用，填进 `weeklySummary.codex` / `dailySummaries[].codex`（export）和每日消息柱图（dashboard）
   - rollout 协议随 Codex 版本变，**易碎**：解析宽松、缺字段按 0
 

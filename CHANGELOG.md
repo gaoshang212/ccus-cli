@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.4] - 2026-07-28
+
+### 变更
+- Codex `userMessageCount` 改为按 `task_started` 的 distinct `turn_id` 统计（跨文件全局去重、按最早 timestamp 归天），修复 Codex fork / spawn sub-agent / resume 重放历史导致的消息数严重虚高；`apiRequestCount` 与 token 维度不变（仍数 `token_count`）。
+
 ## [0.2.3] - 2026-07-27
 
 ### 修复

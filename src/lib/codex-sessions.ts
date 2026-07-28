@@ -15,6 +15,25 @@ interface CodexDailyUsageSummary extends CodexSessionUsageSummary {
   date: string;
 }
 
+/** 一个 task_started 事件节点（turn_id + 事件 timestamp 毫秒）。 */
+interface RolloutTurnNode {
+  turnId: string;
+  ms: number;
+}
+
+/**
+ * summarizeRollout 的返回：本文件范围内的 task_started turn 节点 + token_count 用量。
+ * userMessageCount 不在此层产出——turn_id 会被 fork/sub-agent/resume 跨文件重放，
+ * 必须由上层做全局 distinct（按 turn_id 取最早 timestamp）。
+ */
+interface RolloutParse {
+  turns: RolloutTurnNode[];
+  apiRequestCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -68,16 +87,18 @@ function extractLastTokenUsage(payload: Record<string, unknown>): Record<string,
 }
 
 /**
- * 统计单个 Codex rollout 文件内的 token / 消息。
+ * 解析单个 Codex rollout 文件，收集范围内的 task_started turn 节点与 token_count 用量。
  *
  * Codex rollout 每行一个事件，timestamp 在 top-level：
- * - `event_msg` + `payload.type=="user_message"`：一次用户消息（工具结果是 `function_call_output`，不命中，无需过滤）。
+ * - `event_msg` + `payload.type=="task_started"`：一个用户 turn，带全局唯一 `turn_id`。
+ *   fork / spawn sub-agent / resume 会把历史 task_started 跨文件重放，故 turn 节点交上层按
+ *   turn_id 全局去重（取最早 timestamp），不能在单文件层计数。
  * - `event_msg` + `payload.type=="token_count"`：一次模型请求，token 取 `info.last_token_usage` 增量。
  */
-function summarizeRollout(content: string, start: Date, end: Date): CodexSessionUsageSummary {
+function summarizeRollout(content: string, start: Date, end: Date): RolloutParse {
   const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
-  const summary: CodexSessionUsageSummary = {
-    userMessageCount: 0,
+  const result: RolloutParse = {
+    turns: [],
     apiRequestCount: 0,
     inputTokens: 0,
     outputTokens: 0,
@@ -95,17 +116,20 @@ function summarizeRollout(content: string, start: Date, end: Date): CodexSession
       }
       const payload = record.payload;
 
-      if (payload.type === "user_message") {
-        summary.userMessageCount += 1;
+      if (payload.type === "task_started" && typeof payload.turn_id === "string") {
+        const ms = new Date(getString(record.timestamp) ?? "").getTime();
+        if (Number.isFinite(ms)) {
+          result.turns.push({ turnId: payload.turn_id, ms });
+        }
       }
 
       if (payload.type === "token_count") {
         const usage = extractLastTokenUsage(payload);
         if (usage) {
-          summary.apiRequestCount += 1;
-          summary.inputTokens += getNumber(usage.input_tokens);
-          summary.outputTokens += getNumber(usage.output_tokens);
-          summary.cacheReadInputTokens += getNumber(usage.cached_input_tokens);
+          result.apiRequestCount += 1;
+          result.inputTokens += getNumber(usage.input_tokens);
+          result.outputTokens += getNumber(usage.output_tokens);
+          result.cacheReadInputTokens += getNumber(usage.cached_input_tokens);
         }
       }
     } catch {
@@ -113,11 +137,14 @@ function summarizeRollout(content: string, start: Date, end: Date): CodexSession
     }
   }
 
-  return summary;
+  return result;
 }
 
 /**
  * 从 Codex 本地 session rollout（<CODEX_HOME>/sessions 下递归的 .jsonl）统计消息数、请求数和 token 用量。
+ *
+ * 消息数 = task_started 的 distinct turn_id（跨文件去重）。重放副本会让同一 turn_id 出现在多个文件，
+ * 故用全局 Map<turn_id, minMs> 收集（取最早 timestamp = 真实发生时刻，早于任何重放副本），最后取 size。
  */
 export async function summarizeCodexSessionUsage(
   start: Date,
@@ -127,35 +154,47 @@ export async function summarizeCodexSessionUsage(
   const sessionsDir = path.join(codexDataDir, "sessions");
   const files = await collectRolloutFiles(sessionsDir);
 
-  const totals = {
-    userMessageCount: 0,
-    apiRequestCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadInputTokens: 0,
-    matchedFileCount: files.length,
-    codexDataDir,
-  };
+  const turnMinMs = new Map<string, number>();
+  let apiRequestCount = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadInputTokens = 0;
 
   for (const filePath of files) {
     try {
       const content = await fs.readFile(filePath, "utf8");
-      const summary = summarizeRollout(content, start, end);
-      totals.userMessageCount += summary.userMessageCount;
-      totals.apiRequestCount += summary.apiRequestCount;
-      totals.inputTokens += summary.inputTokens;
-      totals.outputTokens += summary.outputTokens;
-      totals.cacheReadInputTokens += summary.cacheReadInputTokens;
+      const parsed = summarizeRollout(content, start, end);
+      for (const turn of parsed.turns) {
+        const prev = turnMinMs.get(turn.turnId);
+        if (prev === undefined || turn.ms < prev) {
+          turnMinMs.set(turn.turnId, turn.ms);
+        }
+      }
+      apiRequestCount += parsed.apiRequestCount;
+      inputTokens += parsed.inputTokens;
+      outputTokens += parsed.outputTokens;
+      cacheReadInputTokens += parsed.cacheReadInputTokens;
     } catch {
       continue;
     }
   }
 
-  return totals;
+  return {
+    userMessageCount: turnMinMs.size,
+    apiRequestCount,
+    inputTokens,
+    outputTokens,
+    cacheReadInputTokens,
+    matchedFileCount: files.length,
+    codexDataDir,
+  };
 }
 
 /**
  * 按天汇总 Codex session rollout 中的消息数、请求数和 token 用量。
+ *
+ * 消息数同 weekly：先全局 Map<turn_id, minMs> 去重，再按 minMs 的本地日归桶（保证 weekly = Σ daily、
+ * 且重放副本跨天不重复）。token 维度按 token_count 事件 timestamp 的本地日累加。
  */
 export async function summarizeCodexSessionUsageByDay(
   start: Date,
@@ -164,7 +203,25 @@ export async function summarizeCodexSessionUsageByDay(
   const codexDataDir = getCodexHome();
   const sessionsDir = path.join(codexDataDir, "sessions");
   const files = await collectRolloutFiles(sessionsDir);
+
+  const turnMinMs = new Map<string, number>();
   const daily = new Map<string, CodexDailyUsageSummary>();
+
+  const ensureDay = (date: string): CodexDailyUsageSummary => {
+    let current = daily.get(date);
+    if (!current) {
+      current = {
+        date,
+        userMessageCount: 0,
+        apiRequestCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+      };
+      daily.set(date, current);
+    }
+    return current;
+  };
 
   for (const filePath of files) {
     let content = "";
@@ -189,37 +246,35 @@ export async function summarizeCodexSessionUsageByDay(
           continue;
         }
         const payload = record.payload;
-        const isUserMessage = payload.type === "user_message";
-        const usage = payload.type === "token_count" ? extractLastTokenUsage(payload) : null;
-        if (!isUserMessage && !usage) {
-          continue;
+        const ms = new Date(timestamp!).getTime();
+
+        if (payload.type === "task_started" && typeof payload.turn_id === "string") {
+          if (Number.isFinite(ms)) {
+            const prev = turnMinMs.get(payload.turn_id);
+            if (prev === undefined || ms < prev) {
+              turnMinMs.set(payload.turn_id, ms);
+            }
+          }
         }
 
-        const date = localDateKey(new Date(timestamp!));
-        const current = daily.get(date) ?? {
-          date,
-          userMessageCount: 0,
-          apiRequestCount: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadInputTokens: 0,
-        };
-
-        if (isUserMessage) {
-          current.userMessageCount += 1;
+        if (payload.type === "token_count") {
+          const usage = extractLastTokenUsage(payload);
+          if (usage) {
+            const current = ensureDay(localDateKey(new Date(ms)));
+            current.apiRequestCount += 1;
+            current.inputTokens += getNumber(usage.input_tokens);
+            current.outputTokens += getNumber(usage.output_tokens);
+            current.cacheReadInputTokens += getNumber(usage.cached_input_tokens);
+          }
         }
-        if (usage) {
-          current.apiRequestCount += 1;
-          current.inputTokens += getNumber(usage.input_tokens);
-          current.outputTokens += getNumber(usage.output_tokens);
-          current.cacheReadInputTokens += getNumber(usage.cached_input_tokens);
-        }
-
-        daily.set(date, current);
       } catch {
         continue;
       }
     }
+  }
+
+  for (const ms of turnMinMs.values()) {
+    ensureDay(localDateKey(new Date(ms))).userMessageCount += 1;
   }
 
   return daily;
