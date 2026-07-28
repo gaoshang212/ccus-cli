@@ -78,6 +78,8 @@ function timestampInRange(timestamp: string | null, start: Date, end: Date): boo
 /**
  * 从 `token_count` 事件的 `info.last_token_usage` 取 token 用量对象（缺失返回 null）。
  * 必须用 last_token_usage（本次增量），不能用 total_token_usage（会话累计，会重复计）。
+ * 注意：Codex 的 `input_tokens` 含缓存命中（`cached_input_tokens` 是其子集），
+ * 累加 inputTokens 时要减去 cached 得到净输入，对齐 Claude 的 `input_tokens` 口径。
  */
 function extractLastTokenUsage(payload: Record<string, unknown>): Record<string, unknown> | null {
   if (!isRecord(payload.info)) {
@@ -126,8 +128,10 @@ function summarizeRollout(content: string, start: Date, end: Date): RolloutParse
       if (payload.type === "token_count") {
         const usage = extractLastTokenUsage(payload);
         if (usage) {
+          // 净输入 = input_tokens - cached_input_tokens（input_tokens 含缓存命中，减去对齐 Claude 口径）。
+          const netInputTokens = Math.max(0, getNumber(usage.input_tokens) - getNumber(usage.cached_input_tokens));
           result.apiRequestCount += 1;
-          result.inputTokens += getNumber(usage.input_tokens);
+          result.inputTokens += netInputTokens;
           result.outputTokens += getNumber(usage.output_tokens);
           result.cacheReadInputTokens += getNumber(usage.cached_input_tokens);
         }
@@ -261,8 +265,10 @@ export async function summarizeCodexSessionUsageByDay(
           const usage = extractLastTokenUsage(payload);
           if (usage) {
             const current = ensureDay(localDateKey(new Date(ms)));
+            // 同 summarizeRollout：累加净输入（input - cached），对齐 Claude 口径。
+            const netInputTokens = Math.max(0, getNumber(usage.input_tokens) - getNumber(usage.cached_input_tokens));
             current.apiRequestCount += 1;
-            current.inputTokens += getNumber(usage.input_tokens);
+            current.inputTokens += netInputTokens;
             current.outputTokens += getNumber(usage.output_tokens);
             current.cacheReadInputTokens += getNumber(usage.cached_input_tokens);
           }

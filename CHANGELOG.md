@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.5] - 2026-07-28
+
+### 变更
+- Codex `inputTokens` 改为净输入口径（`input_tokens - cached_input_tokens`），与 Claude 的 `input_tokens` 对齐（Codex 的 `input_tokens` 含缓存命中，此前直接累加会严重虚高）；export `schemaVersion` 升至 9，`aggregate` 接受 6/7/8/9。
+
 ## [0.2.4] - 2026-07-28
 
 ### 变更

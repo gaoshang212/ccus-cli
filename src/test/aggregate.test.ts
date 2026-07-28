@@ -139,18 +139,18 @@ test("aggregate separates claude and codex usage by source", () => {
   assert.equal(codexRow?.inputTokens, 0);
 });
 
-/** aggregate 接受 schemaVersion 6/7/8 的 bundle（向后兼容旧导出）。 */
-test("loadWeeklyExportBundles accepts schemaVersion 6/7/8 bundles", async () => {
+/** aggregate 接受 schemaVersion 6/7/8/9 的 bundle（向后兼容旧导出）。 */
+test("loadWeeklyExportBundles accepts schemaVersion 6/7/8/9 bundles", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-versions-"));
   try {
-    for (const sv of [6, 7, 8]) {
+    for (const sv of [6, 7, 8, 9]) {
       const b = buildMinimalBundle(`p${sv}`);
       b.schemaVersion = sv;
       b.weeklySummary.schemaVersion = sv;
       await fs.writeFile(path.join(root, `p${sv}.json`), JSON.stringify(b), "utf8");
     }
     const bundles = await loadWeeklyExportBundles(root);
-    assert.equal(bundles.length, 3);
+    assert.equal(bundles.length, 4);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -679,7 +679,7 @@ test("loadWeeklyExportBundles rejects old schema bundles explicitly", async () =
 
     await assert.rejects(
       () => loadWeeklyExportBundles(root),
-      /schemaVersion 6\/7\/8 bundles/,
+      /schemaVersion 6\/7\/8\/9 bundles/,
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });

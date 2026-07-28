@@ -75,7 +75,7 @@
 
 当前导出契约版本：
 
-- `schemaVersion: 8`
+- `schemaVersion: 9`
 
 当前对外 usage 字段（Claude 额度，只算 `source!="codex"` 的事件）：
 
@@ -92,7 +92,7 @@ Codex 统计（与 Claude 字段单列）：
 
 - `weeklySummary.codex`：`{ userMessageCount, apiRequestCount, inputTokens, outputTokens, cacheReadInputTokens, fiveHourPeakUsagePct, fiveHourLatestUsagePct, sevenDayPeakUsagePct, sevenDayLatestUsagePct }`
 - `dailySummaries[].codex`：同结构，每天一条
-- token 来自 Codex sessions rollout（累加）；消息数 = `task_started` 的 distinct `turn_id`（Codex fork/sub-agent/resume 会把历史 `task_started` 跨文件重放，必须全局去重，按最早 timestamp 归天）；额度（5h/7d peak/latest）从 `source="codex"` 事件重算（快照，v8 起单列）
+- token 来自 Codex sessions rollout（v9 起 `inputTokens` 为净输入 `input_tokens - cached_input_tokens`、对齐 Claude 口径，`cacheReadInputTokens` 仍累加 `cached_input_tokens`）；消息数 = `task_started` 的 distinct `turn_id`（Codex fork/sub-agent/resume 会把历史 `task_started` 跨文件重放，必须全局去重，按最早 timestamp 归天）；额度（5h/7d peak/latest）从 `source="codex"` 事件重算（快照，v8 起单列）
 
 `averageUsagePct` 已从对外汇总/导出契约中移除。
 旧的 `sevenDayUsagePct` 单字段已在 schemaVersion 6 拆成 `sevenDayPeakUsagePct` + `sevenDayLatestUsagePct`，不要再合回去。
@@ -103,10 +103,10 @@ Codex 统计（与 Claude 字段单列）：
 
 `ccus aggregate` 当前接受：
 
-- `schemaVersion: 6/7/8` 的 bundle JSON（v8 含 codex 额度字段；v7 codex 无额度、读时按 null；v6 无 codex 子结构、读时回退零值）
+- `schemaVersion: 6/7/8/9` 的 bundle JSON（v9 codex inputTokens 为净输入；v8 含 codex 额度字段；v7 codex 无额度、读时按 null；v6 无 codex 子结构、读时回退零值）
 - 通过 `ccus export` 导出的 `.json.gz`（gzip 压缩，默认）或明文 `.json` 文件，`.gz` 读取时自动 gunzip
 
-schemaVersion 6/7/8 以外的 bundle 会被明确拒绝，不再静默读取。
+schemaVersion 6/7/8/9 以外的 bundle 会被明确拒绝，不再静默读取。
 不支持把 raw-event jsonl 直接作为 `aggregate` 输入。
 
 ### 2.6 aggregate 输出契约
@@ -245,7 +245,7 @@ schemaVersion 6/7/8 以外的 bundle 会被明确拒绝，不再静默读取。
 - `src/lib/aggregate.ts`
   - 读取 bundle JSON
   - 从 bundle 展开 detail/daily/weekly 行
-  - 当前校验 `schemaVersion` 为 6/7/8（v8 含 codex 额度；v7/v6 容错：codex 额度字段缺失按 null/零值）
+  - 当前校验 `schemaVersion` 为 6/7/8/9（v9 codex inputTokens 为净输入；v8 含 codex 额度；v7/v6 容错：codex 额度字段缺失按 null/零值）
   - 同一个人多台电脑导出多个 bundle 时按 personKey 合并去重（见 2.6）
 
 - `src/lib/claude.ts`
@@ -383,12 +383,13 @@ node dist/cli.js aggregate --input-dir "$env:LOCALAPPDATA\ccus\exports" --out-di
 
 ### 5.4 aggregate 向后兼容
 
-当前接受 `schemaVersion: 6/7/8`，对旧版本做显式容错映射（不默默放宽）：
+当前接受 `schemaVersion: 6/7/8/9`，对旧版本做显式容错映射（不默默放宽）：
 
-- v8：完整（codex 含额度字段）
+- v9：完整，codex `inputTokens` 为净输入（input − cached）
+- v8：完整（codex 含额度字段，`inputTokens` 仍为含 cache 的旧口径）
 - v7：codex 有 token/消息、无额度字段 → 额度按 null
 - v6：无 codex 子结构 → codex 回退零值
-- 6/7/8 以外：拒绝，让用户重新导出
+- 6/7/8/9 以外：拒绝，让用户重新导出
 
 codex 额度在 aggregate 层从 `rawEvents` 的 `source="codex"` 事件重算，所以 v6/v7 时期混进 rawEvents 的 codex 事件也能被正确分流（Claude usage 变干净、codex 额度算出）。
 

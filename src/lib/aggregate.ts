@@ -45,7 +45,7 @@ function isWeeklyExportBundle(value: unknown): value is WeeklyExportBundle {
     return false;
   }
 
-  if (typeof value.schemaVersion !== "number" || ![6, 7, 8].includes(value.schemaVersion)) {
+  if (typeof value.schemaVersion !== "number" || ![6, 7, 8, 9].includes(value.schemaVersion)) {
     return false;
   }
 
@@ -141,7 +141,7 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
 
   if (invalidFiles.length > 0) {
     throw new Error(
-      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 6/7/8 bundles.`,
+      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 6/7/8/9 bundles.`,
     );
   }
 

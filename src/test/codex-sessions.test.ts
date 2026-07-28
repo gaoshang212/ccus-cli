@@ -73,9 +73,9 @@ test("summarizeCodexSessionUsage uses last_token_usage increment, not total_toke
 
     const summary = await summarizeCodexSessionUsage(RANGE_START, RANGE_END);
 
-    // 累加 last（1000+500=1500），不是 total（1000+1500=2500）。
+    // 净输入：(1000-0)+(500-50)=1450；累加 last 而非 total（1000+1500=2500）。
     assert.equal(summary.apiRequestCount, 2);
-    assert.equal(summary.inputTokens, 1500);
+    assert.equal(summary.inputTokens, 1450);
     assert.equal(summary.outputTokens, 15);
     assert.equal(summary.cacheReadInputTokens, 50);
   } finally {

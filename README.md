@@ -162,7 +162,7 @@ ccus aggregate serve --input-dir ./team-exports
 - 默认输出一个 `json` 数据包，里面同时包含 `rawEvents`、`weeklySummary`、`dailySummaries`
 - 导出文件内容为**紧凑 JSON**（无缩进），并默认 **gzip 压缩**后写成 `.json.gz`；gzip 与紧凑化都只是存储/展示层变化，解压后的字段集合与 `schemaVersion` 不变
 - 默认写 `.json.gz`；若用 `--out` 指定一个非 `.gz` 结尾的路径，则按明文 JSON 写出（不压缩）
-- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `8`：v7 起新增 `weeklySummary.codex` 与 `dailySummaries[].codex`（Codex CLI 的消息/请求/token 统计），v8 起该 codex 段再加 5h/7d 的 peak/latest 额度（从 `source="codex"` 事件重算、与 Claude 额度分开看）；aggregate daily/weekly CSV 的主字段（消息/请求/token/额度）已把 Codex **叠加进 Claude 合计**（累加量相加、额度 peak 取两源 max、latest 两源相加、7d 累计含两源读数），不再单列 `codex*` 列，detail.csv 加 `source` 列区分来源
+- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `9`：v7 起新增 `weeklySummary.codex` 与 `dailySummaries[].codex`（Codex CLI 的消息/请求/token 统计），v8 起该 codex 段再加 5h/7d 的 peak/latest 额度（从 `source="codex"` 事件重算、与 Claude 额度分开看），v9 起 codex `inputTokens` 改为净输入（`input_tokens - cached_input_tokens`，不含缓存命中）以对齐 Claude 的 `input_tokens` 口径；aggregate daily/weekly CSV 的主字段（消息/请求/token/额度）已把 Codex **叠加进 Claude 合计**（累加量相加、额度 peak 取两源 max、latest 两源相加、7d 累计含两源读数），不再单列 `codex*` 列，detail.csv 加 `source` 列区分来源
 - 默认文件名会带 git email 的帐号名前缀和起止日期，例如：`alice_export_2026-05-26_to_2026-06-01.json.gz`
 - `userMessageCount` 来自 `~/.claude/projects/**/*.jsonl` 的非 meta `type:user` 事件
 - `apiRequestCount` 与 token 指标来自 `~/.claude/projects/**/*.jsonl` 中带 `message.usage` 的 `type:assistant` 事件
@@ -172,7 +172,7 @@ ccus aggregate serve --input-dir ./team-exports
 ## 多人汇总
 
 - 输入目录放很多通过 `ccus export` 导出的 bundle 文件，`.json.gz`（gzip 压缩）与明文 `.json` 都能识别，gzip 文件读取时自动解压
-- `aggregate` 接受 `schemaVersion: 6/7/8` 的 bundle（v8 含 codex 额度，v7/v6 容错回退 null/零值）；更旧的导出请先用当前版本重新 `ccus export`
+- `aggregate` 接受 `schemaVersion: 6/7/8/9` 的 bundle（v9 codex inputTokens 为净输入，v8 含 codex 额度，v7/v6 容错回退 null/零值）；更旧的导出请先用当前版本重新 `ccus export`
 - 同一个人在多台电脑上各自导出 bundle 时会自动合并去重：去重以**天**为粒度，对每个「同人同天」取 `generatedAt` 最新的那份导出，避免同一台机器重复导出或周与周重叠造成翻倍；**周汇总不取整周单份，而是把按天去重后的各天数据上卷累加**，所以多台电脑在不同天产生的用量会正确合进同一周。usage（5h / 7d）从选中事件按真实时间戳重算，Claude+Codex 合并：peak 取两源 max、latest 两源相加
 - `ccus aggregate --input-dir DIR --out-dir DIR`
 - 输出三个文件：
