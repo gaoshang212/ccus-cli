@@ -765,7 +765,7 @@ test("deburrSevenDayEvents drops a short stale spike even when a sampling gap fo
 });
 
 /** 构造带 seven_day 序列的单人单天 bundle，用于多机合并曲线测试。 */
-function buildSevenDayBundle(options: { personKey: string; generatedAt: string; date: string; samples: Array<{ timestamp: string; sevenDay: number }> }) {
+function buildSevenDayBundle(options: { personKey: string; generatedAt: string; date: string; samples: Array<{ timestamp: string; sevenDay: number; source?: "claude" | "codex" }> }) {
   const { personKey, generatedAt, date, samples } = options;
   return {
     schemaVersion: 7,
@@ -779,6 +779,7 @@ function buildSevenDayBundle(options: { personKey: string; generatedAt: string; 
       gitUserEmail: `${personKey}@example.com`,
       gitUserAccount: personKey,
       rawPayload: {
+        source: sample.source ?? "claude",
         session_id: `${personKey}-${generatedAt}-${index}`,
         model: { display_name: "Opus" },
         workspace: { current_dir: `/repo/${personKey}` },
@@ -849,7 +850,10 @@ test("buildPersonSevenDayCurve merges two machines into one curve without per-ma
     );
 
     const bundles = await loadWeeklyExportBundles(root);
-    const curve = buildPersonSevenDayCurve(bundles).get("gina") ?? [];
+    const curves = buildPersonSevenDayCurve(bundles).get("gina");
+    // 该 bundle 全是 Claude 事件：codex 源为空。
+    assert.deepEqual((curves?.codex ?? []).map((event) => event.sevenDayUsagePct), []);
+    const curve = curves?.claude ?? [];
     // 6 条原始事件里有 1 对相同 timestamp，去重后剩 5 条。
     assert.equal(curve.length, 5);
     assert.deepEqual(curve.map((event) => event.sevenDayUsagePct), [30, 45, 60, 0, 40]);
@@ -877,6 +881,39 @@ test("buildPersonSevenDayCurve merges two machines into one curve without per-ma
   }
 });
 
+test("buildPersonSevenDayCurve splits claude/codex sources and sums per-source cumulative (no mixed over-counting)", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-split-"));
+  try {
+    // 同一人 karl：Claude 高位曲线 [50→80]（累计 30），Codex 低位曲线 [0→10]（累计 10）。
+    // 时间交错：合并排序后 [50(c), 0(codex), 80(c), 10(codex)]，混算会让 codex 低位反复触发假 reset，
+    // 把 Claude 上升段切断重算（混算会得 80，虚高）；分源相加应为 30 + 10 = 40。
+    await fs.writeFile(
+      path.join(root, "karl.json"),
+      JSON.stringify(buildSevenDayBundle({ personKey: "karl", generatedAt: "2026-05-26T20:00:00.000Z", date: "2026-05-26", samples: [
+        { timestamp: "2026-05-26T01:00:00.000Z", sevenDay: 50, source: "claude" },
+        { timestamp: "2026-05-26T02:00:00.000Z", sevenDay: 0, source: "codex" },
+        { timestamp: "2026-05-26T03:00:00.000Z", sevenDay: 80, source: "claude" },
+        { timestamp: "2026-05-26T04:00:00.000Z", sevenDay: 10, source: "codex" },
+      ] })),
+      "utf8",
+    );
+
+    const bundles = await loadWeeklyExportBundles(root);
+    const curves = buildPersonSevenDayCurve(bundles).get("karl");
+    // 分源：Claude 一条 [50,80]、Codex 一条 [0,10]，互不混入。
+    assert.deepEqual(curves?.claude.map((event) => event.sevenDayUsagePct), [50, 80]);
+    assert.deepEqual(curves?.codex.map((event) => event.sevenDayUsagePct), [0, 10]);
+
+    // daily / weekly 累计 = Claude 30 + Codex 10 = 40（而非混算虚高的 80）。
+    const dailyRows = buildAggregatedDailyRows(bundles);
+    const weeklyRows = buildAggregatedWeeklyRows(bundles);
+    assert.equal(dailyRows[0].sevenDayCumulativeUsagePct, 40);
+    assert.equal(weeklyRows[0].sevenDayCumulativeUsagePct, 40);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("buildPersonSevenDayCurve deburrs short stale spikes before cumulative", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-deburr-"));
   try {
@@ -898,7 +935,7 @@ test("buildPersonSevenDayCurve deburrs short stale spikes before cumulative", as
     );
 
     const bundles = await loadWeeklyExportBundles(root);
-    const curve = buildPersonSevenDayCurve(bundles).get("ivan") ?? [];
+    const curve = buildPersonSevenDayCurve(bundles).get("ivan")?.claude ?? [];
     // 去毛刺后中间的 30 尖峰被压回 2，曲线无 30。
     assert.equal(curve.some((event) => event.sevenDayUsagePct === 30), false);
 

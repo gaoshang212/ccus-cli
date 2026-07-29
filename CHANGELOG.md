@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.6] - 2026-07-29
+
+### 修复
+- 修复 `sevenDayCumulativeUsagePct` 把 Claude 与 Codex 两条额度曲线混算导致严重虚高（同 personKey 混入水平悬殊的两源时，低位源频繁触发假 reset 把高位源上升段反复重算，实测 jizhiqiang 周 221%）：改为按 source 各自累计再相加，dashboard 个人看板累计折线同步只画 Claude 源；CSV 列与 `schemaVersion` 不变。
+
 ## [0.2.5] - 2026-07-28
 
 ### 变更

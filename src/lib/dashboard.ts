@@ -39,8 +39,11 @@ export function summarizeEvents(events: StatuslineEvent[]): DashboardSummary {
     claudeByDesc.find((event) => event.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null,
     codexByDesc.find((event) => event.sevenDayUsagePct !== null)?.sevenDayUsagePct ?? null,
   );
-  // 7d 分区叠加累计：与 aggregate 同一套「去毛刺 + 分段峰谷和」，口径与团队看板一致。
-  const sevenDayCumulativeUsagePct = computeCumulativeSevenDay(buildSevenDayCurveFromEvents(events));
+  // 7d 分源累计：Claude + Codex 各自「去毛刺 + 分段峰谷和」后相加，与 aggregate 同口径（混算会虚高）。
+  const sevenDayCumulativeUsagePct = addNullable(
+    computeCumulativeSevenDay(buildSevenDayCurveFromEvents(events.filter((event) => !isCodexSourceEvent(event)))),
+    computeCumulativeSevenDay(buildSevenDayCurveFromEvents(events.filter(isCodexSourceEvent))),
+  );
 
   return {
     fiveHourLatestUsagePct: latestUsagePct,
@@ -88,8 +91,9 @@ export function bucketizeEvents(events: StatuslineEvent[], start: Date, end: Dat
 
   // 7d 累计曲线（去毛刺 + 分段峰谷和的逐点版本）映射到时间桶：曲线已按时间升序，
   // 同桶内后写覆盖前写，最终每个桶留下落在其区间内最后一个累计点的值（单调，等于桶内最大累计）。
+  // 只画 Claude 源：折线图是 Claude 趋势看板（与同图 5h/7d 两条线同源），Codex 累计已并入顶部 summary 数值。
   const cumulativeByBucket = new Map<number, number>();
-  for (const point of computeCumulativeSevenDayCurve(buildSevenDayCurveFromEvents(events))) {
+  for (const point of computeCumulativeSevenDayCurve(buildSevenDayCurveFromEvents(events.filter((event) => !isCodexSourceEvent(event))))) {
     const ts = new Date(point.timestamp).getTime();
     if (ts < start.getTime() || ts > end.getTime()) {
       continue;

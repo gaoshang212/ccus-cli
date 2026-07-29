@@ -462,42 +462,55 @@ export function buildSevenDayCurveFromEvents(events: StatuslineEvent[]): Statusl
   return deburrSevenDayEvents(deduped);
 }
 
+/** 同一 personKey 按 source 分流的 7d 累计曲线：Claude 与 Codex 各一条独立曲线。 */
+export interface PersonSevenDayCurves {
+  claude: StatuslineEvent[];
+  codex: StatuslineEvent[];
+}
+
 /**
  * 同一 personKey 的 7d 累计曲线：把该人**所有 bundle**（非仅 winner）的 rawEvents 计算成事件、
- * 取非 null `sevenDayUsagePct`、按 timestamp 升序合并、对完全相同 timestamp 去重，再做读数去毛刺，
- * 得到一条账号级曲线。
+ * 取非 null `sevenDayUsagePct`、按 timestamp 升序合并、对完全相同 timestamp 去重，再做读数去毛刺。
+ *
+ * Claude 与 Codex 是两个不同额度池的独立曲线（读数水平常常相差悬殊），按 source 各自建一条，
+ * 算累计时分别做分段峰谷和再相加。混成一条会让低位源频繁触发假 reset、把高位源的上升段反复重算，
+ * 导致累计严重虚高（实测 jizhiqiang 混算 221% vs 分源相加 44%）。
  *
  * 走全样本而非 winner，是因为累计指标是同一条共享额度曲线的密集采样：只取 winner 会漏掉非 winner
  * 机器的样本（曲线稀疏、累计偏小），分机各自累计再相加又会翻倍。结果按 bundles 数组缓存复用。
  */
-const personSevenDayCurveCache = new WeakMap<object, Map<string, StatuslineEvent[]>>();
-export function buildPersonSevenDayCurve(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): Map<string, StatuslineEvent[]> {
+const personSevenDayCurveCache = new WeakMap<object, Map<string, PersonSevenDayCurves>>();
+export function buildPersonSevenDayCurve(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): Map<string, PersonSevenDayCurves> {
   const cached = personSevenDayCurveCache.get(bundles);
   if (cached) {
     return cached;
   }
 
-  const collected = new Map<string, StatuslineEvent[]>();
+  const claudeByPerson = new Map<string, StatuslineEvent[]>();
+  const codexByPerson = new Map<string, StatuslineEvent[]>();
   for (const { bundle } of bundles) {
     const personKey = bundlePersonKey(bundle);
-    // 含 Claude + Codex 两源读数：codex 7d 读数不再过滤，并入同一条曲线算累计
     for (const record of bundle.rawEvents.filter((r) => isPersistedStatuslineEvent(r))) {
       const event = computeStatuslineEvent(record);
       if (event.sevenDayUsagePct === null) {
         continue;
       }
-      const list = collected.get(personKey);
+      const target = isCodexSourceEvent(event) ? codexByPerson : claudeByPerson;
+      const list = target.get(personKey);
       if (list) {
         list.push(event);
       } else {
-        collected.set(personKey, [event]);
+        target.set(personKey, [event]);
       }
     }
   }
 
-  const curves = new Map<string, StatuslineEvent[]>();
-  for (const [personKey, events] of collected.entries()) {
-    curves.set(personKey, buildSevenDayCurveFromEvents(events));
+  const curves = new Map<string, PersonSevenDayCurves>();
+  for (const personKey of new Set([...claudeByPerson.keys(), ...codexByPerson.keys()])) {
+    curves.set(personKey, {
+      claude: buildSevenDayCurveFromEvents(claudeByPerson.get(personKey) ?? []),
+      codex: buildSevenDayCurveFromEvents(codexByPerson.get(personKey) ?? []),
+    });
   }
 
   personSevenDayCurveCache.set(bundles, curves);
@@ -512,6 +525,27 @@ function sliceCurveByDate(curve: StatuslineEvent[], date: string): StatuslineEve
 /** 从合并曲线里切出某周（周起始日 key）的子序列。 */
 function sliceCurveByWeek(curve: StatuslineEvent[], week: string): StatuslineEvent[] {
   return curve.filter((event) => weekKey(new Date(event.timestamp)) === week);
+}
+
+/**
+ * 分源 7d 累计：Claude 与 Codex 各自按区间切片做分段峰谷和，再用 `addNullable` 相加。
+ * 两源是不同额度池的独立曲线，混算会互相触发假 reset 而虚高；分源算后相加，与 CSV 里 token /
+ * 消息数「Claude+Codex 合计」口径一致。该 personKey 无任何曲线、或两源都无有效样本时返回 null。
+ */
+function computeCumulativeSevenDayBySource(
+  curves: Map<string, PersonSevenDayCurves>,
+  personKey: string,
+  slicer: (curve: StatuslineEvent[], key: string) => StatuslineEvent[],
+  rangeKey: string,
+): number | null {
+  const bySource = curves.get(personKey);
+  if (!bySource) {
+    return null;
+  }
+  return addNullable(
+    computeCumulativeSevenDay(slicer(bySource.claude, rangeKey)),
+    computeCumulativeSevenDay(slicer(bySource.codex, rangeKey)),
+  );
 }
 
 interface RecomputedUsage {
@@ -601,8 +635,8 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
     // 额度回退：rawEvents 缺时从 daySummary 取（Claude+Codex 合并，见 fallbackWeeklyUsage）
     const fallback = fallbackWeeklyUsage(reps.map((r) => r.day));
 
-    // 累计指标走全样本合并曲线，不走单机的 recomputeUsage，避免漏掉另一台机器的样本。
-    const sevenDayCumulativeUsagePct = computeCumulativeSevenDay(sliceCurveByDate(curves.get(personKey) ?? [], date));
+    // 累计指标走全样本分源曲线（Claude + Codex 各自切片累计后相加），不走单机的 recomputeUsage，避免漏掉另一台机器的样本。
+    const sevenDayCumulativeUsagePct = computeCumulativeSevenDayBySource(curves, personKey, sliceCurveByDate, date);
     rows.push({
       personKey,
       date,
@@ -716,8 +750,8 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
     const usage = recomputeUsage(claudeEvents);
     const codexUsage = recomputeUsage(codexEvents);
     const fallback = fallbackWeeklyUsage(acc.days);
-    // 整周累计：在整周合并曲线上一次性求正增量，跨天边界增量被计入，故 weekly ≥ Σ daily。
-    const sevenDayCumulativeUsagePct = computeCumulativeSevenDay(sliceCurveByWeek(curves.get(acc.personKey) ?? [], acc.week));
+    // 整周累计：Claude + Codex 各自在整周子曲线上做分段峰谷和后相加，跨天边界增量被计入，故 weekly ≥ Σ daily。
+    const sevenDayCumulativeUsagePct = computeCumulativeSevenDayBySource(curves, acc.personKey, sliceCurveByWeek, acc.week);
     rows.push({
       personKey: acc.personKey,
       week: acc.week,

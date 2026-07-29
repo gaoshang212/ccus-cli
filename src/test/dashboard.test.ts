@@ -64,6 +64,22 @@ test("summarizeEvents stacks codex usage onto claude (peak max, latest add)", ()
   const summary = summarizeEvents([...events, codexEvent]);
   assert.equal(summary.fiveHourPeakUsagePct, 30);
   assert.equal(summary.fiveHourLatestUsagePct, 54);
+  // codex 事件无 seven_day 读数：7d 累计仍只来自 Claude（44→48，累计 4），不被 codex 干扰。
+  assert.equal(summary.sevenDayCumulativeUsagePct, 4);
+});
+
+/** 7d 累计分源相加：Claude 与 Codex 各自上升段的累计贡献相加，而非混算虚高。 */
+test("summarizeEvents sums seven-day cumulative per source (claude + codex)", () => {
+  // Claude [50→80]（累计 30）、Codex [0→10]（累计 10）；混算会让 codex 低位触发假 reset、虚高到 80。
+  const mixed: StatuslineEvent[] = [
+    computeStatuslineEvent({ schemaVersion: 3, timestamp: "2026-05-26T01:00:00.000Z", gitUserName: "k", gitUserEmail: "k@e.com", gitUserAccount: "k", rawPayload: { source: "claude", rate_limits: { seven_day: { used_percentage: 50 } } } }),
+    computeStatuslineEvent({ schemaVersion: 3, timestamp: "2026-05-26T02:00:00.000Z", gitUserName: "k", gitUserEmail: "k@e.com", gitUserAccount: "k", rawPayload: { source: "codex", rate_limits: { seven_day: { used_percentage: 0 } } } }),
+    computeStatuslineEvent({ schemaVersion: 3, timestamp: "2026-05-26T03:00:00.000Z", gitUserName: "k", gitUserEmail: "k@e.com", gitUserAccount: "k", rawPayload: { source: "claude", rate_limits: { seven_day: { used_percentage: 80 } } } }),
+    computeStatuslineEvent({ schemaVersion: 3, timestamp: "2026-05-26T04:00:00.000Z", gitUserName: "k", gitUserEmail: "k@e.com", gitUserAccount: "k", rawPayload: { source: "codex", rate_limits: { seven_day: { used_percentage: 10 } } } }),
+  ];
+  const summary = summarizeEvents(mixed);
+  // 分源相加 = Claude 30 + Codex 10 = 40（而非混算虚高的 80）。
+  assert.equal(summary.sevenDayCumulativeUsagePct, 40);
 });
 
 /** 校验 5 分钟固定桶聚合是否稳定，避免曲线错位；同时 5h 与 7d 各自独立聚合。 */
