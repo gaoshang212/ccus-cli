@@ -252,6 +252,7 @@ ccus api config    # 不带参数：打印当前配置
 - **缓存**：statusline 高频调用，额度按 TTL 缓存（默认 5 分钟，`--ttl 5m` 改），拉取失败自动回退上次缓存；缓存文件 `api-quota-cache.json`。
 - **智谱请求头**：除 `Authorization` 外，`--project` / `--organization` 会作为 `bigmodel-project` / `bigmodel-organization` 头发出（团队版需要）。接口对请求来源敏感，若返回空响应疑似被拦，可用 `ccus api config --user-agent "<浏览器UA>"` 改 UA。
 - **自定义 provider**：`--provider custom` 配其它厂商。简单响应用 `--url` / `--method` / `--header "K: V; K2: V2"`（header 值支持 `{{token}}` 占位）/ `--five-hour-path` / `--seven-day-path`（点分路径，如 `data.limits.0.percentage`）映射字段；响应结构复杂（数组筛选/排序）时用 `--extractor-file script.js` 写一段 JS 函数，接收响应对象、返回 `{ fiveHour, sevenDay }` 或 cc-switch 风格的 `[{used}, {used}]`，配了 extractor 就优先于点分路径。脚本在 ccus 进程内执行，只放信任的来源。
+- **统一 env 代理**：智谱 / custom 的额度请求经 ccus 统一代理通道（读 `https_proxy` / `http_proxy` / `all_proxy` / `NO_PROXY`，小写优先、对齐 curl），代理环境也能拉到额度；想给 ccus 单独指定代理（覆盖系统代理）用专属的 `CCUS_PROXY`（同时管 https / http 目标，仍受 `NO_PROXY` 约束），无代理变量维持直连。
 
 > API 模式填充的 5h/7d 会和官方 `rate_limits` 走同一条聚合管线（含 7d 累计去毛刺算法，该算法针对 Claude 官方锯齿波设计）；不同厂商的额度曲线语义可能不完全一致，混用聚合时注意。
 
@@ -293,7 +294,8 @@ ccus install --codex --uninstall          # 移除 ccus 的 Stop hook
 要点：
 
 - **只支持 Codex CLI**：hooks 与 `codex app-server` 都是 CLI 能力。Codex 桌面版 app（已并入 ChatGPT 桌面 app）不一定触发 CLI 的 hooks、也不一定随附可 spawn 的 `codex` 二进制，不在本期范围。
-- **代理继承**：ccus 由 Codex 直接 spawn，已继承 Codex 的代理 / `CODEX_HOME`；它再 spawn `codex app-server` 时透传 `process.env`，整条链同环境。必须让 codex 子进程发请求（它读 `HTTP_PROXY`/`HTTPS_PROXY`），不能用 ccus 自己的 Node `fetch`（裸 fetch 不读代理、代理环境下直连失败）。
+- **代理继承**：ccus 由 Codex 直接 spawn，已继承 Codex 的代理 / `CODEX_HOME`；它再 spawn `codex app-server` 时透传 `process.env`，整条链同环境。主路径必须让 codex 子进程发请求（它读 `HTTP_PROXY` / `HTTPS_PROXY`）；wham 回退走 ccus 自己的 Node HTTP，但经统一 env 代理通道（读 `CCUS_PROXY` / `https_proxy` / `http_proxy` / `all_proxy` / `NO_PROXY`，`CCUS_PROXY` 优先、小写优先、对齐 curl），代理环境同样可达。
+- **无 codex 命令时回退 wham**：本机没装 `codex` CLI（spawn 返回 `unavailable`）且无新鲜缓存时，ccus 改走 ChatGPT 后端 `wham/usage` HTTP 直连——读 `~/.codex/auth.json` 的 OAuth token（仅 chatgpt 登录模式）、按各窗 `limit_window_seconds` 认 5h / 7d 桶，照常落盘 `source="codex"` 事件。让「装过 codex 留下 hook + auth.json、但 codex 未入 PATH / 已卸载」的用户也能采到额度。仅 `unavailable` 触发，超时 / RPC 错（`error`）不回退。
 - **定时同步**：Stop hook 还兜底触发 `ccus sync`（与 Claude statusline 对称）——配过 `ccus sync config --target` 后，Codex 每 turn 结束都会检查 3h 周期，到期自动 export + 复制 bundle（含 Codex token/消息）到目标目录。只用 Codex、不开 Claude Code 时也能自动同步。
 - **缓存节流**：Stop 每 turn 触发，额度按 5 分钟 TTL 缓存（`codex-quota-cache.json`），命中秒回不 spawn；过期才拉一次（带 ~10s 超时），失败回退旧缓存。
 - **字段映射**：app-server 返回 `primary`（5h）/ `secondary`（weekly）两窗口，取各自的 `usedPercent`（驼峰，clamp 0–100）；ccus 填进 `rate_limits.five_hour` / `seven_day` 的 `used_percentage`，`computeStatuslineEvent` 读时自动算出 usage。

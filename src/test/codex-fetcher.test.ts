@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { fetchCodexQuota, resolveCodexQuota, readCodexQuotaCacheSync } from "../lib/codex-fetcher";
+import { fetchCodexQuota, fetchCodexQuotaViaWham, parseWhamUsage, readCodexAuth, readCodexQuotaCacheSync, resolveCodexQuota } from "../lib/codex-fetcher";
 import type { CodexChildProcess, CodexSpawnFn } from "../lib/codex-fetcher";
 
 /** 临时数据目录，避免污染真实 data-dir。 */
@@ -321,4 +321,242 @@ test("resolveCodexQuota skips persisting when fetch ok but both windows null", a
 
   assert.equal(q, null);
   assert.equal(readCodexQuotaCacheSync(dir), null);
+});
+
+// --- auth.json 读取 ---
+
+/** 造一个临时 CODEX_HOME 并写一份 auth.json。 */
+async function makeCodexHome(auth: unknown): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-codex-home-"));
+  await fs.writeFile(path.join(dir, "auth.json"), JSON.stringify(auth), "utf8");
+  return dir;
+}
+
+test("readCodexAuth returns token in chatgpt mode", async () => {
+  const dir = await makeCodexHome({ auth_mode: "chatgpt", tokens: { access_token: "tok-123", account_id: "acct-1" } });
+  try {
+    assert.deepEqual(readCodexAuth(dir), { accessToken: "tok-123", accountId: "acct-1" });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readCodexAuth returns null for api_key mode", async () => {
+  const dir = await makeCodexHome({ auth_mode: "apikey", tokens: { access_token: "tok" } });
+  try {
+    assert.equal(readCodexAuth(dir), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readCodexAuth returns null when auth.json missing", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-codex-home-"));
+  try {
+    assert.equal(readCodexAuth(dir), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readCodexAuth returns null when tokens field missing", async () => {
+  const dir = await makeCodexHome({ auth_mode: "chatgpt" });
+  try {
+    assert.equal(readCodexAuth(dir), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readCodexAuth returns null when access_token blank", async () => {
+  const dir = await makeCodexHome({ auth_mode: "chatgpt", tokens: { access_token: "   " } });
+  try {
+    assert.equal(readCodexAuth(dir), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+// --- wham/usage 解析 ---
+
+test("parseWhamUsage parses both windows by limit_window_seconds", () => {
+  const q = parseWhamUsage({
+    rate_limit: {
+      primary_window: { used_percent: 30, limit_window_seconds: 18000, reset_at: 1730947200 },
+      secondary_window: { used_percent: 12, limit_window_seconds: 604800 },
+    },
+  });
+  assert.equal(q.fiveHour, 30);
+  assert.equal(q.sevenDay, 12);
+  assert.equal(q.resetsAt, 1730947200 * 1000);
+});
+
+test("parseWhamUsage classifies regardless of primary/secondary order", () => {
+  // secondary_window 是 5h、primary_window 是 7d（顺序互换），仍按 limit_window_seconds 认桶。
+  const q = parseWhamUsage({
+    rate_limit: {
+      primary_window: { used_percent: 12, limit_window_seconds: 604800 },
+      secondary_window: { used_percent: 30, limit_window_seconds: 18000 },
+    },
+  });
+  assert.equal(q.fiveHour, 30);
+  assert.equal(q.sevenDay, 12);
+});
+
+test("parseWhamUsage skips window missing used_percent", () => {
+  const q = parseWhamUsage({
+    rate_limit: {
+      primary_window: { limit_window_seconds: 18000 },
+      secondary_window: { used_percent: 12, limit_window_seconds: 604800 },
+    },
+  });
+  assert.equal(q.fiveHour, null);
+  assert.equal(q.sevenDay, 12);
+});
+
+test("parseWhamUsage returns all null when rate_limit missing", () => {
+  assert.deepEqual(parseWhamUsage({}), { fiveHour: null, sevenDay: null, resetsAt: null });
+  assert.deepEqual(parseWhamUsage(null), { fiveHour: null, sevenDay: null, resetsAt: null });
+});
+
+// --- wham/usage 回退拉取 ---
+
+test("fetchCodexQuotaViaWham returns ok with parsed quota and proper headers", async () => {
+  let captured: { url?: string; headers?: Record<string, string> } = {};
+  const out = await fetchCodexQuotaViaWham({
+    authReader: () => ({ accessToken: "tok", accountId: "acct-1" }),
+    httpGet: async (url, opts) => {
+      captured = { url, headers: opts.headers };
+      return {
+        status: 200,
+        body: JSON.stringify({
+          rate_limit: {
+            primary_window: { used_percent: 30, limit_window_seconds: 18000 },
+            secondary_window: { used_percent: 12, limit_window_seconds: 604800 },
+          },
+        }),
+      };
+    },
+  });
+  assert.equal(out.status, "ok");
+  assert.equal(out.fiveHour, 30);
+  assert.equal(out.sevenDay, 12);
+  assert.equal(captured.url, "https://chatgpt.com/backend-api/wham/usage");
+  assert.equal(captured.headers?.Authorization, "Bearer tok");
+  assert.equal(captured.headers?.["User-Agent"], "codex-cli");
+  assert.equal(captured.headers?.["ChatGPT-Account-Id"], "acct-1");
+});
+
+test("fetchCodexQuotaViaWham returns error when no auth token", async () => {
+  const out = await fetchCodexQuotaViaWham({ authReader: () => null });
+  assert.equal(out.status, "error");
+  assert.equal(out.fiveHour, null);
+});
+
+test("fetchCodexQuotaViaWham returns error on HTTP 401", async () => {
+  const out = await fetchCodexQuotaViaWham({
+    authReader: () => ({ accessToken: "tok", accountId: null }),
+    httpGet: async () => ({ status: 401, body: "" }),
+  });
+  assert.equal(out.status, "error");
+});
+
+test("fetchCodexQuotaViaWham returns error on timeout", async () => {
+  const out = await fetchCodexQuotaViaWham({
+    authReader: () => ({ accessToken: "tok", accountId: null }),
+    httpGet: async () => {
+      throw new Error("timed out");
+    },
+  });
+  assert.equal(out.status, "error");
+});
+
+test("fetchCodexQuotaViaWham returns error on invalid json body", async () => {
+  const out = await fetchCodexQuotaViaWham({
+    authReader: () => ({ accessToken: "tok", accountId: null }),
+    httpGet: async () => ({ status: 200, body: "{not json" }),
+  });
+  assert.equal(out.status, "error");
+});
+
+// --- resolveCodexQuota wham 回退编排 ---
+
+test("resolveCodexQuota falls back to wham when app-server unavailable and wham ok", async () => {
+  const dir = await mkdtemp("ccus-codex-wham-");
+  const unavailable = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "unavailable" as const });
+  let whamCalls = 0;
+  const whamFetcher = async () => {
+    whamCalls += 1;
+    return { fiveHour: 30, sevenDay: 12, resetsAt: null, status: "ok" as const };
+  };
+  const q = await resolveCodexQuota(dir, { fetcher: unavailable, whamFetcher });
+  assert.deepEqual(q, { fiveHour: 30, sevenDay: 12, resetsAt: null });
+  assert.equal(whamCalls, 1);
+  assert.equal(readCodexQuotaCacheSync(dir)?.fiveHour, 30); // wham 额度写进缓存
+});
+
+test("resolveCodexQuota returns stale cache when both app-server unavailable and wham fail", async () => {
+  const dir = await mkdtemp("ccus-codex-wham-");
+  const t0 = new Date("2026-07-27T10:00:00Z");
+  const ok = async () => ({ fiveHour: 10, sevenDay: 20, resetsAt: null, status: "ok" as const });
+  await resolveCodexQuota(dir, { now: t0, fetcher: ok });
+  const later = new Date("2026-07-27T10:06:00Z");
+  const unavailable = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "unavailable" as const });
+  const whamFail = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "error" as const });
+  const q = await resolveCodexQuota(dir, { now: later, fetcher: unavailable, whamFetcher: whamFail });
+  assert.deepEqual(q, { fiveHour: 10, sevenDay: 20, resetsAt: null });
+});
+
+test("resolveCodexQuota returns null when unavailable + wham fail + no cache", async () => {
+  const dir = await mkdtemp("ccus-codex-wham-");
+  const unavailable = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "unavailable" as const });
+  const whamFail = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "error" as const });
+  const q = await resolveCodexQuota(dir, { fetcher: unavailable, whamFetcher: whamFail });
+  assert.equal(q, null);
+});
+
+test("resolveCodexQuota does not call wham when app-server returns error", async () => {
+  const dir = await mkdtemp("ccus-codex-wham-");
+  const errorFetch = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "error" as const });
+  let whamCalls = 0;
+  const whamFetcher = async () => {
+    whamCalls += 1;
+    return { fiveHour: 1, sevenDay: 2, resetsAt: null, status: "ok" as const };
+  };
+  const q = await resolveCodexQuota(dir, { fetcher: errorFetch, whamFetcher });
+  assert.equal(q, null);
+  assert.equal(whamCalls, 0); // error 不触发 wham
+});
+
+test("resolveCodexQuota serves fresh cache without calling app-server or wham", async () => {
+  const dir = await mkdtemp("ccus-codex-wham-");
+  let fetchCalls = 0;
+  let whamCalls = 0;
+  const now = new Date("2026-07-27T10:00:00Z");
+  await resolveCodexQuota(dir, {
+    now,
+    fetcher: async () => {
+      fetchCalls += 1;
+      return { fiveHour: 10, sevenDay: 20, resetsAt: null, status: "ok" as const };
+    },
+    whamFetcher: async () => {
+      whamCalls += 1;
+      return { fiveHour: 1, sevenDay: 2, resetsAt: null, status: "ok" as const };
+    },
+  });
+  // 第二次：缓存新鲜，fetcher / wham 都不应被调用。
+  const q = await resolveCodexQuota(dir, {
+    now,
+    fetcher: async () => {
+      fetchCalls += 1;
+      return { fiveHour: 99, sevenDay: 99, resetsAt: null, status: "ok" as const };
+    },
+    whamFetcher: async () => {
+      whamCalls += 1;
+      return { fiveHour: 1, sevenDay: 2, resetsAt: null, status: "ok" as const };
+    },
+  });
+  assert.deepEqual(q, { fiveHour: 10, sevenDay: 20, resetsAt: null });
+  assert.equal(fetchCalls, 1);
+  assert.equal(whamCalls, 0);
 });

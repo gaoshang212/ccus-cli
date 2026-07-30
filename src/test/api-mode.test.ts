@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import type { ApiModeConfig } from "../types";
-import { ZHIPU_EXTRACTOR, defaultApiConfig, extractCustomQuota, readApiConfig, readClaudeSettingsEnvTokenSync, resolveApiQuota, resolveApiTokenWithSettings, runExtractor, writeApiConfig } from "../lib/api-mode";
+import { ZHIPU_EXTRACTOR, defaultApiConfig, extractCustomQuota, httpRequest, isNoProxyHost, readApiConfig, readClaudeSettingsEnvTokenSync, resolveApiQuota, resolveApiTokenWithSettings, resolveProxyUrl, runExtractor, writeApiConfig } from "../lib/api-mode";
 import { getApiConfigPath } from "../lib/paths";
 
 /** 造一个临时数据目录，避免污染真实 data-dir。 */
@@ -338,4 +339,121 @@ test("resolveApiTokenWithSettings falls back to config.token when env missing", 
 test("resolveApiTokenWithSettings returns null when no source has a token", () => {
   const config = { ...defaultApiConfig(), tokenEnv: "CCUS_TEST_MISSING_TOKEN_ENV", token: null };
   assert.equal(resolveApiTokenWithSettings(config, {}), null);
+});
+
+// --- 统一 env 代理支持 ---
+
+test("resolveProxyUrl returns null when no proxy env set", () => {
+  assert.equal(resolveProxyUrl("https://chatgpt.com/x", {}), null);
+  assert.equal(resolveProxyUrl("http://example.com/x", {}), null);
+});
+
+test("resolveProxyUrl reads https_proxy for https target (lowercase preferred)", () => {
+  assert.equal(
+    resolveProxyUrl("https://chatgpt.com/x", { https_proxy: "http://127.0.0.1:7890", HTTPS_PROXY: "http://IGNORE" }),
+    "http://127.0.0.1:7890",
+  );
+  assert.equal(resolveProxyUrl("https://chatgpt.com/x", { HTTPS_PROXY: "http://127.0.0.1:7890" }), "http://127.0.0.1:7890");
+});
+
+test("resolveProxyUrl reads http_proxy for http target", () => {
+  assert.equal(resolveProxyUrl("http://example.com/x", { http_proxy: "http://127.0.0.1:7890" }), "http://127.0.0.1:7890");
+});
+
+test("resolveProxyUrl falls back to all_proxy", () => {
+  assert.equal(resolveProxyUrl("https://chatgpt.com/x", { all_proxy: "http://127.0.0.1:7890" }), "http://127.0.0.1:7890");
+  assert.equal(resolveProxyUrl("http://example.com/x", { ALL_PROXY: "http://127.0.0.1:7890" }), "http://127.0.0.1:7890");
+});
+
+test("resolveProxyUrl bypasses proxy when NO_PROXY matches hostname", () => {
+  assert.equal(
+    resolveProxyUrl("https://chatgpt.com/x", { https_proxy: "http://127.0.0.1:7890", NO_PROXY: "chatgpt.com" }),
+    null,
+  );
+  assert.equal(
+    resolveProxyUrl("https://api.chatgpt.com/x", { https_proxy: "http://127.0.0.1:7890", no_proxy: ".chatgpt.com" }),
+    null,
+  );
+  assert.equal(resolveProxyUrl("https://chatgpt.com/x", { https_proxy: "http://127.0.0.1:7890", NO_PROXY: "*" }), null);
+});
+
+test("resolveProxyUrl keeps proxy when NO_PROXY does not match", () => {
+  assert.equal(
+    resolveProxyUrl("https://chatgpt.com/x", { https_proxy: "http://127.0.0.1:7890", NO_PROXY: "example.com" }),
+    "http://127.0.0.1:7890",
+  );
+});
+
+test("resolveProxyUrl prefers CCUS_PROXY over standard proxy vars", () => {
+  // https / http 目标都用 CCUS_PROXY，且优先于 https_proxy / http_proxy。
+  assert.equal(
+    resolveProxyUrl("https://chatgpt.com/x", { CCUS_PROXY: "http://10.0.0.1:8080", https_proxy: "http://127.0.0.1:7890" }),
+    "http://10.0.0.1:8080",
+  );
+  assert.equal(
+    resolveProxyUrl("http://example.com/x", { CCUS_PROXY: "http://10.0.0.1:8080", http_proxy: "http://127.0.0.1:7890" }),
+    "http://10.0.0.1:8080",
+  );
+});
+
+test("resolveProxyUrl still bypasses CCUS_PROXY when NO_PROXY matches", () => {
+  assert.equal(
+    resolveProxyUrl("https://chatgpt.com/x", { CCUS_PROXY: "http://10.0.0.1:8080", NO_PROXY: "chatgpt.com" }),
+    null,
+  );
+});
+
+test("isNoProxyHost matches exact, suffix and wildcard", () => {
+  assert.equal(isNoProxyHost("chatgpt.com", "chatgpt.com"), true);
+  assert.equal(isNoProxyHost("api.chatgpt.com", "chatgpt.com"), true);
+  assert.equal(isNoProxyHost("api.chatgpt.com", ".chatgpt.com"), true);
+  assert.equal(isNoProxyHost("notchatgpt.com", "chatgpt.com"), false);
+  assert.equal(isNoProxyHost("anything", "*"), true);
+});
+
+test("httpRequest routes through proxy when http_proxy set", async () => {
+  // 起 mock proxy：http 目标 + http_proxy，HttpProxyAgent 把请求直接发给 proxy（request line 含完整 URL），
+  // mock 收到即证明请求经代理。
+  let proxied = 0;
+  const server = http.createServer((_req, res) => {
+    proxied += 1;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  try {
+    const res = await httpRequest(
+      "http://example.invalid/api",
+      { method: "GET", headers: {}, timeoutMs: 3000 },
+      { http_proxy: `http://127.0.0.1:${port}` },
+    );
+    assert.equal(res.status, 200);
+    assert.equal(proxied, 1);
+  } finally {
+    server.close();
+  }
+});
+
+test("httpRequest connects directly when NO_PROXY matches target host", async () => {
+  // 目标 = mock server 本身；http_proxy 指向无人监听端口；NO_PROXY 命中 → 直连目标成功。
+  let hit = 0;
+  const server = http.createServer((_req, res) => {
+    hit += 1;
+    res.writeHead(200);
+    res.end("ok");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  try {
+    const res = await httpRequest(
+      `http://127.0.0.1:${port}/api`,
+      { method: "GET", headers: {}, timeoutMs: 3000 },
+      { http_proxy: "http://127.0.0.1:1", NO_PROXY: "127.0.0.1" },
+    );
+    assert.equal(res.status, 200);
+    assert.equal(hit, 1);
+  } finally {
+    server.close();
+  }
 });

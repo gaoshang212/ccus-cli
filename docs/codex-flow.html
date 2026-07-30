@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ccus · Codex 采集与额度流程</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --card: #ffffff;
+      --text: #1e293b;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --accent: #4f46e5;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --card: #1e293b;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --border: #334155;
+        --accent: #818cf8;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+
+    header h1 {
+      font-size: 28px;
+      margin: 0 0 8px;
+      letter-spacing: -0.01em;
+    }
+
+    header .subtitle {
+      color: var(--muted);
+      font-size: 15px;
+      margin: 0 0 8px;
+      max-width: 820px;
+    }
+
+    header .tag {
+      display: inline-block;
+      font-size: 12px;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+      padding: 2px 10px;
+      border-radius: 999px;
+      margin-top: 6px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 18px;
+      margin: 22px 0 8px;
+      font-size: 13px;
+    }
+
+    .legend .dot {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+    }
+
+    .legend .dot::before {
+      content: "";
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      border: 1.5px solid;
+    }
+
+    .dot.trigger::before { background: #dbeafe; border-color: #3b82f6; }
+    .dot.cmd::before { background: #e0e7ff; border-color: #6366f1; }
+    .dot.decision::before { background: #fef3c7; border-color: #f59e0b; }
+    .dot.persist::before { background: #dcfce7; border-color: #22c55e; }
+    .dot.external::before { background: #f1f5f9; border-color: #64748b; }
+    .dot.fail::before { background: #fee2e2; border-color: #ef4444; }
+
+    section {
+      margin-top: 36px;
+    }
+
+    section h2 {
+      font-size: 19px;
+      margin: 0 0 6px;
+    }
+
+    section p {
+      color: var(--muted);
+      font-size: 14px;
+      margin: 0 0 16px;
+      max-width: 860px;
+    }
+
+    .diagram {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      overflow-x: auto;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, .04);
+    }
+
+    .mermaid {
+      display: flex;
+      justify-content: center;
+      min-width: min-content;
+    }
+
+    footer {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    footer code {
+      background: color-mix(in srgb, var(--muted) 14%, transparent);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 12.5px;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <header>
+      <h1>Codex 数据与额度采集流程</h1>
+      <p class="subtitle">ccus 经 Codex CLI 采集额度（app-server RPC 主路径 + wham/usage 回退）与 sessions 数据（消息 / 请求 / token），落盘 <code>source="codex"</code> 事件并接入 export / aggregate。</p>
+      <span class="tag">app-server 主路径 · wham/usage 回退 · 统一 env 代理（CCUS_PROXY）</span>
+    </header>
+
+    <div class="legend">
+      <span class="dot trigger">触发 / 入口</span>
+      <span class="dot cmd">命令 / 函数</span>
+      <span class="dot decision">判断</span>
+      <span class="dot persist">落盘 / 缓存</span>
+      <span class="dot external">外部 文件 / API</span>
+      <span class="dot fail">失败 / 回退终点</span>
+    </div>
+
+    <section>
+      <h2>1. 触发与编排</h2>
+      <p>每个 Codex turn 结束经 Stop hook 调起 ccus 隐藏命令（<code>__codex-notify</code> 为保留入口、当前默认不走——orca 等会覆盖 <code>config.toml</code> 致 notify 不持久，<code>install --codex</code> 只装 hook），共享 <code>recordCodexEvent</code> 完成拉额度 → 落盘 → 兜底同步，全程不写 stdout、失败静默 exit 0。</p>
+      <div class="diagram">
+        <div class="mermaid">
+graph TD
+  Turn["Codex CLI 每 turn 结束"]
+  Hook["ccus __codex-hook<br/>hooks.json Stop · stdin: cwd / session_id"]
+  Notify["ccus __codex-notify（保留入口）<br/>config.toml notify · argv: notify JSON<br/>当前默认不走：orca 等覆盖 config.toml 致 notify 不持久"]
+  Record["recordCodexEvent<br/>cli.ts · 共享采集逻辑"]
+  Resolve["resolveCodexQuota<br/>拉额度（见图 2）"]
+  Apply["applyQuotaToPayload<br/>填 rawPayload.rate_limits<br/>five_hour / seven_day"]
+  Append["appendEvent 落盘<br/>rawPayload.source = codex"]
+  Sync["maybeSpawnBackgroundSync<br/>3h 周期兜底 ccus sync"]
+  Done(["exit 0<br/>不写 stdout · 失败静默"])
+
+  Turn -->|Stop hook| Hook
+  Turn -.->|notify · 保留| Notify
+  Hook --> Record
+  Notify -.-> Record
+  Record --> Resolve
+  Resolve --> Apply
+  Apply --> Append
+  Append --> Sync
+  Sync --> Done
+
+  classDef trigger fill:#dbeafe,stroke:#3b82f6,color:#1e3a8a;
+  classDef cmd fill:#e0e7ff,stroke:#6366f1,color:#312e81;
+  classDef persist fill:#dcfce7,stroke:#22c55e,color:#14532d;
+  classDef done fill:#f1f5f9,stroke:#64748b,color:#334155;
+  class Turn trigger;
+  class Hook,Notify,Record,Resolve,Apply,Sync cmd;
+  class Append persist;
+  class Done done;
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. 额度采集决策（resolveCodexQuota）</h2>
+      <p>5min TTL 缓存优先；过期走 spawn <code>codex app-server</code> 主路径；仅主路径 <code>unavailable</code>（本机无 codex CLI）才回退 <code>wham/usage</code> HTTP 直连，<code>error</code>（超时 / RPC 错）不回退；wham 经统一 env 代理（<code>CCUS_PROXY</code> 优先）。</p>
+      <div class="diagram">
+        <div class="mermaid">
+graph TD
+  Start(["resolveCodexQuota"])
+  Cache["读 codex-quota-cache.json"]
+  Fresh{缓存新鲜?<br/>5 min TTL 内}
+  RetCache["返回缓存额度"]
+
+  Main["fetchCodexQuota · 主路径<br/>spawn codex app-server<br/>JSON-RPC: initialize → initialized<br/>→ account/rateLimits/read<br/>按 windowDurationMins 认桶 300 / 10080"]
+  MainResult{主路径结果}
+
+  OkWrite["写缓存 + 返回<br/>ok 且有数据"]
+  Wham["fetchCodexQuotaViaWham<br/>wham/usage HTTP 回退"]
+  NoWham["不触发 wham<br/>→ 旧缓存 / null"]
+
+  Auth["readCodexAuth<br/>读 auth.json · 仅 chatgpt 模式取 token"]
+  HasToken{有 OAuth token?}
+  NoToken["返回 error 占位<br/>→ 旧缓存 / null"]
+
+  Req["GET wham/usage<br/>经统一 env 代理:<br/>CCUS_PROXY 优先 · 次 https_proxy / http_proxy · 再 all_proxy<br/>NO_PROXY 命中则直连"]
+  Resp{2xx 且解析成功?<br/>按 limit_window_seconds 认桶<br/>18000 / 604800}
+  WhamOk["写缓存 + 返回"]
+  Fail(["旧缓存 / null"])
+
+  Start --> Cache --> Fresh
+  Fresh -->|是| RetCache
+  Fresh -->|否| Main --> MainResult
+  MainResult -->|ok| OkWrite
+  MainResult -->|unavailable<br/>ENOENT 无 codex CLI| Wham
+  MainResult -->|error<br/>超时 / RPC 错 / 进程崩| NoWham
+
+  Wham --> Auth --> HasToken
+  HasToken -->|否| NoToken
+  HasToken -->|是| Req --> Resp
+  Resp -->|是| WhamOk
+  Resp -->|否 401 / 超时 / 空| Fail
+
+  NoWham --> Fail
+  NoToken --> Fail
+
+  classDef trigger fill:#dbeafe,stroke:#3b82f6,color:#1e3a8a;
+  classDef cmd fill:#e0e7ff,stroke:#6366f1,color:#312e81;
+  classDef decision fill:#fef3c7,stroke:#f59e0b,color:#78350f;
+  classDef persist fill:#dcfce7,stroke:#22c55e,color:#14532d;
+  classDef fail fill:#fee2e2,stroke:#ef4444,color:#7f1d1d;
+  class Start trigger;
+  class Cache,Main,Wham,Auth,Req cmd;
+  class Fresh,MainResult,HasToken,Resp decision;
+  class RetCache,OkWrite,WhamOk persist;
+  class NoWham,NoToken,Fail fail;
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. 数据采集与下游</h2>
+      <p>导出 / 看板时扫 <code>~/.codex/sessions</code> rollout 统计消息 / 请求 / token（<code>inputTokens</code> 为净输入口径），进 export bundle（schemaVersion 9）与 aggregate CSV。</p>
+      <div class="diagram">
+        <div class="mermaid">
+graph LR
+  Roll["~/.codex/sessions<br/>rollout jsonl<br/>export / 看板时扫描"]
+  Stat["codex-sessions 统计<br/>userMessageCount = distinct turn_id<br/>apiRequestCount = token_count 事件数<br/>inputTokens = 净输入 (input - cached)<br/>outputTokens · cacheReadInputTokens"]
+  Bundle["export bundle · schemaVersion 9<br/>weeklySummary.codex / dailySummaries[].codex<br/>+ rawEvents (source=codex 额度事件)"]
+  CSV["aggregate<br/>daily / weekly CSV (Claude+Codex 合计)<br/>detail.csv (source 列)"]
+
+  Roll --> Stat --> Bundle --> CSV
+
+  classDef external fill:#f1f5f9,stroke:#64748b,color:#334155;
+  classDef cmd fill:#e0e7ff,stroke:#6366f1,color:#312e81;
+  classDef persist fill:#dcfce7,stroke:#22c55e,color:#14532d;
+  class Roll external;
+  class Stat cmd;
+  class Bundle persist;
+  class CSV external;
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <p>
+        关键口径：额度按 <code>windowDurationMins</code>（主路径）/ <code>limit_window_seconds</code>（wham）认桶、不假设 primary/secondary 顺序；消息数 distinct <code>turn_id</code>；<code>inputTokens = input_tokens − cached_input_tokens</code>。
+        Codex app-server 协议、wham 端点、auth.json 结构随版本变，解析层宽松、字段缺失返回 null、失败静默。
+      </p>
+    </footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script>
+    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: dark ? "dark" : "default",
+      securityLevel: "loose",
+      flowchart: { htmlLabels: true, curve: "basis" }
+    });
+  </script>
+</body>
+
+</html>

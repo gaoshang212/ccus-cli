@@ -243,7 +243,7 @@ export function extractCustomQuota(json: unknown, fiveHourPath: string, sevenDay
   return { fiveHour, sevenDay, level: null };
 }
 
-interface HttpRequestOptions {
+export interface HttpRequestOptions {
   method: string;
   headers: Record<string, string>;
   timeoutMs: number;
@@ -314,18 +314,141 @@ function extractArrayNumber(item: unknown): number | null {
   return null;
 }
 
-/** 按 url 协议发起 HTTP(S) 请求，返回 {status, body}；超时或错误 reject（仿 fetchLatestVersion）。 */
-function httpRequest(url: string, opts: HttpRequestOptions): Promise<{ status: number; body: string }> {
-  return new Promise((resolve, reject) => {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      reject(new Error(`invalid url: ${url}`));
-      return;
+/** 按顺序取第一个非空（去空白后非空）的环境变量值。 */
+function pickEnv(env: NodeJS.ProcessEnv, ...names: string[]): string | undefined {
+  for (const name of names) {
+    const v = env[name];
+    if (typeof v === "string" && v.trim() !== "") {
+      return v.trim();
     }
-    const transport = parsed.protocol === "http:" ? http : https;
-    const request = transport.request(url, { method: opts.method, headers: opts.headers }, (response) => {
+  }
+  return undefined;
+}
+
+/**
+ * NO_PROXY 匹配：逗号 / 空白分隔的域名后缀，支持精确匹配、后缀匹配、`*` 全匹配（对齐 curl / proxy-from-env）。
+ * 每项可带前导 `.`（`.example.com` 等价 `example.com`）；hostname 命中任一项即视为应直连。
+ */
+export function isNoProxyHost(hostname: string, noProxy: string): boolean {
+  const items = noProxy
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  for (const raw of items) {
+    if (raw === "*") {
+      return true;
+    }
+    const item = raw.startsWith(".") ? raw.slice(1) : raw;
+    if (item === hostname || hostname.endsWith(`.${item}`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 按环境变量解析目标 URL 应走的代理（对齐 curl / proxy-from-env），纯函数、可单测。
+ *
+ * https 目标读 `https_proxy` → `HTTPS_PROXY` → `all_proxy` → `ALL_PROXY`；
+ * http 目标读 `http_proxy` → `HTTP_PROXY` → `all_proxy` → `ALL_PROXY`。**小写优先**。
+ * `NO_PROXY` / `no_proxy`（小写优先）命中的主机、或无任何代理变量时返回 null（直连）。
+ */
+export function resolveProxyUrl(targetUrl: string, env: NodeJS.ProcessEnv): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(targetUrl);
+  } catch {
+    return null;
+  }
+  const noProxy = pickEnv(env, "no_proxy", "NO_PROXY");
+  if (noProxy && isNoProxyHost(parsed.hostname, noProxy)) {
+    return null;
+  }
+  // CCUS_PROXY：ccus 专属代理，单一值同时管 https / http 目标，优先于标准 https_proxy / http_proxy / all_proxy。
+  const ccusProxy = pickEnv(env, "CCUS_PROXY");
+  if (ccusProxy) {
+    return ccusProxy;
+  }
+  const isHttps = parsed.protocol === "https:" || parsed.protocol === "wss:";
+  const proxy = isHttps
+    ? pickEnv(env, "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY")
+    : pickEnv(env, "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY");
+  return proxy ?? null;
+}
+
+/** 代理 agent 构造器类型（HttpsProxyAgent / HttpProxyAgent 都继承自 http.Agent）。 */
+type ProxyAgentCtor = new (opts?: unknown) => http.Agent;
+interface ProxyAgents {
+  HttpsProxyAgent: ProxyAgentCtor;
+  HttpProxyAgent: ProxyAgentCtor;
+}
+
+/**
+ * 懒加载两个代理 agent 构造器，模块级缓存。
+ *
+ * 这两个包是 ESM-only：ccus 是 CommonJS，Node 20/21 的顶层 `require(esm)` 会 `ERR_REQUIRE_ESM`。
+ * 必须用**原生**动态 `import()`（CJS 里对全 Node 版本可异步加载 ESM）；但 tsc 在 `module: commonjs` 下会把
+ * `import()` 降级成 `require`（Node 20 仍崩），故用 `new Function` 构造一个运行时 `import()`，绕过 tsc 降级。
+ * 加载失败返回 null（回退直连）。
+ */
+const nativeImport = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<unknown>;
+let proxyAgentsPromise: Promise<ProxyAgents | null> | null = null;
+function loadProxyAgents(): Promise<ProxyAgents | null> {
+  if (proxyAgentsPromise) {
+    return proxyAgentsPromise;
+  }
+  proxyAgentsPromise = (async () => {
+    try {
+      const [httpsMod, httpMod] = (await Promise.all([
+        nativeImport("https-proxy-agent"),
+        nativeImport("http-proxy-agent"),
+      ])) as [{ HttpsProxyAgent: ProxyAgentCtor }, { HttpProxyAgent: ProxyAgentCtor }];
+      return {
+        HttpsProxyAgent: httpsMod.HttpsProxyAgent,
+        HttpProxyAgent: httpMod.HttpProxyAgent,
+      };
+    } catch (error) {
+      debugLog("api-mode", "failed to load proxy agent modules", error instanceof Error ? error.message : String(error));
+      return null;
+    }
+  })();
+  return proxyAgentsPromise;
+}
+
+/**
+ * 按 url 协议发起 HTTP(S) 请求，返回 {status, body}；超时或错误 reject。
+ *
+ * 自带 env 代理支持（wham 回退 / 智谱 / custom 共用一条通道）：有代理则给请求挂 `https-proxy-agent` /
+ * `http-proxy-agent`，无代理 / `NO_PROXY` 命中 / 代理模块加载失败时维持默认 globalAgent。`env` 默认
+ * `process.env`，对无代理环境行为零变化。
+ */
+export async function httpRequest(
+  url: string,
+  opts: HttpRequestOptions,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ status: number; body: string }> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`invalid url: ${url}`);
+  }
+  const transport = parsed.protocol === "http:" ? http : https;
+  const requestOptions: http.RequestOptions = { method: opts.method, headers: opts.headers };
+  const proxyUrl = resolveProxyUrl(url, env);
+  if (proxyUrl) {
+    const agents = await loadProxyAgents();
+    if (agents) {
+      try {
+        requestOptions.agent =
+          parsed.protocol === "http:" ? new agents.HttpProxyAgent(proxyUrl) : new agents.HttpsProxyAgent(proxyUrl);
+      } catch (error) {
+        debugLog("api-mode", "failed to create proxy agent, falling back to direct", error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+  return new Promise((resolve, reject) => {
+    const request = transport.request(url, requestOptions, (response) => {
       const status = response.statusCode ?? 0;
       let body = "";
       response.setEncoding("utf8");

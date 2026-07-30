@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.7] - 2026-07-30
+
+### 新增
+- Codex 额度采集新增 wham/usage HTTP 直连回退：本机无 codex CLI（spawn `unavailable`）且无新鲜缓存时，改读 `~/.codex/auth.json` 的 OAuth token 直连 ChatGPT 后端 `wham/usage` 拿额度；`error`（超时 / RPC 错）不触发，避免瞬时故障多扛一次 HTTP。
+- 出站额度请求（wham 回退 + 智谱 / custom）统一支持环境变量代理：`https_proxy` / `http_proxy` / `all_proxy`（小写优先）、`NO_PROXY` 排除；另设 ccus 专属 `CCUS_PROXY`（单一值优先于标准变量、同时管 https / http 目标）；为此引入首个运行时依赖 `https-proxy-agent` / `http-proxy-agent`。
+
 ## [0.2.6] - 2026-07-29
 
 ### 修复
