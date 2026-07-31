@@ -6,6 +6,7 @@
 - `ccus statusline emit`：读取 Claude Code statusline 通过 `stdin` 传入的 JSON，输出 statusline 文本，并写入本地日志（加 `--no-store` / `--no-log` 则只输出、不落盘）。
 - `ccus dashboard serve`：直接启动本地 Web 页面，不用先手动生成 HTML 文件。
 - `ccus export`：默认导出当前周数据包（gzip 压缩的 `.json.gz`），里面同时包含原始事件和按天维度的周汇总。
+- `ccus sessions`：把指定周内活跃的 Claude 与 Codex 原始 session 完整打包成 zip。
 - `ccus aggregate`：读取一个目录里的多人 export bundle（`.json.gz` 或 `.json`），输出明细、按天、按周三个 CSV。
 - `ccus aggregate serve`：同样以 bundle 目录为输入，启动本地多人 dashboard 页面，不落地任何文件。
 - `ccus sync`：定时把当前周数据包导出并复制到一个目标目录（如团队共享盘），目标目录下按周自动建子目录；日常由 statusline 兜底触发，也可挂系统计划任务做到严格每天定时。
@@ -81,6 +82,7 @@ ccus install
 ccus export                     # 导出当前周数据包（this-week）
 ccus export lw                  # 导出上一整周（last-week，周一到周日）
 ccus export tw                  # 导出本周（等价于默认 ccus export）
+ccus sessions                   # 打包本周活跃的 Claude 与 Codex 原始 session
 
 ccus dashboard serve            # 启动本地页面，默认看本周（this-week）的 5 小时使用率曲线与每日用户消息数
 
@@ -138,6 +140,9 @@ ccus export --range last-week
 ccus export lw                 # 位置参数简写，等价于 --range last-week
 ccus export tw                 # 等价于 --range this-week
 ccus export --out ./alice_export_2026-05-26_to_2026-06-01.json   # --out 指定非 .gz 路径时写明文 JSON
+ccus sessions                  # 默认导出本周
+ccus sessions lw               # 导出上一整周
+ccus sessions --out ./sessions.zip
 ccus aggregate --input-dir ./team-exports --out-dir ./team-report
 ccus aggregate serve --input-dir ./team-exports
 ```
@@ -168,6 +173,13 @@ ccus aggregate serve --input-dir ./team-exports
 - `apiRequestCount` 与 token 指标来自 `~/.claude/projects/**/*.jsonl` 中带 `message.usage` 的 `type:assistant` 事件
 - `dailySummaries` 会按每天输出消息数、请求数、token 和当天 statusline usage 摘要
 - 不再支持其它导出格式
+
+### 原始 session 打包
+
+- `ccus sessions` 默认打包本周；支持 `tw`、`lw`、`today`、`5h` 等与 `export` 相同的范围写法。
+- 只选择文件中至少一条记录落入时间窗的 session，但 zip 内保存完整原始文件，不裁剪内容。
+- Claude 文件保持 `<projectDir>/<sessionId>.jsonl` 路径；Codex rollout 保持 `codex/<CODEX_HOME 下 sessions 的相对路径>`。
+- 默认写入 `<data-dir>/sessions/projects_<start>_<end>_<gitUserName>.zip`；`--out` 可指定路径。
 
 ## 多人汇总
 

@@ -75,6 +75,53 @@ function timestampInRange(timestamp: string | null, start: Date, end: Date): boo
   return Number.isFinite(value) && value >= start.getTime() && value <= end.getTime();
 }
 
+/** 在时间范围内有活动的 Codex rollout 文件信息。 */
+export interface ActiveCodexSessionFile {
+  filePath: string;
+  /** 相对于 `<CODEX_HOME>/sessions` 的原始路径。 */
+  relativePath: string;
+}
+
+/**
+ * 找出 `<CODEX_HOME>/sessions` 中在指定时间范围内有活动的 rollout 文件。
+ *
+ * 只判断文件里是否存在范围内的记录，不过滤内容，导出时完整复制原始文件。
+ */
+export async function findActiveCodexSessionFiles(start: Date, end: Date): Promise<ActiveCodexSessionFile[]> {
+  const sessionsDir = path.join(getCodexHome(), "sessions");
+  const files = await collectRolloutFiles(sessionsDir);
+  const result: ActiveCodexSessionFile[] = [];
+
+  for (const filePath of files) {
+    try {
+      const content = await fs.readFile(filePath, "utf8");
+      const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+      let hasInRange = false;
+      for (const line of lines) {
+        try {
+          const record = JSON.parse(line) as unknown;
+          if (isRecord(record) && timestampInRange(getString(record.timestamp), start, end)) {
+            hasInRange = true;
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+      if (hasInRange) {
+        result.push({
+          filePath,
+          relativePath: path.relative(sessionsDir, filePath),
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return result;
+}
+
 /**
  * 从 `token_count` 事件的 `info.last_token_usage` 取 token 用量对象（缺失返回 null）。
  * 必须用 last_token_usage（本次增量），不能用 total_token_usage（会话累计，会重复计）。
