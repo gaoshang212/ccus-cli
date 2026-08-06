@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.9] - 2026-08-06
+
+### 修复
+- Codex session 统计排除 `source.subagent.other="guardian"` 的 Desktop 自动审批会话，避免启用 `Approve for me` 后内部审查轮次造成用户消息数、API 请求数和 token 严重虚高；原始 session 打包行为不变。
+
 ## [0.2.8] - 2026-07-31
 
 ### 新增

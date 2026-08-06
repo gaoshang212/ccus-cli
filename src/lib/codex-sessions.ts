@@ -46,6 +46,29 @@ function getString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+/** Guardian 是 Codex Desktop 的动作安全审查子代理，不代表用户请求或业务模型调用。 */
+function isGuardianRollout(content: string): boolean {
+  let offset = 0;
+  while (offset < content.length) {
+    const newline = content.indexOf("\n", offset);
+    const line = content.slice(offset, newline === -1 ? content.length : newline).trim();
+    offset = newline === -1 ? content.length : newline + 1;
+    try {
+      const record = JSON.parse(line) as unknown;
+      if (!isRecord(record) || record.type !== "session_meta" || !isRecord(record.payload)) {
+        continue;
+      }
+      const source = record.payload.source;
+      return isRecord(source)
+        && isRecord(source.subagent)
+        && source.subagent.other === "guardian";
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
 async function collectRolloutFiles(directoryPath: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(directoryPath, { withFileTypes: true });
@@ -193,6 +216,7 @@ function summarizeRollout(content: string, start: Date, end: Date): RolloutParse
 
 /**
  * 从 Codex 本地 session rollout（<CODEX_HOME>/sessions 下递归的 .jsonl）统计消息数、请求数和 token 用量。
+ * Codex Desktop 的 guardian 安全审查 rollout 整体排除，避免把内部审批轮次计为用户使用量。
  *
  * 消息数 = task_started 的 distinct turn_id（跨文件去重）。重放副本会让同一 turn_id 出现在多个文件，
  * 故用全局 Map<turn_id, minMs> 收集（取最早 timestamp = 真实发生时刻，早于任何重放副本），最后取 size。
@@ -214,6 +238,9 @@ export async function summarizeCodexSessionUsage(
   for (const filePath of files) {
     try {
       const content = await fs.readFile(filePath, "utf8");
+      if (isGuardianRollout(content)) {
+        continue;
+      }
       const parsed = summarizeRollout(content, start, end);
       for (const turn of parsed.turns) {
         const prev = turnMinMs.get(turn.turnId);
@@ -243,6 +270,7 @@ export async function summarizeCodexSessionUsage(
 
 /**
  * 按天汇总 Codex session rollout 中的消息数、请求数和 token 用量。
+ * 与周汇总一致，排除 Codex Desktop 的 guardian 安全审查 rollout。
  *
  * 消息数同 weekly：先全局 Map<turn_id, minMs> 去重，再按 minMs 的本地日归桶（保证 weekly = Σ daily、
  * 且重放副本跨天不重复）。token 维度按 token_count 事件 timestamp 的本地日累加。
@@ -279,6 +307,9 @@ export async function summarizeCodexSessionUsageByDay(
     try {
       content = await fs.readFile(filePath, "utf8");
     } catch {
+      continue;
+    }
+    if (isGuardianRollout(content)) {
       continue;
     }
 

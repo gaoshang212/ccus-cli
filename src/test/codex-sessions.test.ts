@@ -62,6 +62,43 @@ test("summarizeCodexSessionUsage counts task_started distinct turn_id and sums l
   }
 });
 
+test("summarizeCodexSessionUsage excludes guardian rollout usage", async () => {
+  const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
+  try {
+    await writeRollout(home, "2026/07/27/rollout-main.jsonl", [
+      `{"timestamp":"${ts(10, 0)}","type":"session_meta","payload":{"source":"vscode"}}`,
+      `{"timestamp":"${ts(10, 1)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-main"}}`,
+      `{"timestamp":"${ts(10, 2)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":20}}}}`,
+    ]);
+    await writeRollout(home, "2026/07/27/rollout-guardian.jsonl", [
+      `{"timestamp":"${ts(20, 0)}","type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}}}}`,
+      `{"timestamp":"${ts(20, 1)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-guardian"}}`,
+      `{"timestamp":"${ts(20, 2)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900,"output_tokens":90,"cached_input_tokens":200}}}}`,
+    ]);
+
+    const summary = await summarizeCodexSessionUsage(RANGE_START, RANGE_END);
+
+    assert.deepEqual(
+      {
+        userMessageCount: summary.userMessageCount,
+        apiRequestCount: summary.apiRequestCount,
+        inputTokens: summary.inputTokens,
+        outputTokens: summary.outputTokens,
+        cacheReadInputTokens: summary.cacheReadInputTokens,
+      },
+      {
+        userMessageCount: 1,
+        apiRequestCount: 1,
+        inputTokens: 80,
+        outputTokens: 10,
+        cacheReadInputTokens: 20,
+      },
+    );
+  } finally {
+    restore();
+  }
+});
+
 test("summarizeCodexSessionUsage uses last_token_usage increment, not total_token_usage cumulative", async () => {
   const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
   try {
@@ -177,6 +214,35 @@ test("summarizeCodexSessionUsageByDay buckets task_started by local date", async
     assert.equal(daily.get("2026-07-27")?.inputTokens, 10);
     assert.equal(daily.get("2026-07-28")?.userMessageCount, 1);
     assert.equal(daily.get("2026-07-28")?.inputTokens, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("summarizeCodexSessionUsageByDay excludes guardian rollout usage", async () => {
+  const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
+  try {
+    await writeRollout(home, "2026/07/27/rollout-main-daily.jsonl", [
+      `{"timestamp":"${ts(10, 0)}","type":"session_meta","payload":{"source":"vscode"}}`,
+      `{"timestamp":"${ts(10, 1)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-main"}}`,
+      `{"timestamp":"${ts(10, 2)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":20}}}}`,
+    ]);
+    await writeRollout(home, "2026/07/27/rollout-guardian-daily.jsonl", [
+      `{"timestamp":"${ts(20, 0)}","type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}}}}`,
+      `{"timestamp":"${ts(20, 1)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-guardian"}}`,
+      `{"timestamp":"${ts(20, 2)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900,"output_tokens":90,"cached_input_tokens":200}}}}`,
+    ]);
+
+    const daily = await summarizeCodexSessionUsageByDay(RANGE_START, RANGE_END);
+
+    assert.deepEqual(daily.get(DAY), {
+      date: DAY,
+      userMessageCount: 1,
+      apiRequestCount: 1,
+      inputTokens: 80,
+      outputTokens: 10,
+      cacheReadInputTokens: 20,
+    });
   } finally {
     restore();
   }
