@@ -121,7 +121,7 @@ export interface ExportSummaryRow {
 
 /**
  * Codex CLI 的统计快照，与 Claude 对应字段单列。
- * - 消息/请求/token：来自 CODEX_HOME 下 sessions rollout（按天/按周累加）。
+ * - 消息/请求/token：合并 CODEX_HOME 与 Orca runtime home 下的 sessions rollout（按天/按周累加、跨目录去重）。
  * - 额度（5h/7d peak/latest）：从 source="codex" 的 statusline 事件重算（快照，非累加）。
  */
 export interface CodexUsageSnapshot {

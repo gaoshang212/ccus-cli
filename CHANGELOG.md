@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.10] - 2026-08-07
+
+### 新增
+- Codex session 统计与 `ccus sessions` 打包新增 Orca runtime home 数据源：合并 `~/.codex/sessions` 与 `%APPDATA%/orca/codex-runtime-home/home/sessions`，同相对路径 rollout 按 JSONL 事件去重，重复事件只计一次、两边独有事件均保留；`CODEX_HOME` 指向 Orca 时仍合并 `~/.codex`。
+
 ## [0.2.9] - 2026-08-06
 
 ### 修复

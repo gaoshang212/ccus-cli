@@ -74,6 +74,46 @@ export function getCodexHome(): string {
   return process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
 }
 
+/** Orca 内置 Codex 的运行时数据目录；非 Orca 环境下返回 null。 */
+export function getOrcaCodexHome(): string | null {
+  const appData = process.env.APPDATA;
+  return appData ? path.join(appData, "orca", "codex-runtime-home", "home") : null;
+}
+
+/**
+ * Codex session 的全部数据源。
+ *
+ * 默认合并 `~/.codex` 与 Orca runtime home；`CODEX_HOME` 指向 Orca 时仍保留
+ * `~/.codex`，其它显式覆盖则沿用原有覆盖语义。路径按平台规则去重。
+ */
+export function getCodexSessionHomes(): string[] {
+  const configuredHome = path.resolve(getCodexHome());
+  const defaultHome = path.resolve(path.join(os.homedir(), ".codex"));
+  const orcaHome = getOrcaCodexHome();
+  const candidates = orcaHome && samePath(configuredHome, orcaHome)
+    ? [defaultHome, configuredHome]
+    : [configuredHome, ...(orcaHome ? [path.resolve(orcaHome)] : [])];
+  const seen = new Set<string>();
+
+  return candidates.filter((candidate) => {
+    const key = pathKey(candidate);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function pathKey(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function samePath(left: string, right: string): boolean {
+  return pathKey(left) === pathKey(right);
+}
+
 /** Codex CLI 用户级 config.toml 路径，`ccus install --codex` 往里写 notify。 */
 export function getCodexConfigPath(): string {
   return path.join(getCodexHome(), "config.toml");

@@ -3,22 +3,32 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { summarizeCodexSessionUsage, summarizeCodexSessionUsageByDay } from "../lib/codex-sessions";
+import { findActiveCodexSessionFiles, summarizeCodexSessionUsage, summarizeCodexSessionUsageByDay } from "../lib/codex-sessions";
+import { getCodexSessionHomes } from "../lib/paths";
 
 async function mkdtemp(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
 /** 把 ccus 指向一个临时 CODEX_HOME，返回它和恢复函数。 */
-async function withTempCodexHome(prefix: string): Promise<{ home: string; restore: () => void }> {
+async function withTempCodexHome(prefix: string): Promise<{ home: string; orcaHome: string; restore: () => void }> {
   const home = await mkdtemp(prefix);
+  const appData = path.join(home, "appdata");
+  const orcaHome = path.join(appData, "orca", "codex-runtime-home", "home");
   const previous = process.env.CODEX_HOME;
+  const previousAppData = process.env.APPDATA;
   process.env.CODEX_HOME = home;
-  return { home, restore: () => {
+  process.env.APPDATA = appData;
+  return { home, orcaHome, restore: () => {
     if (previous === undefined) {
       delete process.env.CODEX_HOME;
     } else {
       process.env.CODEX_HOME = previous;
+    }
+    if (previousAppData === undefined) {
+      delete process.env.APPDATA;
+    } else {
+      process.env.APPDATA = previousAppData;
     }
   } };
 }
@@ -37,6 +47,34 @@ const RANGE_END = new Date("2026-07-27T23:59:59Z");
 function ts(minute: number, second = 0): string {
   return `2026-07-27T02:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}.000Z`;
 }
+
+test("getCodexSessionHomes keeps ~/.codex when CODEX_HOME points to Orca", async () => {
+  const root = await mkdtemp("ccus-codex-session-homes-");
+  const appData = path.join(root, "appdata");
+  const orcaHome = path.join(appData, "orca", "codex-runtime-home", "home");
+  const previousCodexHome = process.env.CODEX_HOME;
+  const previousAppData = process.env.APPDATA;
+  process.env.CODEX_HOME = orcaHome;
+  process.env.APPDATA = appData;
+
+  try {
+    assert.deepEqual(getCodexSessionHomes(), [
+      path.resolve(os.homedir(), ".codex"),
+      path.resolve(orcaHome),
+    ]);
+  } finally {
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
+    }
+    if (previousAppData === undefined) {
+      delete process.env.APPDATA;
+    } else {
+      process.env.APPDATA = previousAppData;
+    }
+  }
+});
 
 test("summarizeCodexSessionUsage counts task_started distinct turn_id and sums last_token_usage", async () => {
   const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
@@ -187,6 +225,57 @@ test("summarizeCodexSessionUsage dedups task_started by turn_id across files", a
 
     // 3 份 turn-replay 只算 1 + turn-unique 1 = 2。
     assert.equal(summary.userMessageCount, 2);
+  } finally {
+    restore();
+  }
+});
+
+test("Codex session 统计合并 Orca runtime home 并对重复 rollout 去重", async () => {
+  const { home, orcaHome, restore } = await withTempCodexHome("ccus-codex-sessions-");
+  try {
+    const relativePath = "2026/07/27/rollout-shared.jsonl";
+    const sharedTask = `{"timestamp":"${ts(10, 0)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-shared"}}`;
+    const sharedTokens = `{"timestamp":"${ts(10, 1)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":20}}}}`;
+    const orcaTask = `{"timestamp":"${ts(20, 0)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-orca"}}`;
+    const orcaTokens = `{"timestamp":"${ts(20, 1)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"output_tokens":20,"cached_input_tokens":50}}}}`;
+
+    await writeRollout(home, relativePath, [sharedTask, sharedTokens]);
+    await writeRollout(orcaHome, relativePath, [sharedTask, sharedTokens, orcaTask, orcaTokens]);
+
+    const summary = await summarizeCodexSessionUsage(RANGE_START, RANGE_END);
+    assert.deepEqual(
+      {
+        userMessageCount: summary.userMessageCount,
+        apiRequestCount: summary.apiRequestCount,
+        inputTokens: summary.inputTokens,
+        outputTokens: summary.outputTokens,
+        cacheReadInputTokens: summary.cacheReadInputTokens,
+        matchedFileCount: summary.matchedFileCount,
+      },
+      {
+        userMessageCount: 2,
+        apiRequestCount: 2,
+        inputTokens: 230,
+        outputTokens: 30,
+        cacheReadInputTokens: 70,
+        matchedFileCount: 1,
+      },
+    );
+
+    const daily = await summarizeCodexSessionUsageByDay(RANGE_START, RANGE_END);
+    assert.deepEqual(daily.get(DAY), {
+      date: DAY,
+      userMessageCount: 2,
+      apiRequestCount: 2,
+      inputTokens: 230,
+      outputTokens: 30,
+      cacheReadInputTokens: 70,
+    });
+
+    const active = await findActiveCodexSessionFiles(RANGE_START, RANGE_END);
+    assert.equal(active.length, 1);
+    assert.equal(active[0].relativePath.replaceAll("\\", "/"), relativePath);
+    assert.equal(active[0].content.trim().split(/\r?\n/).length, 4);
   } finally {
     restore();
   }

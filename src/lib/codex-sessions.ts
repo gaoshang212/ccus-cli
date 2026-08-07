@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { getCodexHome } from "./paths";
+import { getCodexHome, getCodexSessionHomes } from "./paths";
 import { localDateKey } from "./time";
 
 interface CodexSessionUsageSummary {
@@ -32,6 +32,12 @@ interface RolloutParse {
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
+}
+
+/** 多个 session 根目录中同一相对路径的 rollout 文件组。 */
+interface RolloutFileGroup {
+  relativePath: string;
+  filePaths: string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -90,6 +96,80 @@ async function collectRolloutFiles(directoryPath: string): Promise<string[]> {
   }
 }
 
+function rolloutPathKey(relativePath: string): string {
+  const normalized = relativePath.replaceAll("\\", "/");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+/** 收集标准 Codex 与 Orca session，并按 sessions 下的相对路径归并同一 rollout。 */
+async function collectRolloutFileGroups(): Promise<RolloutFileGroup[]> {
+  const sessionDirs = getCodexSessionHomes().map((home) => path.join(home, "sessions"));
+  const filesByDir = await Promise.all(sessionDirs.map((directory) => collectRolloutFiles(directory)));
+  const groups = new Map<string, RolloutFileGroup>();
+
+  for (let index = 0; index < sessionDirs.length; index += 1) {
+    const sessionsDir = sessionDirs[index];
+    for (const filePath of filesByDir[index]) {
+      const relativePath = path.relative(sessionsDir, filePath);
+      const key = rolloutPathKey(relativePath);
+      const group = groups.get(key);
+      if (group) {
+        group.filePaths.push(filePath);
+      } else {
+        groups.set(key, { relativePath, filePaths: [filePath] });
+      }
+    }
+  }
+
+  return [...groups.values()];
+}
+
+function rolloutLineKey(line: string): string {
+  try {
+    return JSON.stringify(JSON.parse(line) as unknown);
+  } catch {
+    return line;
+  }
+}
+
+/**
+ * 合并同一 rollout 在不同根目录下的副本。
+ *
+ * 对每种 JSONL 行保留各副本中的最大出现次数，既消除完整/部分镜像造成的重复，
+ * 又保留任一副本独有的新增事件以及单个源内真实存在的重复行。
+ */
+function mergeRolloutContents(contents: string[]): string {
+  const mergedLines: string[] = [];
+  const mergedCounts = new Map<string, number>();
+
+  for (const content of contents) {
+    const sourceCounts = new Map<string, number>();
+    const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+    for (const line of lines) {
+      const key = rolloutLineKey(line);
+      const sourceCount = (sourceCounts.get(key) ?? 0) + 1;
+      sourceCounts.set(key, sourceCount);
+      if (sourceCount > (mergedCounts.get(key) ?? 0)) {
+        mergedCounts.set(key, sourceCount);
+        mergedLines.push(line);
+      }
+    }
+  }
+
+  return mergedLines.length > 0 ? `${mergedLines.join("\n")}\n` : "";
+}
+
+async function readMergedRollout(group: RolloutFileGroup): Promise<string> {
+  const reads = await Promise.all(group.filePaths.map(async (filePath) => {
+    try {
+      return await fs.readFile(filePath, "utf8");
+    } catch {
+      return null;
+    }
+  }));
+  return mergeRolloutContents(reads.filter((content): content is string => content !== null));
+}
+
 function timestampInRange(timestamp: string | null, start: Date, end: Date): boolean {
   if (!timestamp) {
     return false;
@@ -101,23 +181,24 @@ function timestampInRange(timestamp: string | null, start: Date, end: Date): boo
 /** 在时间范围内有活动的 Codex rollout 文件信息。 */
 export interface ActiveCodexSessionFile {
   filePath: string;
-  /** 相对于 `<CODEX_HOME>/sessions` 的原始路径。 */
+  /** 相对于 Codex session 根目录的原始路径。 */
   relativePath: string;
+  /** 标准 Codex 与 Orca 副本去重合并后的完整 JSONL。 */
+  content: string;
 }
 
 /**
- * 找出 `<CODEX_HOME>/sessions` 中在指定时间范围内有活动的 rollout 文件。
+ * 找出标准 Codex 与 Orca sessions 中在指定时间范围内有活动的 rollout 文件。
  *
- * 只判断文件里是否存在范围内的记录，不过滤内容，导出时完整复制原始文件。
+ * 只判断合并后的文件里是否存在范围内的记录，不过滤内容，导出时写入完整合并结果。
  */
 export async function findActiveCodexSessionFiles(start: Date, end: Date): Promise<ActiveCodexSessionFile[]> {
-  const sessionsDir = path.join(getCodexHome(), "sessions");
-  const files = await collectRolloutFiles(sessionsDir);
+  const groups = await collectRolloutFileGroups();
   const result: ActiveCodexSessionFile[] = [];
 
-  for (const filePath of files) {
+  for (const group of groups) {
     try {
-      const content = await fs.readFile(filePath, "utf8");
+      const content = await readMergedRollout(group);
       const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
       let hasInRange = false;
       for (const line of lines) {
@@ -133,8 +214,9 @@ export async function findActiveCodexSessionFiles(start: Date, end: Date): Promi
       }
       if (hasInRange) {
         result.push({
-          filePath,
-          relativePath: path.relative(sessionsDir, filePath),
+          filePath: group.filePaths[0],
+          relativePath: group.relativePath,
+          content,
         });
       }
     } catch {
@@ -215,7 +297,7 @@ function summarizeRollout(content: string, start: Date, end: Date): RolloutParse
 }
 
 /**
- * 从 Codex 本地 session rollout（<CODEX_HOME>/sessions 下递归的 .jsonl）统计消息数、请求数和 token 用量。
+ * 从标准 Codex 与 Orca 本地 session rollout 统计消息数、请求数和 token 用量。
  * Codex Desktop 的 guardian 安全审查 rollout 整体排除，避免把内部审批轮次计为用户使用量。
  *
  * 消息数 = task_started 的 distinct turn_id（跨文件去重）。重放副本会让同一 turn_id 出现在多个文件，
@@ -226,8 +308,7 @@ export async function summarizeCodexSessionUsage(
   end: Date,
 ): Promise<CodexSessionUsageSummary & { matchedFileCount: number; codexDataDir: string }> {
   const codexDataDir = getCodexHome();
-  const sessionsDir = path.join(codexDataDir, "sessions");
-  const files = await collectRolloutFiles(sessionsDir);
+  const groups = await collectRolloutFileGroups();
 
   const turnMinMs = new Map<string, number>();
   let apiRequestCount = 0;
@@ -235,9 +316,9 @@ export async function summarizeCodexSessionUsage(
   let outputTokens = 0;
   let cacheReadInputTokens = 0;
 
-  for (const filePath of files) {
+  for (const group of groups) {
     try {
-      const content = await fs.readFile(filePath, "utf8");
+      const content = await readMergedRollout(group);
       if (isGuardianRollout(content)) {
         continue;
       }
@@ -263,7 +344,7 @@ export async function summarizeCodexSessionUsage(
     inputTokens,
     outputTokens,
     cacheReadInputTokens,
-    matchedFileCount: files.length,
+    matchedFileCount: groups.length,
     codexDataDir,
   };
 }
@@ -279,9 +360,7 @@ export async function summarizeCodexSessionUsageByDay(
   start: Date,
   end: Date,
 ): Promise<Map<string, CodexDailyUsageSummary>> {
-  const codexDataDir = getCodexHome();
-  const sessionsDir = path.join(codexDataDir, "sessions");
-  const files = await collectRolloutFiles(sessionsDir);
+  const groups = await collectRolloutFileGroups();
 
   const turnMinMs = new Map<string, number>();
   const daily = new Map<string, CodexDailyUsageSummary>();
@@ -302,13 +381,8 @@ export async function summarizeCodexSessionUsageByDay(
     return current;
   };
 
-  for (const filePath of files) {
-    let content = "";
-    try {
-      content = await fs.readFile(filePath, "utf8");
-    } catch {
-      continue;
-    }
+  for (const group of groups) {
+    const content = await readMergedRollout(group);
     if (isGuardianRollout(content)) {
       continue;
     }

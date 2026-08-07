@@ -717,7 +717,7 @@ async function handleSessions(options: CliOptions): Promise<void> {
   }));
   const codexEntries = codexSessions.map(async (session) => ({
     name: `codex/${session.relativePath.replaceAll("\\", "/")}`,
-    data: await fsRead(session.filePath),
+    data: Buffer.from(session.content, "utf8"),
   }));
   const entries = await Promise.all([...claudeEntries, ...codexEntries]);
 

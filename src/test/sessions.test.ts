@@ -29,21 +29,29 @@ test("ccus sessions exports active Claude and Codex sessions into one zip", asyn
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-sessions-"));
   const claudeHome = path.join(root, "claude");
   const codexHome = path.join(root, "codex");
+  const appData = path.join(root, "appdata");
+  const orcaCodexHome = path.join(appData, "orca", "codex-runtime-home", "home");
   const previousClaudeHome = process.env.CCUS_CLAUDE_DATA_DIR;
   const previousCodexHome = process.env.CODEX_HOME;
+  const previousAppData = process.env.APPDATA;
   process.env.CCUS_CLAUDE_DATA_DIR = claudeHome;
   process.env.CODEX_HOME = codexHome;
+  process.env.APPDATA = appData;
 
   const inRangeTimestamp = new Date().toISOString();
   const outsideTimestamp = "2000-01-01T00:00:00.000Z";
   const claudeProjectDir = path.join(claudeHome, "projects", "D--workspace-nodejs-ccus");
   const codexRolloutDir = path.join(codexHome, "sessions", "2026", "07", "31");
+  const orcaRolloutDir = path.join(orcaCodexHome, "sessions", "2026", "07", "31");
   await fs.mkdir(claudeProjectDir, { recursive: true });
   await fs.mkdir(codexRolloutDir, { recursive: true });
+  await fs.mkdir(orcaRolloutDir, { recursive: true });
   await fs.writeFile(path.join(claudeProjectDir, "claude-active.jsonl"), `${JSON.stringify({ timestamp: inRangeTimestamp })}\n`);
   await fs.writeFile(path.join(claudeProjectDir, "claude-old.jsonl"), `${JSON.stringify({ timestamp: outsideTimestamp })}\n`);
   await fs.writeFile(path.join(codexRolloutDir, "rollout-active.jsonl"), `${JSON.stringify({ timestamp: inRangeTimestamp })}\n`);
   await fs.writeFile(path.join(codexRolloutDir, "rollout-old.jsonl"), `${JSON.stringify({ timestamp: outsideTimestamp })}\n`);
+  await fs.writeFile(path.join(orcaRolloutDir, "rollout-active.jsonl"), `${JSON.stringify({ timestamp: inRangeTimestamp })}\n`);
+  await fs.writeFile(path.join(orcaRolloutDir, "rollout-orca.jsonl"), `${JSON.stringify({ timestamp: inRangeTimestamp })}\n`);
 
   let stdout = "";
   const stdoutMock = mock.method(process.stdout, "write", (chunk: string | Uint8Array) => {
@@ -60,6 +68,7 @@ test("ccus sessions exports active Claude and Codex sessions into one zip", asyn
     assert.deepEqual(names.sort(), [
       "D--workspace-nodejs-ccus/claude-active.jsonl",
       "codex/2026/07/31/rollout-active.jsonl",
+      "codex/2026/07/31/rollout-orca.jsonl",
     ]);
   } finally {
     stdoutMock.mock.restore();
@@ -72,6 +81,11 @@ test("ccus sessions exports active Claude and Codex sessions into one zip", asyn
       delete process.env.CODEX_HOME;
     } else {
       process.env.CODEX_HOME = previousCodexHome;
+    }
+    if (previousAppData === undefined) {
+      delete process.env.APPDATA;
+    } else {
+      process.env.APPDATA = previousAppData;
     }
     await fs.rm(root, { recursive: true, force: true });
   }
