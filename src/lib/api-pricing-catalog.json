@@ -1,0 +1,270 @@
+{
+  "catalogVersion": "2026-08-17",
+  "currency": "USD",
+  "basis": "event-time-standard-api",
+  "entries": [
+    {
+      "provider": "claude",
+      "model": "claude-opus-3",
+      "effectiveFrom": "2024-02-29T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 15, "outputUsdPerMillion": 75, "cacheReadInputUsdPerMillion": 1.5, "cacheWrite5mInputUsdPerMillion": 18.75, "cacheWrite1hInputUsdPerMillion": 30 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-haiku-3",
+      "effectiveFrom": "2024-03-13T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 0.25, "outputUsdPerMillion": 1.25, "cacheReadInputUsdPerMillion": 0.025, "cacheWrite5mInputUsdPerMillion": 0.3125, "cacheWrite1hInputUsdPerMillion": 0.5 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-sonnet-3.5",
+      "effectiveFrom": "2024-06-20T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 3, "outputUsdPerMillion": 15, "cacheReadInputUsdPerMillion": 0.3, "cacheWrite5mInputUsdPerMillion": 3.75, "cacheWrite1hInputUsdPerMillion": 6 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-haiku-3.5",
+      "effectiveFrom": "2024-10-22T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 0.8, "outputUsdPerMillion": 4, "cacheReadInputUsdPerMillion": 0.08, "cacheWrite5mInputUsdPerMillion": 1, "cacheWrite1hInputUsdPerMillion": 1.6 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-sonnet-3.7",
+      "effectiveFrom": "2025-02-24T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 3, "outputUsdPerMillion": 15, "cacheReadInputUsdPerMillion": 0.3, "cacheWrite5mInputUsdPerMillion": 3.75, "cacheWrite1hInputUsdPerMillion": 6 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-opus-4",
+      "effectiveFrom": "2025-05-22T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 15, "outputUsdPerMillion": 75, "cacheReadInputUsdPerMillion": 1.5, "cacheWrite5mInputUsdPerMillion": 18.75, "cacheWrite1hInputUsdPerMillion": 30 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-sonnet-4",
+      "effectiveFrom": "2025-05-22T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 3, "outputUsdPerMillion": 15, "cacheReadInputUsdPerMillion": 0.3, "cacheWrite5mInputUsdPerMillion": 3.75, "cacheWrite1hInputUsdPerMillion": 6 },
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "prices": { "inputUsdPerMillion": 6, "outputUsdPerMillion": 22.5, "cacheReadInputUsdPerMillion": 0.6, "cacheWrite5mInputUsdPerMillion": 7.5, "cacheWrite1hInputUsdPerMillion": 12 }
+      }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-opus-4.1",
+      "effectiveFrom": "2025-08-05T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 15, "outputUsdPerMillion": 75, "cacheReadInputUsdPerMillion": 1.5, "cacheWrite5mInputUsdPerMillion": 18.75, "cacheWrite1hInputUsdPerMillion": 30 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-sonnet-4.5",
+      "effectiveFrom": "2025-09-29T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 3, "outputUsdPerMillion": 15, "cacheReadInputUsdPerMillion": 0.3, "cacheWrite5mInputUsdPerMillion": 3.75, "cacheWrite1hInputUsdPerMillion": 6 },
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "prices": { "inputUsdPerMillion": 6, "outputUsdPerMillion": 22.5, "cacheReadInputUsdPerMillion": 0.6, "cacheWrite5mInputUsdPerMillion": 7.5, "cacheWrite1hInputUsdPerMillion": 12 }
+      }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-haiku-4.5",
+      "effectiveFrom": "2025-10-15T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 1, "outputUsdPerMillion": 5, "cacheReadInputUsdPerMillion": 0.1, "cacheWrite5mInputUsdPerMillion": 1.25, "cacheWrite1hInputUsdPerMillion": 2 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-opus-4.5",
+      "effectiveFrom": "2025-11-24T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 5, "outputUsdPerMillion": 25, "cacheReadInputUsdPerMillion": 0.5, "cacheWrite5mInputUsdPerMillion": 6.25, "cacheWrite1hInputUsdPerMillion": 10 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-opus-4.6",
+      "effectiveFrom": "2026-02-05T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 5, "outputUsdPerMillion": 25, "cacheReadInputUsdPerMillion": 0.5, "cacheWrite5mInputUsdPerMillion": 6.25, "cacheWrite1hInputUsdPerMillion": 10 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-sonnet-4.6",
+      "effectiveFrom": "2026-02-17T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 3, "outputUsdPerMillion": 15, "cacheReadInputUsdPerMillion": 0.3, "cacheWrite5mInputUsdPerMillion": 3.75, "cacheWrite1hInputUsdPerMillion": 6 },
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "prices": { "inputUsdPerMillion": 6, "outputUsdPerMillion": 22.5, "cacheReadInputUsdPerMillion": 0.6, "cacheWrite5mInputUsdPerMillion": 7.5, "cacheWrite1hInputUsdPerMillion": 12 }
+      }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-opus-4.7",
+      "effectiveFrom": "2026-04-16T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 5, "outputUsdPerMillion": 25, "cacheReadInputUsdPerMillion": 0.5, "cacheWrite5mInputUsdPerMillion": 6.25, "cacheWrite1hInputUsdPerMillion": 10 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-opus-4.8",
+      "effectiveFrom": "2026-05-28T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 5, "outputUsdPerMillion": 25, "cacheReadInputUsdPerMillion": 0.5, "cacheWrite5mInputUsdPerMillion": 6.25, "cacheWrite1hInputUsdPerMillion": 10 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-fable-5",
+      "effectiveFrom": "2026-06-09T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 10, "outputUsdPerMillion": 50, "cacheReadInputUsdPerMillion": 1, "cacheWrite5mInputUsdPerMillion": 12.5, "cacheWrite1hInputUsdPerMillion": 20 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-sonnet-5",
+      "effectiveFrom": "2026-06-30T00:00:00.000Z",
+      "effectiveTo": "2026-09-01T00:00:00.000Z",
+      "prices": { "inputUsdPerMillion": 2, "outputUsdPerMillion": 10, "cacheReadInputUsdPerMillion": 0.2, "cacheWrite5mInputUsdPerMillion": 2.5, "cacheWrite1hInputUsdPerMillion": 4 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-sonnet-5",
+      "effectiveFrom": "2026-09-01T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 3, "outputUsdPerMillion": 15, "cacheReadInputUsdPerMillion": 0.3, "cacheWrite5mInputUsdPerMillion": 3.75, "cacheWrite1hInputUsdPerMillion": 6 }
+    },
+    {
+      "provider": "claude",
+      "model": "claude-opus-5",
+      "effectiveFrom": "2026-07-24T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 5, "outputUsdPerMillion": 25, "cacheReadInputUsdPerMillion": 0.5, "cacheWrite5mInputUsdPerMillion": 6.25, "cacheWrite1hInputUsdPerMillion": 10 }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5",
+      "effectiveFrom": "2025-08-07T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 1.25, "outputUsdPerMillion": 10, "cacheReadInputUsdPerMillion": 0.125 }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5-codex",
+      "effectiveFrom": "2025-09-23T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 1.25, "outputUsdPerMillion": 10, "cacheReadInputUsdPerMillion": 0.125 }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.1",
+      "effectiveFrom": "2025-11-13T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 1.25, "outputUsdPerMillion": 10, "cacheReadInputUsdPerMillion": 0.125 }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.1-codex",
+      "effectiveFrom": "2025-11-13T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 1.25, "outputUsdPerMillion": 10, "cacheReadInputUsdPerMillion": 0.125 }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.1-codex-mini",
+      "effectiveFrom": "2025-11-13T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 0.25, "outputUsdPerMillion": 2, "cacheReadInputUsdPerMillion": 0.025 }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.1-codex-max",
+      "effectiveFrom": "2025-12-04T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 1.25, "outputUsdPerMillion": 10, "cacheReadInputUsdPerMillion": 0.125 }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.2",
+      "effectiveFrom": "2025-12-11T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 1.75, "outputUsdPerMillion": 14, "cacheReadInputUsdPerMillion": 0.175 }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.2-codex",
+      "effectiveFrom": "2025-12-18T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 1.75, "outputUsdPerMillion": 14, "cacheReadInputUsdPerMillion": 0.175 }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.3-codex",
+      "effectiveFrom": "2026-02-05T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 1.75, "outputUsdPerMillion": 14, "cacheReadInputUsdPerMillion": 0.175 }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.4",
+      "effectiveFrom": "2026-03-05T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 2.5, "outputUsdPerMillion": 15, "cacheReadInputUsdPerMillion": 0.25 },
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "prices": { "inputUsdPerMillion": 5, "outputUsdPerMillion": 22.5, "cacheReadInputUsdPerMillion": 0.5 }
+      }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.5",
+      "effectiveFrom": "2026-05-01T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 5, "outputUsdPerMillion": 30, "cacheReadInputUsdPerMillion": 0.5 },
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "prices": { "inputUsdPerMillion": 10, "outputUsdPerMillion": 45, "cacheReadInputUsdPerMillion": 1 }
+      }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "effectiveFrom": "2026-08-01T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 5, "outputUsdPerMillion": 30, "cacheReadInputUsdPerMillion": 0.5 },
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "prices": { "inputUsdPerMillion": 10, "outputUsdPerMillion": 45, "cacheReadInputUsdPerMillion": 1 }
+      }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.6-terra",
+      "effectiveFrom": "2026-08-01T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 2.5, "outputUsdPerMillion": 15, "cacheReadInputUsdPerMillion": 0.25 },
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "prices": { "inputUsdPerMillion": 5, "outputUsdPerMillion": 22.5, "cacheReadInputUsdPerMillion": 0.5 }
+      }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.6-luna",
+      "effectiveFrom": "2026-08-01T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 1, "outputUsdPerMillion": 6, "cacheReadInputUsdPerMillion": 0.1 },
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "prices": { "inputUsdPerMillion": 2, "outputUsdPerMillion": 9, "cacheReadInputUsdPerMillion": 0.2 }
+      }
+    }
+  ]
+}

@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.2.11] - 2026-08-17
+
+### 新增
+- 新增 Claude 与 Codex 的标准 API 等效成本统计。按请求模型、事件时间及输入、输出、缓存分类使用版本化本地价格目录；个人 dashboard 在顶部第五张卡展示合计成本，多人 dashboard 展示聚合成本，两者均提示未定价请求。
+- bundle 升至 `schemaVersion: 10`，新增顶层 `pricing` 及周/日 `apiEquivalentCost`；daily/weekly CSV 新增金额和价格目录两列，detail.csv 不变。
+
+### 变更
+- `aggregate` 接受 schemaVersion 6 至 10。旧版有请求时成本按不可用处理；v10 成本沿 token 的日级去重和周级上卷路径聚合，混合 schema 或目录版本标记为 `mixed`。
+- Codex rollout 延续 v9 的净输入口径：`inputTokens = max(0, input_tokens - cached_input_tokens)`，缓存输入单列；等效成本分别按普通输入和缓存输入计价。
+- team dashboard 顶部移除 Total API requests 独立卡片，剩余 6 张卡保持单行；“多人对比”表同步移除 API 请求列，请求数仍保留在周表、每日矩阵、成本覆盖度和 bundle 导出中。
+- 全部模型价格迁移到单个 JSON 目录；个人与 team dashboard 的合计成本卡下链接独立 `pricing.html` 并在新页面打开，页面只保留一套标题，Codex 按模型版本从新到旧排列。
+- 价格目录新增 Claude Opus 4.7、Opus 4.8、Opus 5、Sonnet 5 和 Fable 5；Sonnet 5 按事件时间区分活动价与标准价。
+- aggregate 的 daily/weekly CSV 将金额和价格目录两列放到末尾，不导出定价覆盖度请求数；团队看板的合计成本卡移动到 Peak 7d usage 后。
+
+### 修复
+- 修复 aggregate 在无 `sessionId` 的重复导出及跨组桥接场景下重复累加消息、token 和成本的问题。
+- 补齐 Claude thinking 变体和裸 `gpt-5.6` 的价格映射，并补充 Sonnet 4.6、GPT-5.4、GPT-5.5、GPT-5.6 的长上下文价格。
+
 ## [0.2.10] - 2026-08-07
 
 ### 新增

@@ -3,6 +3,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { gunzip } from "node:zlib";
 import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow, PersistedStatuslineEvent, StatuslineEvent, WeeklyExportBundle, WeeklyExportDaySummary, CodexUsageSnapshot } from "../types";
+import { ApiEquivalentCostResult, emptyApiEquivalentCost, mergeApiEquivalentCosts } from "./api-equivalent-cost";
 import { computeStatuslineEvent, isCodexSourceEvent } from "./payload";
 import { extractGitEmailAccount, roundNumber } from "./time";
 
@@ -40,12 +41,44 @@ function hasWeeklyStatuslineShape(value: unknown): boolean {
   );
 }
 
+function hasApiEquivalentCostResultShape(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    (value.estimatedUsd === null || (typeof value.estimatedUsd === "number" && Number.isFinite(value.estimatedUsd) && value.estimatedUsd >= 0)) &&
+    typeof value.pricedApiRequestCount === "number" &&
+    Number.isInteger(value.pricedApiRequestCount) &&
+    value.pricedApiRequestCount >= 0 &&
+    typeof value.unpricedApiRequestCount === "number" &&
+    Number.isInteger(value.unpricedApiRequestCount) &&
+    value.unpricedApiRequestCount >= 0
+  );
+}
+
+function hasApiEquivalentCostBreakdownShape(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasApiEquivalentCostResultShape(value.claude) &&
+    hasApiEquivalentCostResultShape(value.codex) &&
+    hasApiEquivalentCostResultShape(value.total)
+  );
+}
+
+function hasPricingMetadataShape(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.catalogVersion === "string" &&
+    value.catalogVersion.length > 0 &&
+    value.currency === "USD" &&
+    value.basis === "event-time-standard-api"
+  );
+}
+
 function isWeeklyExportBundle(value: unknown): value is WeeklyExportBundle {
   if (!isRecord(value)) {
     return false;
   }
 
-  if (typeof value.schemaVersion !== "number" || ![6, 7, 8, 9].includes(value.schemaVersion)) {
+  if (typeof value.schemaVersion !== "number" || ![6, 7, 8, 9, 10].includes(value.schemaVersion)) {
     return false;
   }
 
@@ -53,7 +86,19 @@ function isWeeklyExportBundle(value: unknown): value is WeeklyExportBundle {
     return false;
   }
 
-  return hasWeeklyStatuslineShape(value.weeklySummary.statusline);
+  if (!hasWeeklyStatuslineShape(value.weeklySummary.statusline)) {
+    return false;
+  }
+
+  if (value.schemaVersion !== 10) {
+    return true;
+  }
+
+  return (
+    hasPricingMetadataShape(value.pricing) &&
+    hasApiEquivalentCostBreakdownShape(value.weeklySummary.apiEquivalentCost) &&
+    value.dailySummaries.every((day) => isRecord(day) && hasApiEquivalentCostBreakdownShape(day.apiEquivalentCost))
+  );
 }
 
 function localDateKey(date: Date): string {
@@ -141,7 +186,7 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
 
   if (invalidFiles.length > 0) {
     throw new Error(
-      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 6/7/8/9 bundles.`,
+      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 6/7/8/9/10 bundles.`,
     );
   }
 
@@ -149,12 +194,9 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
 }
 
 /**
- * 同一个人在多台电脑导出多个 bundle 时的合并策略。
- *
- * 累加类字段（token / 消息数 / 采样数等）怕重复计数（同一台机器重复导出、周与周重叠），
- * 所以按「同人同天 / 同人同周取 generatedAt 最新的那份导出 bundle」去重，不相加。
- * usage 是百分比快照、不是累加量，从选中那份 winner bundle 的 rawEvents 按真实时间戳重算
- * （peak 取 max，latest 取时间戳最新），某指标在 rawEvents 里缺失时回退到 daySummary/weeklySummary 自带值。
+ * 同一个人在多台电脑导出多个 bundle 时，先按同人同天和 sessionId 交集识别重复导出，
+ * 每组只保留最优代表；不同机器的独立代表继续累加。usage 从所有代表事件重算，
+ * rawEvents 缺失时回退到 daySummary 自带值，weekly 再由代表日上卷。
  */
 
 /** bundle 的 personKey 解析结果做一次缓存，避免反复计算。 */
@@ -178,7 +220,7 @@ function dayDataTier(day: WeeklyExportDaySummary): number {
 }
 
 /**
- * winner 比较：数据质量等级高优先；同 tier=2 時消息数多优先（避免"仅 generatedAt 更新"的低活跃机器
+ * winner 比较：数据质量等级高优先；同 tier=2 时消息数多优先（避免“仅 generatedAt 更新”的低活跃机器
  * 覆盖同一天高活跃机器的数据）；同 count 内 generatedAt 较新优先；最后用 filePath 做稳定 tie-break。
  */
 function isBetterCandidate(
@@ -214,7 +256,7 @@ interface DailyRepresentative {
  * - 有交集的视为同机器重复导出（同一账号同一天的会话在两份 bundle 里均存在），只取最优 winner
  * - 无交集的视为不同机器的独立数据，分别保留，后续叠加
  *
- * sessionId 集合为空的候选（该天没有 statusline 事件）不参与交集判断，单独成组。
+ * sessionId 集合为空时无法识别机器，所有空集合候选共用一个回退组，只取最优 winner。
  */
 function selectDailyRepresentatives(
   bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>,
@@ -245,23 +287,41 @@ function selectDailyRepresentatives(
     const personKey = key.slice(0, barIdx);
     const date = key.slice(barIdx + 1);
 
-    // 贪心分组：候选有 sessionId 且与某组内任意候选的 sessionId 有交集，则并入该组；否则新建组
+    // 非空 sessionId 按交集构造连通分量；桥接候选命中多个组时合并这些组，保证传递闭包。
+    // 空 sessionId 无法识别机器，统一放入单一回退组，避免重复导出被叠加。
     const groups: typeof candidates[] = [];
+    const emptySessionGroup: typeof candidates = [];
     for (const candidate of candidates) {
-      let added = false;
-      if (candidate.sessionIds.size > 0) {
-        for (const group of groups) {
-          const hasOverlap = group.some((c) => c.sessionIds.size > 0 && [...candidate.sessionIds].some((s) => c.sessionIds.has(s)));
-          if (hasOverlap) {
-            group.push(candidate);
-            added = true;
-            break;
-          }
+      if (candidate.sessionIds.size === 0) {
+        emptySessionGroup.push(candidate);
+        continue;
+      }
+
+      const matchingGroupIndexes: number[] = [];
+      for (let i = 0; i < groups.length; i++) {
+        const hasOverlap = groups[i].some((current) =>
+          [...candidate.sessionIds].some((sessionId) => current.sessionIds.has(sessionId)),
+        );
+        if (hasOverlap) {
+          matchingGroupIndexes.push(i);
         }
       }
-      if (!added) {
+
+      if (matchingGroupIndexes.length === 0) {
         groups.push([candidate]);
+        continue;
       }
+
+      const targetGroup = groups[matchingGroupIndexes[0]];
+      targetGroup.push(candidate);
+      for (let i = matchingGroupIndexes.length - 1; i >= 1; i--) {
+        const groupIndex = matchingGroupIndexes[i];
+        targetGroup.push(...groups[groupIndex]);
+        groups.splice(groupIndex, 1);
+      }
+    }
+    if (emptySessionGroup.length > 0) {
+      groups.push(emptySessionGroup);
     }
 
     // 每组取最优代表（同机器多次导出只保留一份）
@@ -568,7 +628,7 @@ function recomputeUsage(events: StatuslineEvent[]): RecomputedUsage {
   };
 }
 
-/** 展开 detail.csv：同人同天各机器的代表 bundle 事件都列出来，token 总量随本机器当天的 daySummary 附带。 */
+/** 展开 detail.csv：列出代表 bundle 事件，并附带该机器当天的 token 日总量。 */
 export function buildAggregatedDetailRows(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): AggregatedEventRow[] {
   const repsMap = selectDailyRepresentatives(bundles);
   const rows: AggregatedEventRow[] = [];
@@ -603,6 +663,52 @@ function codexOf(day: WeeklyExportDaySummary): CodexUsageSnapshot {
   return day.codex ?? ZERO_CODEX;
 }
 
+interface ApiCostContribution {
+  result: ApiEquivalentCostResult;
+  catalogVersion: string | null;
+  legacyRequestCount: number;
+}
+
+/**
+ * 把代表日转换为成本贡献。v10 使用按请求计价后导出的日汇总成本；旧版无法补算，全部请求视为未定价。
+ */
+function apiCostContribution(rep: DailyRepresentative): ApiCostContribution {
+  if (rep.bundle.schemaVersion === 10) {
+    return {
+      result: rep.day.apiEquivalentCost.total,
+      catalogVersion: rep.bundle.pricing.catalogVersion,
+      legacyRequestCount: 0,
+    };
+  }
+
+  const requestCount = rep.day.apiRequestCount + codexOf(rep.day).apiRequestCount;
+  return {
+    result: requestCount === 0
+      ? emptyApiEquivalentCost()
+      : { estimatedUsd: null, pricedApiRequestCount: 0, unpricedApiRequestCount: requestCount },
+    catalogVersion: null,
+    legacyRequestCount: requestCount,
+  };
+}
+
+/**
+ * 目录版本只看实际进入代表路径的 bundle。不同 v10 目录或 v10 与有请求的旧版混合时标记为 mixed。
+ */
+function mergePricingCatalogVersions(contributions: ApiCostContribution[]): string | null {
+  const versions = new Set(
+    contributions
+      .map((contribution) => contribution.catalogVersion)
+      .filter((version): version is string => version !== null),
+  );
+  if (versions.size === 0) {
+    return null;
+  }
+  if (versions.size > 1 || contributions.some((contribution) => contribution.legacyRequestCount > 0)) {
+    return "mixed";
+  }
+  return versions.values().next().value ?? null;
+}
+
 /**
  * 展开 daily.csv：同人同天的不同机器数据直接叠加（计数字段相加），usage 从所有机器该天事件合并后重算。
  * 同机器重复导出由 selectDailyRepresentatives 在分组阶段去重，不会翻倍。
@@ -614,6 +720,8 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
 
   for (const reps of repsMap.values()) {
     const { personKey, date } = reps[0];
+    const costContributions = reps.map(apiCostContribution);
+    const apiEquivalentCost = mergeApiEquivalentCosts(costContributions.map((contribution) => contribution.result));
 
     // 不同机器的独立数据直接叠加
     // 累加量含 Codex：Claude + Codex 同字段相加
@@ -653,6 +761,10 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
       sevenDayCumulativeUsagePct,
       uniqueSessions,
       uniqueWorkspaces,
+      estimatedApiEquivalentCostUsd: apiEquivalentCost.estimatedUsd,
+      pricedApiRequestCount: apiEquivalentCost.pricedApiRequestCount,
+      unpricedApiRequestCount: apiEquivalentCost.unpricedApiRequestCount,
+      pricingCatalogVersion: mergePricingCatalogVersions(costContributions),
     });
   }
 
@@ -693,6 +805,7 @@ interface WeeklyAccumulator {
   uniqueWorkspaces: number;
   days: WeeklyExportDaySummary[];
   events: StatuslineEvent[];
+  costContributions: ApiCostContribution[];
 }
 
 /**
@@ -723,6 +836,7 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
           uniqueWorkspaces: 0,
           days: [],
           events: [],
+          costContributions: [],
         };
         groups.set(key, acc);
       }
@@ -739,6 +853,7 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
       acc.uniqueWorkspaces += day.uniqueWorkspaces;
       acc.days.push(day);
       acc.events.push(...(bundleEventsByDate(rep.bundle).get(rep.date) ?? []));
+      acc.costContributions.push(apiCostContribution(rep));
     }
   }
 
@@ -750,6 +865,7 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
     const usage = recomputeUsage(claudeEvents);
     const codexUsage = recomputeUsage(codexEvents);
     const fallback = fallbackWeeklyUsage(acc.days);
+    const apiEquivalentCost = mergeApiEquivalentCosts(acc.costContributions.map((contribution) => contribution.result));
     // 整周累计：Claude + Codex 各自在整周子曲线上做分段峰谷和后相加，跨天边界增量被计入，故 weekly ≥ Σ daily。
     const sevenDayCumulativeUsagePct = computeCumulativeSevenDayBySource(curves, acc.personKey, sliceCurveByWeek, acc.week);
     rows.push({
@@ -768,6 +884,10 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
       sevenDayCumulativeUsagePct,
       uniqueSessions: acc.uniqueSessions,
       uniqueWorkspaces: acc.uniqueWorkspaces,
+      estimatedApiEquivalentCostUsd: apiEquivalentCost.estimatedUsd,
+      pricedApiRequestCount: apiEquivalentCost.pricedApiRequestCount,
+      unpricedApiRequestCount: apiEquivalentCost.unpricedApiRequestCount,
+      pricingCatalogVersion: mergePricingCatalogVersions(acc.costContributions),
     });
   }
 

@@ -10,6 +10,12 @@ import { computeStatuslineEvent } from "../lib/payload";
 import { enumerateDateKeys, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "../lib/time";
 import { AggregatedDailyRow, AggregatedWeeklyRow, PersistedStatuslineEvent, WeeklyExportBundle, WeeklyExportSummary } from "../types";
 
+const COST_BREAKDOWN = {
+  claude: { estimatedUsd: 1.23456789, pricedApiRequestCount: 6, unpricedApiRequestCount: 1 },
+  codex: { estimatedUsd: 0.25, pricedApiRequestCount: 1, unpricedApiRequestCount: 0 },
+  total: { estimatedUsd: 1.48456789, pricedApiRequestCount: 7, unpricedApiRequestCount: 1 },
+};
+
 /** 导出测试使用的基础样本，覆盖两个不同时间点和 workspace。 */
 const records: PersistedStatuslineEvent[] = [
   {
@@ -72,13 +78,14 @@ test("buildRawJsonl exports persisted raw records", () => {
 /** 默认导出已切到周汇总 JSON，需要稳定输出关键统计字段。 */
 test("buildWeeklySummaryJson renders weekly summary document", () => {
   const summary: WeeklyExportSummary = {
-    schemaVersion: 6,
+    schemaVersion: 10,
     generatedAt: "2026-05-27T08:00:00.000Z",
     range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
     identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
     counts: { userMessageCount: 12, apiRequestCount: 7 },
     tokens: { inputTokens: 1200, outputTokens: 340, cacheReadInputTokens: 890 },
     codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
+    apiEquivalentCost: COST_BREAKDOWN,
       statusline: {
         sampleCount: 5,
         uniqueSessions: 2,
@@ -113,19 +120,21 @@ test("buildWeeklySummaryJson renders weekly summary document", () => {
 /** 默认导出文件要同时包含原始事件和按天汇总，避免丢掉明细。 */
 test("buildWeeklyExportBundleJson includes raw events and daily summaries", () => {
   const bundle: WeeklyExportBundle = {
-    schemaVersion: 6,
+    schemaVersion: 10,
     generatedAt: "2026-05-27T08:00:00.000Z",
     range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
     identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
+    pricing: { catalogVersion: "2026-08-14", currency: "USD", basis: "event-time-standard-api" },
     rawEvents: records,
     weeklySummary: {
-      schemaVersion: 6,
+      schemaVersion: 10,
       generatedAt: "2026-05-27T08:00:00.000Z",
       range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
       identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
       counts: { userMessageCount: 12, apiRequestCount: 7 },
       tokens: { inputTokens: 1200, outputTokens: 340, cacheReadInputTokens: 890 },
     codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
+      apiEquivalentCost: COST_BREAKDOWN,
       statusline: {
         sampleCount: 5,
         uniqueSessions: 2,
@@ -160,6 +169,7 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
         uniqueSessions: 2,
         uniqueWorkspaces: 1,
         codex: { userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, fiveHourPeakUsagePct: null, fiveHourLatestUsagePct: null, sevenDayPeakUsagePct: null, sevenDayLatestUsagePct: null },
+        apiEquivalentCost: COST_BREAKDOWN,
       },
     ],
   };
@@ -176,15 +186,23 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
   assert.equal(parsed.dailySummaries[0].fiveHourPeakUsagePct, 31);
   assert.equal(parsed.dailySummaries[0].sevenDayLatestUsagePct, 62);
   assert.equal(parsed.dailySummaries[0].sevenDayPeakUsagePct, 71);
+  assert.equal(parsed.schemaVersion, 10);
+  assert.equal(parsed.pricing.catalogVersion, "2026-08-14");
+  assert.equal(parsed.weeklySummary.apiEquivalentCost.total.unpricedApiRequestCount, 1);
+  assert.equal(parsed.dailySummaries[0].apiEquivalentCost.claude.estimatedUsd, 1.23456789);
 });
 
 /** daily/weekly CSV 都要在 7d latest 之后带上 sevenDayCumulativeUsagePct 列，格式与现有 usage 列一致。 */
-test("aggregated daily/weekly csv include sevenDayCumulativeUsagePct column", () => {
+test("aggregated daily/weekly csv keep only amount and catalog as trailing cost columns", () => {
   const dailyRow: AggregatedDailyRow = {
     personKey: "alice",
     date: "2026-05-26",
     userMessageCount: 2,
     apiRequestCount: 1,
+    estimatedApiEquivalentCostUsd: 1.23456789,
+    pricedApiRequestCount: 1,
+    unpricedApiRequestCount: 0,
+    pricingCatalogVersion: "2026-08-14",
     inputTokens: 300,
     outputTokens: 40,
     cacheReadInputTokens: 20,
@@ -202,6 +220,10 @@ test("aggregated daily/weekly csv include sevenDayCumulativeUsagePct column", ()
     week: "2026-05-25",
     userMessageCount: 2,
     apiRequestCount: 1,
+    estimatedApiEquivalentCostUsd: null,
+    pricedApiRequestCount: 0,
+    unpricedApiRequestCount: 1,
+    pricingCatalogVersion: "mixed",
     inputTokens: 300,
     outputTokens: 40,
     cacheReadInputTokens: 20,
@@ -218,16 +240,23 @@ test("aggregated daily/weekly csv include sevenDayCumulativeUsagePct column", ()
   const dailyCsv = buildAggregatedDailyCsv([dailyRow]);
   const weeklyCsv = buildAggregatedWeeklyCsv([weeklyRow]);
 
+  assert.match(dailyCsv, /uniqueWorkspaces,estimatedApiEquivalentCostUsd,pricingCatalogVersion$/m);
+  assert.match(weeklyCsv, /uniqueWorkspaces,estimatedApiEquivalentCostUsd,pricingCatalogVersion$/m);
+  assert.equal(dailyCsv.includes("pricedApiRequestCount"), false);
+  assert.equal(dailyCsv.includes("unpricedApiRequestCount"), false);
+  assert.match(dailyCsv, /,1,1,1\.234568,"2026-08-14"$/m);
+  assert.match(weeklyCsv, /,1,1,,"mixed"$/m);
+
   // 列顺序：sevenDayLatestUsagePct 之后紧跟 sevenDayCumulativeUsagePct，再到 uniqueSessions。
   assert.match(dailyCsv, /sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions/);
   assert.match(weeklyCsv, /sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions/);
-  // 数值落在 7d latest(40) 与 uniqueSessions(1) 之间；CSV 行到 uniqueWorkspaces 结束（codex 已并入主字段，不再单列）。
-  assert.match(dailyCsv, /,40,80,1,1$/m);
-  assert.match(weeklyCsv, /,40,95,1,1$/m);
+  // 累计值落在 7d latest(40) 与 uniqueSessions(1) 之间；金额和目录版本位于行尾。
+  assert.match(dailyCsv, /,40,80,1,1,1\.234568,"2026-08-14"$/m);
+  assert.match(weeklyCsv, /,40,95,1,1,,"mixed"$/m);
 
   // null 累计写空，与现有 usage 列一致。
   const nullCsv = buildAggregatedDailyCsv([{ ...dailyRow, sevenDayCumulativeUsagePct: null }]);
-  assert.match(nullCsv, /,40,,1,1$/m);
+  assert.match(nullCsv, /,40,,1,1,1\.234568,"2026-08-14"$/m);
 });
 
 /** last-week 应该解析成上一个完整的周一到周日，与本周不重叠。 */

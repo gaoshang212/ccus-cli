@@ -1,3 +1,21 @@
+import type { ApiEquivalentCostResult } from "./lib/api-equivalent-cost";
+
+export type { ApiEquivalentCostResult } from "./lib/api-equivalent-cost";
+
+/** 标识等效 API 成本计算所用的本地价格目录。 */
+export interface PricingMetadata {
+  catalogVersion: string;
+  currency: "USD";
+  basis: "event-time-standard-api";
+}
+
+/** Claude、Codex 及两来源合计的等效 API 成本。 */
+export interface ApiEquivalentCostBreakdown {
+  claude: ApiEquivalentCostResult;
+  codex: ApiEquivalentCostResult;
+  total: ApiEquivalentCostResult;
+}
+
 /**
  * Claude Code statusline 通过 stdin 传入的原始 JSON。
  *
@@ -160,6 +178,8 @@ export interface WeeklyExportSummary {
   };
   /** Codex CLI 的消息/请求/token 统计，与上面的 Claude counts/tokens 单列。 */
   codex: CodexUsageSnapshot;
+  /** Claude 与 Codex 请求按事件时间计算的标准 API 等效成本。 */
+  apiEquivalentCost: ApiEquivalentCostBreakdown;
   statusline: {
     sampleCount: number;
     uniqueSessions: number;
@@ -196,6 +216,7 @@ export interface WeeklyExportDaySummary {
   uniqueWorkspaces: number;
   /** Codex CLI 的消息/请求/token 统计（单列）。 */
   codex: CodexUsageSnapshot;
+  apiEquivalentCost: ApiEquivalentCostBreakdown;
 }
 
 /** 默认导出文件结构：保留原始事件，同时附带按天周汇总。 */
@@ -211,6 +232,7 @@ export interface WeeklyExportBundle {
     gitUserName: string | null;
     gitUserEmail: string | null;
   };
+  pricing: PricingMetadata;
   rawEvents: PersistedStatuslineEvent[];
   weeklySummary: WeeklyExportSummary;
   dailySummaries: WeeklyExportDaySummary[];
@@ -244,12 +266,17 @@ export interface AggregatedDailyRow {
   sevenDayLatestUsagePct: number | null;
   sevenDayPeakUsagePct: number | null;
   /**
-   * 当天合并曲线（全样本，不走 winner）的 7 天额度累计真实使用量：相邻样本正增量之和 Σ max(0, uᵢ−uᵢ₋₁)。
-   * 区间内第一个有效样本无前值、不贡献增量，所以 daily 逐行相加只是全局总量的近似，weekly 更连续。
+   * 当天全样本按来源去毛刺后，以分段峰谷和计算的 7 天额度累计真实使用量。
+   * 日区间会切断跨天上升段，因此 daily 逐行相加只是近似，weekly 更连续。
    */
   sevenDayCumulativeUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
+  estimatedApiEquivalentCostUsd: number | null;
+  pricedApiRequestCount: number;
+  unpricedApiRequestCount: number;
+  /** 仅旧版输入为 null；不同 v10 目录或 v10 与有请求的旧版混合时为 mixed。 */
+  pricingCatalogVersion: string | null;
 }
 
 /**
@@ -296,6 +323,11 @@ export interface AggregatedWeeklyRow {
   sevenDayCumulativeUsagePct: number | null;
   uniqueSessions: number;
   uniqueWorkspaces: number;
+  estimatedApiEquivalentCostUsd: number | null;
+  pricedApiRequestCount: number;
+  unpricedApiRequestCount: number;
+  /** 仅旧版输入为 null；不同 v10 目录或 v10 与有请求的旧版混合时为 mixed。 */
+  pricingCatalogVersion: string | null;
 }
 
 /** API 模式（第三方额度拉取）支持的 provider 类型。 */

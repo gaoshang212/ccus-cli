@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { findActiveCodexSessionFiles, summarizeCodexSessionUsage, summarizeCodexSessionUsageByDay } from "../lib/codex-sessions";
+import { mergeApiEquivalentCosts } from "../lib/api-equivalent-cost";
 import { getCodexSessionHomes } from "../lib/paths";
 
 async function mkdtemp(prefix: string): Promise<string> {
@@ -105,11 +106,13 @@ test("summarizeCodexSessionUsage excludes guardian rollout usage", async () => {
   try {
     await writeRollout(home, "2026/07/27/rollout-main.jsonl", [
       `{"timestamp":"${ts(10, 0)}","type":"session_meta","payload":{"source":"vscode"}}`,
+      `{"timestamp":"${ts(10, 0)}","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
       `{"timestamp":"${ts(10, 1)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-main"}}`,
       `{"timestamp":"${ts(10, 2)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":20}}}}`,
     ]);
     await writeRollout(home, "2026/07/27/rollout-guardian.jsonl", [
       `{"timestamp":"${ts(20, 0)}","type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}}}}`,
+      `{"timestamp":"${ts(20, 0)}","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
       `{"timestamp":"${ts(20, 1)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-guardian"}}`,
       `{"timestamp":"${ts(20, 2)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900,"output_tokens":90,"cached_input_tokens":200}}}}`,
     ]);
@@ -132,6 +135,11 @@ test("summarizeCodexSessionUsage excludes guardian rollout usage", async () => {
         cacheReadInputTokens: 20,
       },
     );
+    assert.deepEqual(summary.apiEquivalentCost, {
+      estimatedUsd: 0.000355,
+      pricedApiRequestCount: 1,
+      unpricedApiRequestCount: 0,
+    });
   } finally {
     restore();
   }
@@ -148,7 +156,7 @@ test("summarizeCodexSessionUsage uses last_token_usage increment, not total_toke
 
     const summary = await summarizeCodexSessionUsage(RANGE_START, RANGE_END);
 
-    // 净输入：(1000-0)+(500-50)=1450；累加 last 而非 total（1000+1500=2500）。
+    // 取 last 后扣除其中的缓存输入，净输入为 1000+(500-50)=1450。
     assert.equal(summary.apiRequestCount, 2);
     assert.equal(summary.inputTokens, 1450);
     assert.equal(summary.outputTokens, 15);
@@ -188,6 +196,78 @@ test("summarizeCodexSessionUsage tolerates token_count missing info/usage", asyn
     // 只有第三个事件有 last_token_usage 才计入请求与 token。
     assert.equal(summary.apiRequestCount, 1);
     assert.equal(summary.inputTokens, 200);
+    assert.deepEqual(summary.apiEquivalentCost, {
+      estimatedUsd: null,
+      pricedApiRequestCount: 0,
+      unpricedApiRequestCount: 1,
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("summarizeCodexSessionUsage tracks model switches and derives net input from cache", async () => {
+  const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
+  try {
+    await writeRollout(home, "2026/07/27/rollout-model-switch.jsonl", [
+      `{"timestamp":"${ts(10, 0)}","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
+      `{"timestamp":"${ts(10, 1)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000000,"output_tokens":0,"cached_input_tokens":100}}}}`,
+      `{"timestamp":"${ts(20, 0)}","type":"turn_context","payload":{"model":"gpt-5.5"}}`,
+      `{"timestamp":"${ts(20, 1)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000000,"output_tokens":0,"cached_input_tokens":0}}}}`,
+    ]);
+
+    const summary = await summarizeCodexSessionUsage(RANGE_START, RANGE_END);
+
+    assert.equal(summary.apiRequestCount, 2);
+    assert.equal(summary.inputTokens, 1999900);
+    assert.equal(summary.cacheReadInputTokens, 100);
+    assert.deepEqual(summary.apiEquivalentCost, {
+      estimatedUsd: 14.99955,
+      pricedApiRequestCount: 2,
+      unpricedApiRequestCount: 0,
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("Codex session summaries clamp net input to zero when cache exceeds input", async () => {
+  const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
+  try {
+    await writeRollout(home, "2026/07/27/rollout-cache-overflow.jsonl", [
+      `{"timestamp":"${ts(10, 0)}","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
+      `{"timestamp":"${ts(10, 1)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":0,"cached_input_tokens":20}}}}`,
+    ]);
+
+    const weekly = await summarizeCodexSessionUsage(RANGE_START, RANGE_END);
+    const daily = await summarizeCodexSessionUsageByDay(RANGE_START, RANGE_END);
+
+    assert.equal(weekly.inputTokens, 0);
+    assert.equal(weekly.cacheReadInputTokens, 20);
+    assert.equal(weekly.apiEquivalentCost.estimatedUsd, 0.000005);
+    assert.equal(daily.get(DAY)?.inputTokens, 0);
+    assert.equal(daily.get(DAY)?.cacheReadInputTokens, 20);
+    assert.equal(daily.get(DAY)?.apiEquivalentCost.estimatedUsd, 0.000005);
+  } finally {
+    restore();
+  }
+});
+
+test("summarizeCodexSessionUsage uses model context before the requested range", async () => {
+  const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
+  try {
+    await writeRollout(home, "2026/07/27/rollout-prior-context.jsonl", [
+      `{"timestamp":"2026-07-26T23:59:00.000Z","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
+      `{"timestamp":"${ts(10, 0)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000000,"output_tokens":0,"cached_input_tokens":0}}}}`,
+    ]);
+
+    const summary = await summarizeCodexSessionUsage(RANGE_START, RANGE_END);
+
+    assert.deepEqual(summary.apiEquivalentCost, {
+      estimatedUsd: 5,
+      pricedApiRequestCount: 1,
+      unpricedApiRequestCount: 0,
+    });
   } finally {
     restore();
   }
@@ -234,13 +314,15 @@ test("Codex session 统计合并 Orca runtime home 并对重复 rollout 去重",
   const { home, orcaHome, restore } = await withTempCodexHome("ccus-codex-sessions-");
   try {
     const relativePath = "2026/07/27/rollout-shared.jsonl";
+    const sharedContext = `{"timestamp":"${ts(9, 0)}","type":"turn_context","payload":{"model":"gpt-5.4"}}`;
     const sharedTask = `{"timestamp":"${ts(10, 0)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-shared"}}`;
     const sharedTokens = `{"timestamp":"${ts(10, 1)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":20}}}}`;
+    const orcaContext = `{"timestamp":"${ts(19, 0)}","type":"turn_context","payload":{"model":"gpt-5.5"}}`;
     const orcaTask = `{"timestamp":"${ts(20, 0)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-orca"}}`;
     const orcaTokens = `{"timestamp":"${ts(20, 1)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"output_tokens":20,"cached_input_tokens":50}}}}`;
 
-    await writeRollout(home, relativePath, [sharedTask, sharedTokens]);
-    await writeRollout(orcaHome, relativePath, [sharedTask, sharedTokens, orcaTask, orcaTokens]);
+    await writeRollout(home, relativePath, [sharedContext, sharedTask, sharedTokens]);
+    await writeRollout(orcaHome, relativePath, [sharedContext, sharedTask, sharedTokens, orcaContext, orcaTask, orcaTokens]);
 
     const summary = await summarizeCodexSessionUsage(RANGE_START, RANGE_END);
     assert.deepEqual(
@@ -261,6 +343,9 @@ test("Codex session 统计合并 Orca runtime home 并对重复 rollout 去重",
         matchedFileCount: 1,
       },
     );
+    assert.ok(Math.abs((summary.apiEquivalentCost.estimatedUsd ?? 0) - 0.00173) < 1e-12);
+    assert.equal(summary.apiEquivalentCost.pricedApiRequestCount, 2);
+    assert.equal(summary.apiEquivalentCost.unpricedApiRequestCount, 0);
 
     const daily = await summarizeCodexSessionUsageByDay(RANGE_START, RANGE_END);
     assert.deepEqual(daily.get(DAY), {
@@ -270,12 +355,13 @@ test("Codex session 统计合并 Orca runtime home 并对重复 rollout 去重",
       inputTokens: 230,
       outputTokens: 30,
       cacheReadInputTokens: 70,
+      apiEquivalentCost: summary.apiEquivalentCost,
     });
 
     const active = await findActiveCodexSessionFiles(RANGE_START, RANGE_END);
     assert.equal(active.length, 1);
     assert.equal(active[0].relativePath.replaceAll("\\", "/"), relativePath);
-    assert.equal(active[0].content.trim().split(/\r?\n/).length, 4);
+    assert.equal(active[0].content.trim().split(/\r?\n/).length, 6);
   } finally {
     restore();
   }
@@ -308,16 +394,46 @@ test("summarizeCodexSessionUsageByDay buckets task_started by local date", async
   }
 });
 
+test("Codex weekly cost equals merged daily costs and preserves request coverage", async () => {
+  const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
+  const start = new Date("2026-07-27T00:00:00Z");
+  const end = new Date("2026-07-28T23:59:59Z");
+  try {
+    await writeRollout(home, "2026/07/27/rollout-cost-days.jsonl", [
+      `{"timestamp":"2026-07-27T02:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
+      `{"timestamp":"2026-07-27T02:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":20}}}}`,
+      `{"timestamp":"2026-07-28T02:00:00.000Z","type":"turn_context","payload":{"model":"unknown-model"}}`,
+      `{"timestamp":"2026-07-28T02:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"output_tokens":20,"cached_input_tokens":50}}}}`,
+    ]);
+
+    const weekly = await summarizeCodexSessionUsage(start, end);
+    const daily = await summarizeCodexSessionUsageByDay(start, end);
+    const mergedDaily = mergeApiEquivalentCosts([...daily.values()].map((day) => day.apiEquivalentCost));
+
+    assert.deepEqual(weekly.apiEquivalentCost, mergedDaily);
+    assert.equal(
+      weekly.apiEquivalentCost.pricedApiRequestCount + weekly.apiEquivalentCost.unpricedApiRequestCount,
+      weekly.apiRequestCount,
+    );
+    assert.equal(weekly.apiEquivalentCost.pricedApiRequestCount, 1);
+    assert.equal(weekly.apiEquivalentCost.unpricedApiRequestCount, 1);
+  } finally {
+    restore();
+  }
+});
+
 test("summarizeCodexSessionUsageByDay excludes guardian rollout usage", async () => {
   const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
   try {
     await writeRollout(home, "2026/07/27/rollout-main-daily.jsonl", [
       `{"timestamp":"${ts(10, 0)}","type":"session_meta","payload":{"source":"vscode"}}`,
+      `{"timestamp":"${ts(10, 0)}","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
       `{"timestamp":"${ts(10, 1)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-main"}}`,
       `{"timestamp":"${ts(10, 2)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":20}}}}`,
     ]);
     await writeRollout(home, "2026/07/27/rollout-guardian-daily.jsonl", [
       `{"timestamp":"${ts(20, 0)}","type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}}}}`,
+      `{"timestamp":"${ts(20, 0)}","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
       `{"timestamp":"${ts(20, 1)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-guardian"}}`,
       `{"timestamp":"${ts(20, 2)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900,"output_tokens":90,"cached_input_tokens":200}}}}`,
     ]);
@@ -331,6 +447,11 @@ test("summarizeCodexSessionUsageByDay excludes guardian rollout usage", async ()
       inputTokens: 80,
       outputTokens: 10,
       cacheReadInputTokens: 20,
+      apiEquivalentCost: {
+        estimatedUsd: 0.000355,
+        pricedApiRequestCount: 1,
+        unpricedApiRequestCount: 0,
+      },
     });
   } finally {
     restore();

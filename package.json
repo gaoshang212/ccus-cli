@@ -1,6 +1,6 @@
 {
   "name": "ccus-cli",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "Claude Code statusline usage logger and dashboard CLI",
   "type": "commonjs",
   "bin": {
@@ -9,6 +9,7 @@
   "files": [
     "dist/cli.js",
     "dist/lib/**/*.js",
+    "dist/lib/api-pricing-catalog.json",
     "dist/types.js",
     "dist/vendor/**"
   ],
@@ -16,7 +17,7 @@
     "build": "tsc -p tsconfig.json && node scripts/copy-vendor.js",
     "prepublishOnly": "npm run build",
     "test": "node --test --test-concurrency 1 \"dist/test/**/*.test.js\"",
-    "test:src": "node --import tsx --test --test-concurrency 1 src/test/payload.test.ts src/test/dashboard.test.ts src/test/export.test.ts src/test/storage.test.ts src/test/claude.test.ts src/test/aggregate.test.ts src/test/aggregate-dashboard.test.ts src/test/install.test.ts src/test/debug.test.ts src/test/time.test.ts src/test/update-check.test.ts src/test/sync.test.ts src/test/scheduler.test.ts src/test/api-mode.test.ts src/test/codex-fetcher.test.ts src/test/codex-sessions.test.ts src/test/sessions.test.ts src/test/codex-install.test.ts src/test/cli-codex-notify.test.ts src/test/cli-codex-hook.test.ts src/test/cli-install-codex.test.ts",
+    "test:src": "node --import tsx --test --test-concurrency 1 src/test/payload.test.ts src/test/dashboard.test.ts src/test/export.test.ts src/test/storage.test.ts src/test/api-equivalent-cost.test.ts src/test/claude.test.ts src/test/aggregate.test.ts src/test/aggregate-dashboard.test.ts src/test/install.test.ts src/test/debug.test.ts src/test/time.test.ts src/test/update-check.test.ts src/test/sync.test.ts src/test/scheduler.test.ts src/test/api-mode.test.ts src/test/codex-fetcher.test.ts src/test/codex-sessions.test.ts src/test/sessions.test.ts src/test/codex-install.test.ts src/test/cli-codex-notify.test.ts src/test/cli-codex-hook.test.ts src/test/cli-install-codex.test.ts",
     "smoke:api": "node scripts/smoke-api.mjs"
   },
   "keywords": [

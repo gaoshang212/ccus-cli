@@ -1,6 +1,8 @@
 import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow } from "../types";
 import { ChartSeriesSpec, ChartSpec, renderUplotChart, uplotBodyScripts, uplotHeadAssets } from "./chart-assets";
 import { roundNumber } from "./time";
+import { mergeApiEquivalentCosts } from "./api-equivalent-cost";
+import { API_PRICING_PAGE_FILE } from "./api-pricing-table";
 
 /** 把多人 aggregate 行按 personKey 汇总成的一个人的总账。 */
 export interface AggregatePersonSummary {
@@ -22,6 +24,10 @@ export interface AggregatePersonSummary {
   activeDays: number;
   firstDate: string | null;
   lastDate: string | null;
+  estimatedApiEquivalentCostUsd: number | null;
+  pricedApiRequestCount: number;
+  unpricedApiRequestCount: number;
+  pricingCatalogVersion: string | null;
 }
 
 /** aggregate dashboard 顶部展示用的总盘摘要。 */
@@ -35,6 +41,10 @@ export interface AggregateOverallSummary {
   totalSampleCount: number;
   startDate: string | null;
   endDate: string | null;
+  estimatedApiEquivalentCostUsd: number | null;
+  pricedApiRequestCount: number;
+  unpricedApiRequestCount: number;
+  pricingCatalogVersion: string | null;
 }
 
 /** 折线 / 图例统一的调色板，保证同一个人在不同图表里颜色一致。 */
@@ -61,6 +71,32 @@ function escapeHtml(value: string): string {
 function maxOrNull(values: Array<number | null>): number | null {
   const numbers = values.filter((value): value is number => value !== null);
   return numbers.length > 0 ? Math.max(...numbers) : null;
+}
+
+interface PricingVersionContribution {
+  catalogVersion: string | null;
+  legacyRequestCount: number;
+}
+
+function mergePricingCatalogVersions(contributions: PricingVersionContribution[]): string | null {
+  const values = new Set(contributions
+    .map((contribution) => contribution.catalogVersion)
+    .filter((value): value is string => value !== null));
+  if (values.size === 0) return null;
+  if (values.has("mixed") || values.size > 1 || contributions.some((contribution) => contribution.legacyRequestCount > 0)) {
+    return "mixed";
+  }
+  return [...values][0];
+}
+
+function formatCostUsd(value: number): string {
+  return `$${value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`;
+}
+
+function costDisplay(estimatedUsd: number | null, priced: number, unpriced: number): string {
+  if (priced === 0 && unpriced > 0) return `不可用（${formatNumber(unpriced)} 个未定价）`;
+  const amount = formatCostUsd(estimatedUsd ?? 0);
+  return unpriced > 0 ? `≥ ${amount}（${formatNumber(unpriced)} 个未定价）` : amount;
 }
 
 /**
@@ -133,6 +169,11 @@ export function summarizePeople(dailyRows: AggregatedDailyRow[], weeklyRows: Agg
       .reverse()
       .find((row) => row.sevenDayLatestUsagePct !== null);
     const activeDays = items.filter((row) => row.sampleCount > 0 || row.userMessageCount > 0 || row.apiRequestCount > 0).length;
+    const cost = mergeApiEquivalentCosts(items.map((row) => ({
+      estimatedUsd: row.estimatedApiEquivalentCostUsd,
+      pricedApiRequestCount: row.pricedApiRequestCount,
+      unpricedApiRequestCount: row.unpricedApiRequestCount,
+    })));
 
     summaries.push({
       personKey,
@@ -152,6 +193,13 @@ export function summarizePeople(dailyRows: AggregatedDailyRow[], weeklyRows: Agg
       activeDays,
       firstDate: sortedByDate[0]?.date ?? null,
       lastDate: sortedByDate.at(-1)?.date ?? null,
+      estimatedApiEquivalentCostUsd: cost.estimatedUsd,
+      pricedApiRequestCount: cost.pricedApiRequestCount,
+      unpricedApiRequestCount: cost.unpricedApiRequestCount,
+      pricingCatalogVersion: mergePricingCatalogVersions(items.map((row) => ({
+        catalogVersion: row.pricingCatalogVersion,
+        legacyRequestCount: row.pricingCatalogVersion === null ? row.apiRequestCount : 0,
+      }))),
     });
   }
 
@@ -166,6 +214,11 @@ export function summarizePeople(dailyRows: AggregatedDailyRow[], weeklyRows: Agg
 /** 把整体摘要算出来，方便顶部卡片直接展示。 */
 export function summarizeOverall(dailyRows: AggregatedDailyRow[], people: AggregatePersonSummary[]): AggregateOverallSummary {
   const dates = dailyRows.map((row) => row.date).sort((left, right) => left.localeCompare(right));
+  const cost = mergeApiEquivalentCosts(people.map((person) => ({
+    estimatedUsd: person.estimatedApiEquivalentCostUsd,
+    pricedApiRequestCount: person.pricedApiRequestCount,
+    unpricedApiRequestCount: person.unpricedApiRequestCount,
+  })));
   return {
     personCount: people.length,
     totalUserMessageCount: people.reduce((sum, person) => sum + person.userMessageCount, 0),
@@ -176,6 +229,13 @@ export function summarizeOverall(dailyRows: AggregatedDailyRow[], people: Aggreg
     totalSampleCount: people.reduce((sum, person) => sum + person.sampleCount, 0),
     startDate: dates[0] ?? null,
     endDate: dates.at(-1) ?? null,
+    estimatedApiEquivalentCostUsd: cost.estimatedUsd,
+    pricedApiRequestCount: cost.pricedApiRequestCount,
+    unpricedApiRequestCount: cost.unpricedApiRequestCount,
+    pricingCatalogVersion: mergePricingCatalogVersions(people.map((person) => ({
+      catalogVersion: person.pricingCatalogVersion,
+      legacyRequestCount: person.pricingCatalogVersion === null ? person.apiRequestCount : 0,
+    }))),
   };
 }
 
@@ -432,7 +492,7 @@ function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: 
   `;
 }
 
-/** 按人渲染汇总卡片，给出请求 / 消息 / token / usage 几个核心指标。 */
+/** 按人渲染汇总表，给出消息、token、成本和 usage 核心指标。 */
 function renderPeopleLeaderboard(people: AggregatePersonSummary[]): string {
   if (people.length === 0) {
     return `
@@ -458,13 +518,14 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[]): string {
         <td>${formatTokensM(person.inputTokens)}</td>
         <td>${formatTokensM(person.outputTokens)}</td>
         <td>${formatTokensM(person.cacheReadInputTokens)}</td>
+        <td>${escapeHtml(costDisplay(person.estimatedApiEquivalentCostUsd, person.pricedApiRequestCount, person.unpricedApiRequestCount))}</td>
+        <td>${escapeHtml(person.pricingCatalogVersion ?? "--")}</td>
         <td>${escapeHtml(statValue(person.fiveHourPeakUsagePct))}</td>
         <td>${escapeHtml(statValue(person.fiveHourLatestUsagePct))}</td>
         <td>${escapeHtml(statValue(person.sevenDayPeakUsagePct))}</td>
         <td>${escapeHtml(statValue(person.sevenDayLatestUsagePct))}</td>
         <td>${escapeHtml(statValue(person.sevenDayCumulativeUsagePct))}</td>
         <td>${person.activeDays}</td>
-        <td class="muted-col">${formatNumber(person.apiRequestCount)}</td>
       </tr>`,
     )
     .join("");
@@ -488,13 +549,14 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[]): string {
               <th>Input tokens</th>
               <th>Output tokens</th>
               <th>Cache read tokens</th>
+              <th>等效 API 成本</th>
+              <th>价格目录</th>
               <th>5h Peak</th>
               <th>5h Latest</th>
               <th>7d Peak</th>
               <th>7d Latest</th>
               <th>7d 累计</th>
               <th>活跃天数</th>
-              <th class="muted-col">API 请求</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -575,6 +637,8 @@ function renderWeeklyTable(weeklyRows: AggregatedWeeklyRow[]): string {
         <td>${formatTokensM(row.inputTokens)}</td>
         <td>${formatTokensM(row.outputTokens)}</td>
         <td>${formatTokensM(row.cacheReadInputTokens)}</td>
+        <td>${escapeHtml(costDisplay(row.estimatedApiEquivalentCostUsd, row.pricedApiRequestCount, row.unpricedApiRequestCount))}</td>
+        <td>${escapeHtml(row.pricingCatalogVersion ?? "--")}</td>
         <td>${escapeHtml(statValue(row.fiveHourPeakUsagePct))}</td>
         <td>${escapeHtml(statValue(row.fiveHourLatestUsagePct))}</td>
         <td>${escapeHtml(statValue(row.sevenDayPeakUsagePct))}</td>
@@ -604,6 +668,8 @@ function renderWeeklyTable(weeklyRows: AggregatedWeeklyRow[]): string {
               <th>Input tokens</th>
               <th>Output tokens</th>
               <th>Cache read tokens</th>
+              <th>等效 API 成本</th>
+              <th>价格目录</th>
               <th>5h Peak</th>
               <th>5h Latest</th>
               <th>7d Peak</th>
@@ -639,6 +705,9 @@ export function buildAggregateDashboardHtml(
   const peakUsage = maxOrNull(people.map((person) => person.fiveHourPeakUsagePct));
   const peakSevenDay = maxOrNull(people.map((person) => person.sevenDayPeakUsagePct));
   const rangeLabel = overall.startDate && overall.endDate ? `${overall.startDate} → ${overall.endDate}` : "--";
+  const mixedPricingNotice = overall.pricingCatalogVersion === "mixed"
+    ? `<p class="muted">成本结果混合了旧版 schema 或不同价格目录，已知金额仅作不完整估算。</p>`
+    : "";
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -729,6 +798,7 @@ export function buildAggregateDashboardHtml(
       .stat-card h2 { font-size: 14px; color: var(--muted); font-weight: 500; }
       .stat-value { margin-top: 16px; font-size: 36px; line-height: 0.95; }
       .stat-note { margin-top: 12px; color: var(--muted); font-size: 13px; }
+      .pricing-link { display: inline-block; margin-top: 12px; color: var(--accent); font-size: 13px; }
       .panel-header {
         display: flex;
         align-items: end;
@@ -790,7 +860,9 @@ export function buildAggregateDashboardHtml(
           <span class="hero-chip">人数：${overall.personCount}</span>
           <span class="hero-chip">时间范围：${escapeHtml(rangeLabel)}</span>
           <span class="hero-chip">生成时间：${escapeHtml(generatedAt.toISOString())}</span>
+          <span class="hero-chip">价格目录：${escapeHtml(overall.pricingCatalogVersion ?? "不可用")}</span>
         </div>
+        ${mixedPricingNotice}
       </section>
       <section class="stats">
         <article class="panel stat-card">
@@ -809,11 +881,6 @@ export function buildAggregateDashboardHtml(
           <p class="stat-note">来自 assistant usage 的 cache_read_input_tokens</p>
         </article>
         <article class="panel stat-card">
-          <h2>Total API requests</h2>
-          <p class="stat-value">${formatNumber(overall.totalApiRequestCount)}</p>
-          <p class="stat-note">所有人 API 请求数合计（次要参考）</p>
-        </article>
-        <article class="panel stat-card">
           <h2>Peak 5h usage</h2>
           <p class="stat-value">${escapeHtml(roundNumber(peakUsage, 1) === null ? "--" : statValue(roundNumber(peakUsage, 1)))}</p>
           <p class="stat-note">团队内观测到的 5 小时使用率峰值</p>
@@ -822,6 +889,12 @@ export function buildAggregateDashboardHtml(
           <h2>Peak 7d usage</h2>
           <p class="stat-value">${escapeHtml(roundNumber(peakSevenDay, 1) === null ? "--" : statValue(roundNumber(peakSevenDay, 1)))}</p>
           <p class="stat-note">团队内观测到的 7 天额度峰值</p>
+        </article>
+        <article class="panel stat-card">
+          <h2>合计等效 API 成本</h2>
+          <p class="stat-value">${escapeHtml(costDisplay(overall.estimatedApiEquivalentCostUsd, overall.pricedApiRequestCount, overall.unpricedApiRequestCount))}</p>
+          <p class="stat-note">标准同步 API 等效成本，不是订阅或实际账单</p>
+          <a class="pricing-link" href="${API_PRICING_PAGE_FILE}" target="_blank" rel="noopener noreferrer">查看当前价格表</a>
         </article>
       </section>
       ${renderPeopleLeaderboard(people)}

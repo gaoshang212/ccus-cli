@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildDashboardHtml, bucketizeEvents, summarizeEvents } from "../lib/dashboard";
+import { buildApiPricingPage } from "../lib/api-pricing-table";
+import { renderDashboardPage } from "../lib/dashboard-pages";
 import { computeStatuslineEvent } from "../lib/payload";
 import { PersistedStatuslineEvent, StatuslineEvent } from "../types";
 
@@ -142,6 +144,34 @@ test("buildDashboardHtml shows 7d usage and total user messages stats", () => {
   assert.doesNotMatch(html, /Workspaces/);
 });
 
+test("buildDashboardHtml renders complete, partial, and unavailable API equivalent costs", () => {
+  const partial = buildDashboardHtml(events, "today", new Date("2026-05-26T00:00:00Z"), new Date("2026-05-26T23:59:59Z"), [], {
+    claude: { estimatedUsd: 0.005, pricedApiRequestCount: 2, unpricedApiRequestCount: 1 },
+    codex: { estimatedUsd: 1.25, pricedApiRequestCount: 3, unpricedApiRequestCount: 0 },
+    total: { estimatedUsd: 1.255, pricedApiRequestCount: 5, unpricedApiRequestCount: 1 },
+  }, "2026-08-14");
+  const topStats = partial.match(/<section class="stats">([\s\S]*?)<\/section>/)?.[1] ?? "";
+  assert.equal((topStats.match(/<article/g) ?? []).length, 5);
+  assert.doesNotMatch(partial, /cost-stats/);
+  assert.match(partial, /合计等效 API 成本/);
+  assert.doesNotMatch(partial, /Claude 等效 API 成本/);
+  assert.doesNotMatch(partial, /Codex 等效 API 成本/);
+  assert.match(partial, /≥ \$1\.25/);
+  assert.doesNotMatch(partial, /\$0\.0050/);
+  assert.match(partial, /1 个请求未定价，结果不完整/);
+  assert.match(partial, /目录 2026-08-14/);
+  assert.match(partial, /合计等效 API 成本[\s\S]*href="pricing\.html" target="_blank" rel="noopener noreferrer"[\s\S]*查看当前价格表/);
+  assert.doesNotMatch(partial, /<h2>当前模型价格<\/h2>/);
+
+  const unavailable = buildDashboardHtml([], "today", new Date("2026-05-26T00:00:00Z"), new Date("2026-05-26T23:59:59Z"), [], {
+    claude: { estimatedUsd: null, pricedApiRequestCount: 0, unpricedApiRequestCount: 2 },
+    codex: { estimatedUsd: 0, pricedApiRequestCount: 0, unpricedApiRequestCount: 0 },
+    total: { estimatedUsd: null, pricedApiRequestCount: 0, unpricedApiRequestCount: 2 },
+  }, "2026-08-14");
+  assert.match(unavailable, /不可用/);
+  assert.match(unavailable, /2 个请求未定价/);
+});
+
 /** 传入每日用户消息数时应渲染出 uPlot 纵向柱状图面板：容器 + bars 配置 + 计数。 */
 test("buildDashboardHtml renders daily user messages uPlot bar chart when provided", () => {
   const html = buildDashboardHtml(events, "this-week", new Date("2026-05-26T00:00:00.000Z"), new Date("2026-05-26T06:00:00.000Z"), [
@@ -169,6 +199,34 @@ test("buildDashboardHtml returns a full html document", () => {
   assert.match(html, /<!doctype html>/i);
   assert.match(html, /<html lang="zh-CN">/);
   assert.match(html, /ccus dashboard/);
+});
+
+test("buildApiPricingPage renders a standalone current pricing page with Codex first", () => {
+  const html = buildApiPricingPage(new Date("2026-08-17T00:00:00.000Z"));
+  assert.match(html, /<!doctype html>/i);
+  assert.match(html, /<h1>当前模型价格<\/h1>/);
+  assert.equal(html.match(/<h[12]>当前模型价格<\/h[12]>/g)?.length, 1);
+  assert.doesNotMatch(html, /<h2>当前模型价格<\/h2>/);
+  assert.match(html, /USD \/ 百万 token/);
+  assert.match(html, /长上下文/);
+  assert.match(html, /200,000/);
+  assert.match(html, /5 分钟缓存写入/);
+  assert.match(html, /1 小时缓存写入/);
+  assert.match(html, /<td>\$22\.5<\/td>/);
+  assert.ok(html.indexOf("gpt-5.6-sol") < html.indexOf("claude-sonnet-4"));
+  assert.ok(html.indexOf("gpt-5.6-sol") < html.indexOf("gpt-5.5"));
+  assert.ok(html.indexOf("gpt-5.5") < html.indexOf("gpt-5.4"));
+  assert.match(html, /claude-opus-4\.7/);
+  assert.match(html, /claude-opus-4\.8/);
+  assert.match(html, /claude-opus-5/);
+  assert.match(html, /claude-sonnet-5/);
+  assert.match(html, /claude-fable-5/);
+});
+
+test("renderDashboardPage serves dashboard, pricing page, and 404 distinctly", async () => {
+  assert.equal(await renderDashboardPage("/", async () => "dashboard"), "dashboard");
+  assert.match(await renderDashboardPage("/pricing.html", async () => "dashboard", new Date("2026-08-17T00:00:00Z")) ?? "", /当前模型价格/);
+  assert.equal(await renderDashboardPage("/missing", async () => "dashboard"), null);
 });
 
 /** 离线自包含：uPlot 库与官方 CSS 必须内联进 HTML，不依赖任何 CDN。 */

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { summarizeClaudeProjectUsage } from "../lib/claude";
+import { mergeApiEquivalentCosts } from "../lib/api-equivalent-cost";
+import { summarizeClaudeProjectUsage, summarizeClaudeProjectUsageByDay } from "../lib/claude";
 
 test("summarizeClaudeProjectUsage counts non-meta users and assistant usage tokens", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-claude-"));
@@ -41,7 +42,115 @@ test("summarizeClaudeProjectUsage counts non-meta users and assistant usage toke
     assert.equal(summary.inputTokens, 100);
     assert.equal(summary.outputTokens, 20);
     assert.equal(summary.cacheReadInputTokens, 30);
+    assert.deepEqual(summary.apiEquivalentCost, {
+      estimatedUsd: null,
+      pricedApiRequestCount: 0,
+      unpricedApiRequestCount: 1,
+    });
     assert.equal(summary.matchedFileCount, 1);
+  } finally {
+    delete process.env.CCUS_CLAUDE_DATA_DIR;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("summarizeClaudeProjectUsage prices model switches, cache TTL details and fallback consistently by day", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-claude-cost-"));
+  const firstProjectDir = path.join(root, "projects", "D--workspace-nodejs-ccus");
+  const secondProjectDir = path.join(root, "projects", "D--workspace-nodejs-other");
+  process.env.CCUS_CLAUDE_DATA_DIR = root;
+
+  try {
+    await fs.mkdir(firstProjectDir, { recursive: true });
+    await fs.mkdir(secondProjectDir, { recursive: true });
+    await fs.writeFile(
+      path.join(firstProjectDir, "session-1.jsonl"),
+      [
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-05-26T01:00:00.000Z",
+          message: {
+            role: "assistant",
+            model: "claude-4-sonnet-20250514",
+            usage: {
+              input_tokens: 1_000_000,
+              output_tokens: 1_000_000,
+              cache_read_input_tokens: 1_000_000,
+              cache_creation_input_tokens: 9_000_000,
+              cache_creation: {
+                ephemeral_5m_input_tokens: 1_000_000,
+                ephemeral_1h_input_tokens: 1_000_000,
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-05-26T02:00:00.000Z",
+          message: {
+            role: "assistant",
+            model: "claude-4-sonnet-20250514",
+            usage: {
+              input_tokens: 0,
+              output_tokens: 0,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 1_000_000,
+            },
+          },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(secondProjectDir, "session-2.jsonl"),
+      [
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-05-27T01:00:00.000Z",
+          message: {
+            role: "assistant",
+            model: "claude-opus-4-1-20250805",
+            usage: { input_tokens: 1_000_000, output_tokens: 0, cache_read_input_tokens: 0 },
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-05-27T02:00:00.000Z",
+          message: {
+            role: "assistant",
+            model: "unknown-model",
+            usage: { input_tokens: 7, output_tokens: 11, cache_read_input_tokens: 13 },
+          },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+
+    const start = new Date("2026-05-26T00:00:00.000Z");
+    const end = new Date("2026-05-27T23:59:59.999Z");
+    const weekly = await summarizeClaudeProjectUsage(start, end);
+    const daily = await summarizeClaudeProjectUsageByDay(start, end);
+    const mergedDailyCost = mergeApiEquivalentCosts([...daily.values()].map((day) => day.apiEquivalentCost));
+
+    assert.equal(weekly.apiRequestCount, 4);
+    assert.equal(weekly.inputTokens, 2_000_007);
+    assert.equal(weekly.outputTokens, 1_000_011);
+    assert.equal(weekly.cacheReadInputTokens, 1_000_013);
+    assert.deepEqual(daily.get("2026-05-26")?.apiEquivalentCost, {
+      estimatedUsd: 56.1,
+      pricedApiRequestCount: 2,
+      unpricedApiRequestCount: 0,
+    });
+    assert.deepEqual(daily.get("2026-05-27")?.apiEquivalentCost, {
+      estimatedUsd: 15,
+      pricedApiRequestCount: 1,
+      unpricedApiRequestCount: 1,
+    });
+    assert.deepEqual(weekly.apiEquivalentCost, mergedDailyCost);
+    assert.equal(weekly.apiEquivalentCost.pricedApiRequestCount + weekly.apiEquivalentCost.unpricedApiRequestCount, weekly.apiRequestCount);
+    for (const day of daily.values()) {
+      assert.equal(day.apiEquivalentCost.pricedApiRequestCount + day.apiEquivalentCost.unpricedApiRequestCount, day.apiRequestCount);
+    }
   } finally {
     delete process.env.CCUS_CLAUDE_DATA_DIR;
     await fs.rm(root, { recursive: true, force: true });

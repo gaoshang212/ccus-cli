@@ -298,10 +298,11 @@ test("resolveCodexQuota falls back to stale cache when fetch fails", async () =>
   const dir = await mkdtemp("ccus-codex-cache-");
   const ok = async () => ({ fiveHour: 10, sevenDay: 20, resetsAt: null, status: "ok" as const });
   const unavailable = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "unavailable" as const });
+  const whamUnavailable = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "error" as const });
   const t0 = new Date("2026-07-27T10:00:00Z");
   await resolveCodexQuota(dir, { now: t0, fetcher: ok });
   const later = new Date("2026-07-27T10:06:00Z");
-  const q = await resolveCodexQuota(dir, { now: later, fetcher: unavailable });
+  const q = await resolveCodexQuota(dir, { now: later, fetcher: unavailable, whamFetcher: whamUnavailable });
 
   assert.deepEqual(q, { fiveHour: 10, sevenDay: 20, resetsAt: null });
 });
@@ -309,7 +310,8 @@ test("resolveCodexQuota falls back to stale cache when fetch fails", async () =>
 test("resolveCodexQuota returns null when fetch fails and no cache", async () => {
   const dir = await mkdtemp("ccus-codex-cache-");
   const unavailable = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "unavailable" as const });
-  const q = await resolveCodexQuota(dir, { fetcher: unavailable });
+  const whamUnavailable = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "error" as const });
+  const q = await resolveCodexQuota(dir, { fetcher: unavailable, whamFetcher: whamUnavailable });
 
   assert.equal(q, null);
 });

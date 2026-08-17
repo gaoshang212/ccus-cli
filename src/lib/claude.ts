@@ -1,6 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { WeeklyExportDaySummary, WeeklyExportSummary } from "../types";
+import {
+  ApiEquivalentCostResult,
+  emptyApiEquivalentCost,
+  mergeApiEquivalentCosts,
+  priceApiRequest,
+} from "./api-equivalent-cost";
 import { getClaudeDataDir } from "./paths";
 
 interface ClaudeProjectUsageSummary {
@@ -9,6 +15,7 @@ interface ClaudeProjectUsageSummary {
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
+  apiEquivalentCost: ApiEquivalentCostResult;
 }
 
 interface ClaudeDailyUsageSummary extends ClaudeProjectUsageSummary {
@@ -25,6 +32,45 @@ function getNumber(value: unknown): number {
 
 function getString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function summarizeAssistantUsage(
+  message: Record<string, unknown>,
+  timestamp: string,
+): Pick<ClaudeProjectUsageSummary, "inputTokens" | "outputTokens" | "cacheReadInputTokens" | "apiEquivalentCost"> {
+  const usage = message.usage as Record<string, unknown>;
+  const cacheCreation = isRecord(usage.cache_creation) ? usage.cache_creation : null;
+  const hasFiveMinuteDetail = cacheCreation !== null && hasOwn(cacheCreation, "ephemeral_5m_input_tokens");
+  const hasOneHourDetail = cacheCreation !== null && hasOwn(cacheCreation, "ephemeral_1h_input_tokens");
+  const cacheWrite5mInputTokens = hasFiveMinuteDetail || hasOneHourDetail
+    ? getNumber(cacheCreation?.ephemeral_5m_input_tokens)
+    : getNumber(usage.cache_creation_input_tokens);
+  const cacheWrite1hInputTokens = hasFiveMinuteDetail || hasOneHourDetail
+    ? getNumber(cacheCreation?.ephemeral_1h_input_tokens)
+    : 0;
+  const inputTokens = getNumber(usage.input_tokens);
+  const outputTokens = getNumber(usage.output_tokens);
+  const cacheReadInputTokens = getNumber(usage.cache_read_input_tokens);
+
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadInputTokens,
+    apiEquivalentCost: priceApiRequest({
+      provider: "claude",
+      timestamp,
+      model: getString(message.model),
+      inputTokens,
+      outputTokens,
+      cacheReadInputTokens,
+      cacheWrite5mInputTokens,
+      cacheWrite1hInputTokens,
+    }),
+  };
 }
 
 async function collectProjectJsonlFiles(directoryPath: string): Promise<string[]> {
@@ -107,12 +153,14 @@ function summarizeProjectTranscript(content: string, start: Date, end: Date): Cl
     inputTokens: 0,
     outputTokens: 0,
     cacheReadInputTokens: 0,
+    apiEquivalentCost: emptyApiEquivalentCost(),
   };
 
   for (const line of lines) {
     try {
       const record = JSON.parse(line) as unknown;
-      if (!isRecord(record) || !timestampInRange(getString(record.timestamp), start, end)) {
+      const timestamp = isRecord(record) ? getString(record.timestamp) : null;
+      if (!isRecord(record) || !timestampInRange(timestamp, start, end)) {
         continue;
       }
 
@@ -124,10 +172,12 @@ function summarizeProjectTranscript(content: string, start: Date, end: Date): Cl
         continue;
       }
 
+      const assistantUsage = summarizeAssistantUsage(record.message, timestamp!);
       summary.apiRequestCount += 1;
-      summary.inputTokens += getNumber(record.message.usage.input_tokens);
-      summary.outputTokens += getNumber(record.message.usage.output_tokens);
-      summary.cacheReadInputTokens += getNumber(record.message.usage.cache_read_input_tokens);
+      summary.inputTokens += assistantUsage.inputTokens;
+      summary.outputTokens += assistantUsage.outputTokens;
+      summary.cacheReadInputTokens += assistantUsage.cacheReadInputTokens;
+      summary.apiEquivalentCost = mergeApiEquivalentCosts([summary.apiEquivalentCost, assistantUsage.apiEquivalentCost]);
     } catch {
       continue;
     }
@@ -137,9 +187,9 @@ function summarizeProjectTranscript(content: string, start: Date, end: Date): Cl
 }
 
 /**
- * 从 Claude 本地 project transcript 中统计本周消息数、请求数和 token 用量。
+ * 从 Claude 本地 project transcript 中统计本周消息数、请求数、token 用量和标准 API 等效成本。
  */
-export async function summarizeClaudeProjectUsage(start: Date, end: Date): Promise<WeeklyExportSummary["counts"] & WeeklyExportSummary["tokens"] & { matchedFileCount: number; claudeDataDir: string }> {
+export async function summarizeClaudeProjectUsage(start: Date, end: Date): Promise<WeeklyExportSummary["counts"] & WeeklyExportSummary["tokens"] & { matchedFileCount: number; claudeDataDir: string; apiEquivalentCost: ApiEquivalentCostResult }> {
   const claudeDataDir = getClaudeDataDir();
   const projectDir = path.join(claudeDataDir, "projects");
   const files = await collectProjectJsonlFiles(projectDir);
@@ -150,6 +200,7 @@ export async function summarizeClaudeProjectUsage(start: Date, end: Date): Promi
     inputTokens: 0,
     outputTokens: 0,
     cacheReadInputTokens: 0,
+    apiEquivalentCost: emptyApiEquivalentCost(),
     matchedFileCount: files.length,
     claudeDataDir,
   };
@@ -163,6 +214,7 @@ export async function summarizeClaudeProjectUsage(start: Date, end: Date): Promi
       totals.inputTokens += summary.inputTokens;
       totals.outputTokens += summary.outputTokens;
       totals.cacheReadInputTokens += summary.cacheReadInputTokens;
+      totals.apiEquivalentCost = mergeApiEquivalentCosts([totals.apiEquivalentCost, summary.apiEquivalentCost]);
     } catch {
       continue;
     }
@@ -223,7 +275,7 @@ export async function findActiveSessionFiles(start: Date, end: Date): Promise<Ac
 }
 
 /**
- * 按天汇总 Claude project transcript 中的消息数、请求数和 token 用量。
+ * 按天汇总 Claude project transcript 中的消息数、请求数、token 用量和标准 API 等效成本。
  */
 export async function summarizeClaudeProjectUsageByDay(start: Date, end: Date): Promise<Map<string, ClaudeDailyUsageSummary>> {
   const claudeDataDir = getClaudeDataDir();
@@ -260,6 +312,7 @@ export async function summarizeClaudeProjectUsageByDay(start: Date, end: Date): 
           inputTokens: 0,
           outputTokens: 0,
           cacheReadInputTokens: 0,
+          apiEquivalentCost: emptyApiEquivalentCost(),
         };
 
         if (isHumanUserMessage(record)) {
@@ -267,10 +320,12 @@ export async function summarizeClaudeProjectUsageByDay(start: Date, end: Date): 
         }
 
         if (record.type === "assistant" && isRecord(record.message) && isRecord(record.message.usage)) {
+          const assistantUsage = summarizeAssistantUsage(record.message, timestamp!);
           current.apiRequestCount += 1;
-          current.inputTokens += getNumber(record.message.usage.input_tokens);
-          current.outputTokens += getNumber(record.message.usage.output_tokens);
-          current.cacheReadInputTokens += getNumber(record.message.usage.cache_read_input_tokens);
+          current.inputTokens += assistantUsage.inputTokens;
+          current.outputTokens += assistantUsage.outputTokens;
+          current.cacheReadInputTokens += assistantUsage.cacheReadInputTokens;
+          current.apiEquivalentCost = mergeApiEquivalentCosts([current.apiEquivalentCost, assistantUsage.apiEquivalentCost]);
         }
 
         daily.set(date, current);

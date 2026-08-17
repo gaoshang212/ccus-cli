@@ -17,6 +17,11 @@ function toMillions(value: number | null): number | null {
   return value === null ? null : roundNumber(value / 1_000_000, 6);
 }
 
+/** 等效 API 成本以美元输出，最多保留 6 位小数；不可用时留空。 */
+function formatApiEquivalentCost(value: number | null): number | null {
+  return value === null ? null : roundNumber(value, 6);
+}
+
 /**
  * 清理控制字符，并防止 Excel/Sheets 把值解释成公式。
  *
@@ -228,6 +233,8 @@ export function buildAggregatedDailyCsv(rows: AggregatedDailyRow[]): string {
     "sevenDayCumulativeUsagePct",
     "uniqueSessions",
     "uniqueWorkspaces",
+    "estimatedApiEquivalentCostUsd",
+    "pricingCatalogVersion",
   ];
   const lines = rows.map((row) =>
     toCsvLine([
@@ -246,6 +253,8 @@ export function buildAggregatedDailyCsv(rows: AggregatedDailyRow[]): string {
       row.sevenDayCumulativeUsagePct,
       row.uniqueSessions,
       row.uniqueWorkspaces,
+      formatApiEquivalentCost(row.estimatedApiEquivalentCostUsd),
+      row.pricingCatalogVersion,
     ]),
   );
   return [header.join(","), ...lines].join("\n");
@@ -269,6 +278,8 @@ export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
     "sevenDayCumulativeUsagePct",
     "uniqueSessions",
     "uniqueWorkspaces",
+    "estimatedApiEquivalentCostUsd",
+    "pricingCatalogVersion",
   ];
   const lines = rows.map((row) =>
     toCsvLine([
@@ -287,6 +298,8 @@ export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
       row.sevenDayCumulativeUsagePct,
       row.uniqueSessions,
       row.uniqueWorkspaces,
+      formatApiEquivalentCost(row.estimatedApiEquivalentCostUsd),
+      row.pricingCatalogVersion,
     ]),
   );
   return [header.join(","), ...lines].join("\n");

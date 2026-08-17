@@ -4,6 +4,8 @@ import path from "node:path";
 import { buildDashboardHtml } from "./lib/dashboard";
 import { summarizeEvents } from "./lib/dashboard";
 import { buildAggregateDashboardHtml } from "./lib/aggregate-dashboard";
+import { API_PRICING_PAGE_FILE, buildApiPricingPage } from "./lib/api-pricing-table";
+import { renderDashboardPage } from "./lib/dashboard-pages";
 import { findActiveSessionFiles, summarizeClaudeProjectUsage, summarizeClaudeProjectUsageByDay } from "./lib/claude";
 import { findActiveCodexSessionFiles, summarizeCodexSessionUsage, summarizeCodexSessionUsageByDay } from "./lib/codex-sessions";
 import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeeklyCsv, buildSummaryRows, buildWeeklyExportBundleJson, writeGzipFile, writeTextFile } from "./lib/export";
@@ -24,6 +26,7 @@ import type { ApiModeConfig, RawStatuslinePayload } from "./types";
 import { appendEvent, readEventsForRange } from "./lib/storage";
 import { enumerateDateKeys, expandToFullWeekWindow, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
 import { computeUpdateNotice, fetchLatestVersion, maybeSpawnBackgroundCheck, performUpdateCheck } from "./lib/update-check";
+import { API_PRICING_METADATA, emptyApiEquivalentCost, mergeApiEquivalentCosts } from "./lib/api-equivalent-cost";
 import { getCurrentVersion, isNewerVersion } from "./lib/version";
 
 export interface CliOptions {
@@ -231,10 +234,10 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
 }
 
 /**
- * 加载某个时间窗口内的 dashboard 渲染数据：statusline 事件 + 每日用户消息数。
+ * 加载 dashboard 渲染数据：statusline 事件、Claude/Codex 每日消息数与标准 API 等效成本。
  *
- * 每日用户消息数与导出契约同源（Claude 本地 transcript 的真实用户请求数），仅供 dashboard 展示，
- * 不落盘、不进任何导出/聚合契约。`defaultRange` 让 build/open 与 serve 各自决定缺省窗口。
+ * 消息数和成本与导出契约同源，当前结果仅供 dashboard 展示。
+ * `defaultRange` 让 build/open 与 serve 各自决定缺省窗口。
  */
 async function loadDashboardData(
   options: CliOptions,
@@ -257,8 +260,14 @@ async function loadDashboardData(
     userMessageCount: claudeDailyUsage.get(date)?.userMessageCount ?? 0,
     codexUserMessageCount: codexDailyUsage.get(date)?.userMessageCount ?? 0,
   }));
+  const claudeCost = mergeApiEquivalentCosts([...claudeDailyUsage.values()].map((day) => day.apiEquivalentCost));
+  const codexCost = mergeApiEquivalentCosts([...codexDailyUsage.values()].map((day) => day.apiEquivalentCost));
   debugLog("dashboard", "events loaded", { range, label: window.label, sampleCount: events.length, days: dailyUserMessages.length });
-  const html = buildDashboardHtml(events, window.label, window.start, window.end, dailyUserMessages);
+  const html = buildDashboardHtml(events, window.label, window.start, window.end, dailyUserMessages, {
+    claude: claudeCost,
+    codex: codexCost,
+    total: mergeApiEquivalentCosts([claudeCost, codexCost]),
+  }, API_PRICING_METADATA.catalogVersion);
   return { html, window };
 }
 
@@ -269,8 +278,16 @@ async function buildDashboard(options: CliOptions): Promise<string> {
   const outputPath = path.resolve(
     getStringOption(options, "out") ?? path.join(getDashboardDir(dataDir), `${window.label}.html`),
   );
-  await writeTextFile(outputPath, html);
-  debugLog("dashboard", "html written", { outputPath, bytes: html.length });
+  if (path.basename(outputPath).toLowerCase() === API_PRICING_PAGE_FILE.toLowerCase()) {
+    throw new Error(`--out cannot be named ${API_PRICING_PAGE_FILE}.`);
+  }
+  const pricingPath = path.join(path.dirname(outputPath), API_PRICING_PAGE_FILE);
+  const pricingHtml = buildApiPricingPage();
+  await Promise.all([
+    writeTextFile(outputPath, html),
+    writeTextFile(pricingPath, pricingHtml),
+  ]);
+  debugLog("dashboard", "html written", { outputPath, pricingPath, bytes: html.length });
   return outputPath;
 }
 
@@ -307,9 +324,15 @@ async function handleDashboardServe(options: CliOptions): Promise<void> {
     throw new Error(`Invalid port: ${portOption ?? ""}`);
   }
 
-  const server = http.createServer(async (_request, response) => {
+  const server = http.createServer(async (request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
     try {
-      const html = await renderDashboardHtml(options);
+      const html = await renderDashboardPage(url.pathname, () => renderDashboardHtml(options));
+      if (html === null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
       response.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
@@ -385,6 +408,8 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
   const claudeDailyUsage = await summarizeClaudeProjectUsageByDay(window.start, window.end);
   const codexUsage = await summarizeCodexSessionUsage(window.start, window.end);
   const codexDailyUsage = await summarizeCodexSessionUsageByDay(window.start, window.end);
+  const claudeWeeklyCost = mergeApiEquivalentCosts([...claudeDailyUsage.values()].map((day) => day.apiEquivalentCost));
+  const codexWeeklyCost = mergeApiEquivalentCosts([...codexDailyUsage.values()].map((day) => day.apiEquivalentCost));
   debugLog("export", "data collected", {
     statuslineSamples: records.length,
     claudeProjectFiles: claudeUsage.matchedFileCount,
@@ -402,7 +427,7 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
     exportUserName = gitIdentity.userName;
   }
   const weeklySummary = {
-    schemaVersion: 9,
+    schemaVersion: 10,
     generatedAt: new Date().toISOString(),
     range: {
       label: window.label,
@@ -433,6 +458,11 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
       sevenDayPeakUsagePct: codexStatuslineSummary.sevenDayPeakUsagePct,
       sevenDayLatestUsagePct: codexStatuslineSummary.sevenDayLatestUsagePct,
     },
+    apiEquivalentCost: {
+      claude: claudeWeeklyCost,
+      codex: codexWeeklyCost,
+      total: mergeApiEquivalentCosts([claudeWeeklyCost, codexWeeklyCost]),
+    },
     statusline: {
       sampleCount: statuslineSummary.sampleCount,
       uniqueSessions: statuslineSummary.uniqueSessions,
@@ -458,6 +488,8 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
     const claudeDay = claudeDailyUsage.get(date);
     const codexDay = codexDailyUsage.get(date);
     const codexRow = codexStatuslineDailyMap.get(date);
+    const claudeCost = claudeDay?.apiEquivalentCost ?? emptyApiEquivalentCost();
+    const codexCost = codexDay?.apiEquivalentCost ?? emptyApiEquivalentCost();
     return {
       date,
       userMessageCount: claudeDay?.userMessageCount ?? 0,
@@ -476,6 +508,11 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
         sevenDayPeakUsagePct: codexRow?.sevenDayPeakUsagePct ?? null,
         sevenDayLatestUsagePct: codexRow?.sevenDayLatestUsagePct ?? null,
       },
+      apiEquivalentCost: {
+        claude: claudeCost,
+        codex: codexCost,
+        total: mergeApiEquivalentCosts([claudeCost, codexCost]),
+      },
       sampleCount: row?.sampleCount ?? 0,
       fiveHourLatestUsagePct: row?.fiveHourLatestUsagePct ?? null,
       fiveHourPeakUsagePct: row?.fiveHourPeakUsagePct ?? null,
@@ -486,7 +523,7 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
     };
   });
   const bundle = {
-    schemaVersion: 9,
+    schemaVersion: 10,
     generatedAt: new Date().toISOString(),
     range: {
       label: window.label,
@@ -497,6 +534,7 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
       gitUserName: exportUserName,
       gitUserEmail: exportUserEmail,
     },
+    pricing: API_PRICING_METADATA,
     rawEvents: records,
     weeklySummary,
     dailySummaries,
@@ -589,13 +627,13 @@ async function handleAggregateServe(options: CliOptions): Promise<void> {
 
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
-    if (url.pathname !== "/") {
-      response.writeHead(404);
-      response.end();
-      return;
-    }
     try {
-      const html = await renderAggregateDashboardHtml(resolvedInputDir);
+      const html = await renderDashboardPage(url.pathname, () => renderAggregateDashboardHtml(resolvedInputDir));
+      if (html === null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
       response.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",

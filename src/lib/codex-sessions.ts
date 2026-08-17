@@ -1,5 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  type ApiEquivalentCostResult,
+  emptyApiEquivalentCost,
+  mergeApiEquivalentCosts,
+  priceApiRequest,
+} from "./api-equivalent-cost";
 import { getCodexHome, getCodexSessionHomes } from "./paths";
 import { localDateKey } from "./time";
 
@@ -9,6 +15,7 @@ interface CodexSessionUsageSummary {
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
+  apiEquivalentCost: ApiEquivalentCostResult;
 }
 
 interface CodexDailyUsageSummary extends CodexSessionUsageSummary {
@@ -32,6 +39,7 @@ interface RolloutParse {
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
+  apiEquivalentCost: ApiEquivalentCostResult;
 }
 
 /** 多个 session 根目录中同一相对路径的 rollout 文件组。 */
@@ -50,6 +58,17 @@ function getNumber(value: unknown): number {
 
 function getString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function splitInputTokens(usage: Record<string, unknown>): {
+  inputTokens: number;
+  cacheReadInputTokens: number;
+} {
+  const cacheReadInputTokens = getNumber(usage.cached_input_tokens);
+  return {
+    inputTokens: Math.max(0, getNumber(usage.input_tokens) - cacheReadInputTokens),
+    cacheReadInputTokens,
+  };
 }
 
 /** Guardian 是 Codex Desktop 的动作安全审查子代理，不代表用户请求或业务模型调用。 */
@@ -230,8 +249,7 @@ export async function findActiveCodexSessionFiles(start: Date, end: Date): Promi
 /**
  * 从 `token_count` 事件的 `info.last_token_usage` 取 token 用量对象（缺失返回 null）。
  * 必须用 last_token_usage（本次增量），不能用 total_token_usage（会话累计，会重复计）。
- * 注意：Codex 的 `input_tokens` 含缓存命中（`cached_input_tokens` 是其子集），
- * 累加 inputTokens 时要减去 cached 得到净输入，对齐 Claude 的 `input_tokens` 口径。
+ * `cached_input_tokens` 是 `input_tokens` 的子集；普通输入需扣除缓存输入并钳制为非负数。
  */
 function extractLastTokenUsage(payload: Record<string, unknown>): Record<string, unknown> | null {
   if (!isRecord(payload.info)) {
@@ -257,21 +275,30 @@ function summarizeRollout(content: string, start: Date, end: Date): RolloutParse
     inputTokens: 0,
     outputTokens: 0,
     cacheReadInputTokens: 0,
+    apiEquivalentCost: emptyApiEquivalentCost(),
   };
+  let currentModel: string | null = null;
 
   for (const line of lines) {
     try {
       const record = JSON.parse(line) as unknown;
-      if (!isRecord(record) || !timestampInRange(getString(record.timestamp), start, end)) {
-        continue;
-      }
-      if (record.type !== "event_msg" || !isRecord(record.payload)) {
+      if (!isRecord(record) || !isRecord(record.payload)) {
         continue;
       }
       const payload = record.payload;
+      if (record.type === "turn_context") {
+        if (typeof payload.model === "string") {
+          currentModel = payload.model;
+        }
+        continue;
+      }
+      const timestamp = getString(record.timestamp);
+      if (!timestampInRange(timestamp, start, end) || record.type !== "event_msg") {
+        continue;
+      }
 
       if (payload.type === "task_started" && typeof payload.turn_id === "string") {
-        const ms = new Date(getString(record.timestamp) ?? "").getTime();
+        const ms = new Date(timestamp ?? "").getTime();
         if (Number.isFinite(ms)) {
           result.turns.push({ turnId: payload.turn_id, ms });
         }
@@ -280,12 +307,23 @@ function summarizeRollout(content: string, start: Date, end: Date): RolloutParse
       if (payload.type === "token_count") {
         const usage = extractLastTokenUsage(payload);
         if (usage) {
-          // 净输入 = input_tokens - cached_input_tokens（input_tokens 含缓存命中，减去对齐 Claude 口径）。
-          const netInputTokens = Math.max(0, getNumber(usage.input_tokens) - getNumber(usage.cached_input_tokens));
+          const { inputTokens, cacheReadInputTokens } = splitInputTokens(usage);
+          const outputTokens = getNumber(usage.output_tokens);
           result.apiRequestCount += 1;
-          result.inputTokens += netInputTokens;
-          result.outputTokens += getNumber(usage.output_tokens);
-          result.cacheReadInputTokens += getNumber(usage.cached_input_tokens);
+          result.inputTokens += inputTokens;
+          result.outputTokens += outputTokens;
+          result.cacheReadInputTokens += cacheReadInputTokens;
+          result.apiEquivalentCost = mergeApiEquivalentCosts([
+            result.apiEquivalentCost,
+            priceApiRequest({
+              provider: "codex",
+              timestamp: timestamp!,
+              model: currentModel,
+              inputTokens,
+              outputTokens,
+              cacheReadInputTokens,
+            }),
+          ]);
         }
       }
     } catch {
@@ -297,7 +335,7 @@ function summarizeRollout(content: string, start: Date, end: Date): RolloutParse
 }
 
 /**
- * 从标准 Codex 与 Orca 本地 session rollout 统计消息数、请求数和 token 用量。
+ * 从标准 Codex 与 Orca 本地 session rollout 统计消息数、请求数、token 用量和标准 API 等效成本。
  * Codex Desktop 的 guardian 安全审查 rollout 整体排除，避免把内部审批轮次计为用户使用量。
  *
  * 消息数 = task_started 的 distinct turn_id（跨文件去重）。重放副本会让同一 turn_id 出现在多个文件，
@@ -315,6 +353,7 @@ export async function summarizeCodexSessionUsage(
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheReadInputTokens = 0;
+  let apiEquivalentCost = emptyApiEquivalentCost();
 
   for (const group of groups) {
     try {
@@ -333,6 +372,7 @@ export async function summarizeCodexSessionUsage(
       inputTokens += parsed.inputTokens;
       outputTokens += parsed.outputTokens;
       cacheReadInputTokens += parsed.cacheReadInputTokens;
+      apiEquivalentCost = mergeApiEquivalentCosts([apiEquivalentCost, parsed.apiEquivalentCost]);
     } catch {
       continue;
     }
@@ -344,13 +384,14 @@ export async function summarizeCodexSessionUsage(
     inputTokens,
     outputTokens,
     cacheReadInputTokens,
+    apiEquivalentCost,
     matchedFileCount: groups.length,
     codexDataDir,
   };
 }
 
 /**
- * 按天汇总 Codex session rollout 中的消息数、请求数和 token 用量。
+ * 按天汇总 Codex session rollout 中的消息数、请求数、token 用量和标准 API 等效成本。
  * 与周汇总一致，排除 Codex Desktop 的 guardian 安全审查 rollout。
  *
  * 消息数同 weekly：先全局 Map<turn_id, minMs> 去重，再按 minMs 的本地日归桶（保证 weekly = Σ daily、
@@ -375,6 +416,7 @@ export async function summarizeCodexSessionUsageByDay(
         inputTokens: 0,
         outputTokens: 0,
         cacheReadInputTokens: 0,
+        apiEquivalentCost: emptyApiEquivalentCost(),
       };
       daily.set(date, current);
     }
@@ -388,20 +430,27 @@ export async function summarizeCodexSessionUsageByDay(
     }
 
     const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+    let currentModel: string | null = null;
     for (const line of lines) {
       try {
         const record = JSON.parse(line) as unknown;
-        if (!isRecord(record)) {
+        if (!isRecord(record) || !isRecord(record.payload)) {
+          continue;
+        }
+        const payload = record.payload;
+        if (record.type === "turn_context") {
+          if (typeof payload.model === "string") {
+            currentModel = payload.model;
+          }
           continue;
         }
         const timestamp = getString(record.timestamp);
         if (!timestampInRange(timestamp, start, end)) {
           continue;
         }
-        if (record.type !== "event_msg" || !isRecord(record.payload)) {
+        if (record.type !== "event_msg") {
           continue;
         }
-        const payload = record.payload;
         const ms = new Date(timestamp!).getTime();
 
         if (payload.type === "task_started" && typeof payload.turn_id === "string") {
@@ -417,12 +466,23 @@ export async function summarizeCodexSessionUsageByDay(
           const usage = extractLastTokenUsage(payload);
           if (usage) {
             const current = ensureDay(localDateKey(new Date(ms)));
-            // 同 summarizeRollout：累加净输入（input - cached），对齐 Claude 口径。
-            const netInputTokens = Math.max(0, getNumber(usage.input_tokens) - getNumber(usage.cached_input_tokens));
+            const { inputTokens, cacheReadInputTokens } = splitInputTokens(usage);
+            const outputTokens = getNumber(usage.output_tokens);
             current.apiRequestCount += 1;
-            current.inputTokens += netInputTokens;
-            current.outputTokens += getNumber(usage.output_tokens);
-            current.cacheReadInputTokens += getNumber(usage.cached_input_tokens);
+            current.inputTokens += inputTokens;
+            current.outputTokens += outputTokens;
+            current.cacheReadInputTokens += cacheReadInputTokens;
+            current.apiEquivalentCost = mergeApiEquivalentCosts([
+              current.apiEquivalentCost,
+              priceApiRequest({
+                provider: "codex",
+                timestamp: timestamp!,
+                model: currentModel,
+                inputTokens,
+                outputTokens,
+                cacheReadInputTokens,
+              }),
+            ]);
           }
         }
       } catch {

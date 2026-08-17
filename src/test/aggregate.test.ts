@@ -68,6 +68,35 @@ function buildMinimalBundle(personKey: string) {
   };
 }
 
+function apiCost(estimatedUsd: number | null, pricedApiRequestCount: number, unpricedApiRequestCount: number) {
+  return { estimatedUsd, pricedApiRequestCount, unpricedApiRequestCount };
+}
+
+/** 把单日旧版测试 bundle 升为结构完整的 v10，便于覆盖严格校验和成本聚合。 */
+function upgradeBundleToV10(
+  bundle: ReturnType<typeof buildMinimalBundle> | ReturnType<typeof buildBundleForMerge>,
+  options: { catalogVersion?: string; estimatedUsd?: number | null; priced?: number; unpriced?: number } = {},
+) {
+  const catalogVersion = options.catalogVersion ?? "catalog-a";
+  const estimatedUsd = options.estimatedUsd === undefined ? 0.25 : options.estimatedUsd;
+  const priced = options.priced ?? 1;
+  const unpriced = options.unpriced ?? 0;
+  const claude = apiCost(estimatedUsd, priced, unpriced);
+  const codex = apiCost(0, 0, 0);
+  const total = apiCost(estimatedUsd, priced, unpriced);
+  const breakdown = { claude, codex, total };
+
+  const upgraded = bundle as any;
+  upgraded.schemaVersion = 10;
+  upgraded.pricing = { catalogVersion, currency: "USD", basis: "event-time-standard-api" };
+  upgraded.weeklySummary.schemaVersion = 10;
+  upgraded.weeklySummary.apiEquivalentCost = breakdown;
+  for (const day of upgraded.dailySummaries) {
+    day.apiEquivalentCost = breakdown;
+  }
+  return upgraded;
+}
+
 /** 含 Claude + Codex 混合事件的 v8 bundle，用于验证 source 分流（Claude usage 与 Codex 额度各算各的）。 */
 function buildMixedBundle() {
   const makeEvent = (timestamp: string, five: number, seven: number, codex: boolean) => ({
@@ -123,7 +152,7 @@ function buildMixedBundle() {
 
 /** Claude 与 Codex 事件混在同一 bundle 时，usage 必须按 source 分流，不能把 codex 额度算进 claude usage。 */
 test("aggregate separates claude and codex usage by source", () => {
-  const bundles = [{ filePath: "mixed.json", bundle: buildMixedBundle() }];
+  const bundles = [{ filePath: "mixed.json", bundle: buildMixedBundle() as any }];
   const daily = buildAggregatedDailyRows(bundles);
   assert.equal(daily.length, 1);
   // Claude usage 只算 claude 事件（80/90），不含 codex 的 30/40。
@@ -139,18 +168,43 @@ test("aggregate separates claude and codex usage by source", () => {
   assert.equal(codexRow?.inputTokens, 0);
 });
 
-/** aggregate 接受 schemaVersion 6/7/8/9 的 bundle（向后兼容旧导出）。 */
-test("loadWeeklyExportBundles accepts schemaVersion 6/7/8/9 bundles", async () => {
+/** aggregate 接受 schemaVersion 6/7/8/9/10 的 bundle（向后兼容旧导出）。 */
+test("loadWeeklyExportBundles accepts schemaVersion 6/7/8/9/10 bundles", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-versions-"));
   try {
-    for (const sv of [6, 7, 8, 9]) {
+    for (const sv of [6, 7, 8, 9, 10]) {
       const b = buildMinimalBundle(`p${sv}`);
-      b.schemaVersion = sv;
-      b.weeklySummary.schemaVersion = sv;
+      if (sv === 10) {
+        upgradeBundleToV10(b);
+      } else {
+        b.schemaVersion = sv;
+        b.weeklySummary.schemaVersion = sv;
+      }
       await fs.writeFile(path.join(root, `p${sv}.json`), JSON.stringify(b), "utf8");
     }
     const bundles = await loadWeeklyExportBundles(root);
-    assert.equal(bundles.length, 4);
+    assert.equal(bundles.length, 5);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loadWeeklyExportBundles rejects v10 missing pricing or daily cost", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-v10-invalid-"));
+  try {
+    const missingPricing = buildMinimalBundle("missing-pricing");
+    missingPricing.schemaVersion = 10;
+    missingPricing.weeklySummary.schemaVersion = 10;
+    await fs.writeFile(path.join(root, "missing-pricing.json"), JSON.stringify(missingPricing), "utf8");
+
+    const missingDailyCost = upgradeBundleToV10(buildMinimalBundle("missing-daily"));
+    delete (missingDailyCost.dailySummaries[0] as any).apiEquivalentCost;
+    await fs.writeFile(path.join(root, "missing-daily.json"), JSON.stringify(missingDailyCost), "utf8");
+
+    await assert.rejects(
+      () => loadWeeklyExportBundles(root),
+      /schemaVersion 6\/7\/8\/9\/10 bundles/,
+    );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -314,14 +368,16 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
     assert.match(detailCsv, /,0\.0001,0\.001,0\.0003,0\.00004,0\.00002$/m);
     // bob：contextUsed 110→0.00011，contextMax 1000→0.001，token 800/90/30。
     assert.match(detailCsv, /,0\.00011,0\.001,0\.0008,0\.00009,0\.00003$/m);
-    assert.match(dailyCsv, /personKey,date,userMessageCount,apiRequestCount,inputTokensM,outputTokensM,cacheReadInputTokensM,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayPeakUsagePct,sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions,uniqueWorkspaces/);
+    assert.match(dailyCsv, /^personKey,date,userMessageCount,apiRequestCount,inputTokensM,outputTokensM,cacheReadInputTokensM,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayPeakUsagePct,sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions,uniqueWorkspaces,estimatedApiEquivalentCostUsd,pricingCatalogVersion$/m);
     assert.match(dailyCsv, /2026-05-26/);
     // alice daily：input 300 → 0.0003，output 40 → 0.00004，cache 20 → 0.00002。
     assert.match(dailyCsv, /,2,1,0\.0003,0\.00004,0\.00002,/);
+    assert.match(dailyCsv, /,1,1,,$/m);
     assert.match(dailyCsv, /,10,10,35,30,/);
-    assert.match(weeklyCsv, /personKey,week,userMessageCount,apiRequestCount,inputTokensM,outputTokensM,cacheReadInputTokensM,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayPeakUsagePct,sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions,uniqueWorkspaces/);
+    assert.match(weeklyCsv, /^personKey,week,userMessageCount,apiRequestCount,inputTokensM,outputTokensM,cacheReadInputTokensM,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayPeakUsagePct,sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions,uniqueWorkspaces,estimatedApiEquivalentCostUsd,pricingCatalogVersion$/m);
     // bob weekly：input 800 → 0.0008，output 90 → 0.00009，cache 30 → 0.00003。
     assert.match(weeklyCsv, /,4,2,0\.0008,0\.00009,0\.00003,/);
+    assert.match(weeklyCsv, /,1,1,,$/m);
     assert.match(weeklyCsv, /,15,15,50,45,/);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -405,20 +461,105 @@ function buildBundleForMerge(options: {
   };
 }
 
+test("aggregate maps v10 cost and legacy request coverage on daily/weekly rows", () => {
+  const v10 = upgradeBundleToV10(buildBundleForMerge({
+    personKey: "cost-v10",
+    generatedAt: "2026-05-27T08:00:00.000Z",
+    date: "2026-05-26",
+    eventTimestamp: "2026-05-26T01:00:00.000Z",
+    userMessageCount: 2,
+    inputTokens: 300,
+    fiveHour: 10,
+  }), { estimatedUsd: 0.75, priced: 1 });
+  const v10Detail = buildAggregatedDetailRows([{ filePath: "v10.json", bundle: v10 as any }]);
+  const v10Daily = buildAggregatedDailyRows([{ filePath: "v10.json", bundle: v10 as any }]);
+  const v10Weekly = buildAggregatedWeeklyRows([{ filePath: "v10.json", bundle: v10 as any }]);
+  assert.match(
+    buildAggregatedDetailCsv(v10Detail),
+    /^personKey,timestamp,week,date,sessionId,workspaceName,modelName,source,fiveHourUsagePct,contextWindowPct,contextUsedM,contextMaxM,inputTokensM,outputTokensM,cacheReadInputTokensM$/m,
+  );
+  assert.equal(buildAggregatedDetailCsv(v10Detail).includes("ApiEquivalentCost"), false);
+  assert.deepEqual(
+    [v10Daily[0].estimatedApiEquivalentCostUsd, v10Daily[0].pricedApiRequestCount, v10Daily[0].unpricedApiRequestCount, v10Daily[0].pricingCatalogVersion],
+    [0.75, 1, 0, "catalog-a"],
+  );
+  assert.deepEqual(
+    [v10Weekly[0].estimatedApiEquivalentCostUsd, v10Weekly[0].pricedApiRequestCount, v10Weekly[0].unpricedApiRequestCount, v10Weekly[0].pricingCatalogVersion],
+    [0.75, 1, 0, "catalog-a"],
+  );
+
+  const legacy = buildBundleForMerge({ personKey: "cost-old", generatedAt: "2026-05-27T08:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T01:00:00.000Z", userMessageCount: 2, inputTokens: 300, fiveHour: 10 });
+  const legacyDaily = buildAggregatedDailyRows([{ filePath: "old.json", bundle: legacy as any }]);
+  const legacyWeekly = buildAggregatedWeeklyRows([{ filePath: "old.json", bundle: legacy as any }]);
+  assert.deepEqual(
+    [legacyDaily[0].estimatedApiEquivalentCostUsd, legacyDaily[0].pricedApiRequestCount, legacyDaily[0].unpricedApiRequestCount, legacyDaily[0].pricingCatalogVersion],
+    [null, 0, 1, null],
+  );
+  assert.deepEqual(
+    [legacyWeekly[0].estimatedApiEquivalentCostUsd, legacyWeekly[0].pricedApiRequestCount, legacyWeekly[0].unpricedApiRequestCount, legacyWeekly[0].pricingCatalogVersion],
+    [null, 0, 1, null],
+  );
+
+  legacy.dailySummaries[0].apiRequestCount = 0;
+  const emptyLegacyDaily = buildAggregatedDailyRows([{ filePath: "old-empty.json", bundle: legacy as any }]);
+  const emptyLegacyWeekly = buildAggregatedWeeklyRows([{ filePath: "old-empty.json", bundle: legacy as any }]);
+  assert.deepEqual(
+    [emptyLegacyDaily[0].estimatedApiEquivalentCostUsd, emptyLegacyDaily[0].pricedApiRequestCount, emptyLegacyDaily[0].unpricedApiRequestCount, emptyLegacyDaily[0].pricingCatalogVersion],
+    [0, 0, 0, null],
+  );
+  assert.deepEqual(
+    [emptyLegacyWeekly[0].estimatedApiEquivalentCostUsd, emptyLegacyWeekly[0].pricedApiRequestCount, emptyLegacyWeekly[0].unpricedApiRequestCount, emptyLegacyWeekly[0].pricingCatalogVersion],
+    [0, 0, 0, null],
+  );
+});
+
+test("aggregate preserves known v10 cost and resolves mixed schema/catalog versions", () => {
+  const v10 = upgradeBundleToV10(buildBundleForMerge({ personKey: "mix", generatedAt: "2026-05-27T08:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T01:00:00.000Z", userMessageCount: 2, inputTokens: 300, fiveHour: 10, sessionId: "mix-v10" }), { estimatedUsd: 0.4, priced: 1 });
+  const legacy = buildBundleForMerge({ personKey: "mix", generatedAt: "2026-05-27T09:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T02:00:00.000Z", userMessageCount: 1, inputTokens: 100, fiveHour: 20, sessionId: "mix-old" });
+  const bundles = [{ filePath: "v10.json", bundle: v10 as any }, { filePath: "old.json", bundle: legacy as any }];
+  const daily = buildAggregatedDailyRows(bundles);
+  const weekly = buildAggregatedWeeklyRows(bundles);
+  assert.deepEqual(
+    [daily[0].estimatedApiEquivalentCostUsd, daily[0].pricedApiRequestCount, daily[0].unpricedApiRequestCount, daily[0].pricingCatalogVersion],
+    [0.4, 1, 1, "mixed"],
+  );
+  assert.deepEqual(
+    [weekly[0].estimatedApiEquivalentCostUsd, weekly[0].pricedApiRequestCount, weekly[0].unpricedApiRequestCount, weekly[0].pricingCatalogVersion],
+    [0.4, 1, 1, "mixed"],
+  );
+
+  legacy.dailySummaries[0].apiRequestCount = 0;
+  const withEmptyLegacy = buildAggregatedDailyRows(bundles);
+  assert.equal(withEmptyLegacy[0].pricingCatalogVersion, "catalog-a");
+  assert.equal(withEmptyLegacy[0].unpricedApiRequestCount, 0);
+
+  const zeroA = upgradeBundleToV10(buildBundleForMerge({ personKey: "zero-mix", generatedAt: "2026-05-27T08:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T01:00:00.000Z", userMessageCount: 1, inputTokens: 0, fiveHour: 10, sessionId: "zero-a" }), { catalogVersion: "catalog-a", estimatedUsd: 0, priced: 0 });
+  const zeroB = upgradeBundleToV10(buildBundleForMerge({ personKey: "zero-mix", generatedAt: "2026-05-27T09:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T02:00:00.000Z", userMessageCount: 1, inputTokens: 0, fiveHour: 20, sessionId: "zero-b" }), { catalogVersion: "catalog-b", estimatedUsd: 0, priced: 0 });
+  zeroA.dailySummaries[0].apiRequestCount = 0;
+  zeroB.dailySummaries[0].apiRequestCount = 0;
+  const zeroMixed = buildAggregatedDailyRows([{ filePath: "a.json", bundle: zeroA as any }, { filePath: "b.json", bundle: zeroB as any }]);
+  assert.deepEqual(
+    [zeroMixed[0].estimatedApiEquivalentCostUsd, zeroMixed[0].pricedApiRequestCount, zeroMixed[0].unpricedApiRequestCount, zeroMixed[0].pricingCatalogVersion],
+    [0, 0, 0, "mixed"],
+  );
+});
+
 test("aggregate same-machine repeated export: deduplicates by shared sessionId, keeps best", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-dedup-"));
   try {
     // 同一个人 erin、同一台机器、同一天导出两次（上午 2 条 / 下午 9 条）。
     // 两份 bundle 共享同一个 sessionId（同一机器的同一 session 在两次导出里都存在），
     // 视为同机器重复导出 → 取最优（msgs 多的 b，9 条），不相加成 11 条。
+    const earlier = upgradeBundleToV10(buildBundleForMerge({ personKey: "erin", generatedAt: "2026-05-27T08:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T01:00:00.000Z", userMessageCount: 2, inputTokens: 300, fiveHour: 10, sessionId: "erin-machine-a" }), { estimatedUsd: 0.2 });
+    const later = upgradeBundleToV10(buildBundleForMerge({ personKey: "erin", generatedAt: "2026-05-27T20:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T09:00:00.000Z", userMessageCount: 9, inputTokens: 999, fiveHour: 42, sessionId: "erin-machine-a" }), { estimatedUsd: 0.9 });
     await fs.writeFile(
       path.join(root, "erin_a.json"),
-      JSON.stringify(buildBundleForMerge({ personKey: "erin", generatedAt: "2026-05-27T08:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T01:00:00.000Z", userMessageCount: 2, inputTokens: 300, fiveHour: 10, sessionId: "erin-machine-a" })),
+      JSON.stringify(earlier),
       "utf8",
     );
     await fs.writeFile(
       path.join(root, "erin_b.json"),
-      JSON.stringify(buildBundleForMerge({ personKey: "erin", generatedAt: "2026-05-27T20:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T09:00:00.000Z", userMessageCount: 9, inputTokens: 999, fiveHour: 42, sessionId: "erin-machine-a" })),
+      JSON.stringify(later),
       "utf8",
     );
 
@@ -440,6 +581,8 @@ test("aggregate same-machine repeated export: deduplicates by shared sessionId, 
     assert.equal(dailyRows[0].fiveHourLatestUsagePct, 42);
     assert.equal(weeklyRows[0].userMessageCount, 9);
     assert.equal(weeklyRows[0].fiveHourPeakUsagePct, 42);
+    assert.equal(dailyRows[0].estimatedApiEquivalentCostUsd, 0.9);
+    assert.equal(weeklyRows[0].estimatedApiEquivalentCostUsd, 0.9);
     // detail 只来自代表那一条事件。
     assert.equal(detailRows[0].timestamp, "2026-05-26T09:00:00.000Z");
     assert.equal(detailRows[0].inputTokens, 999);
@@ -448,19 +591,70 @@ test("aggregate same-machine repeated export: deduplicates by shared sessionId, 
   }
 });
 
+test("aggregate repeated exports without sessionId: keeps one fallback representative", () => {
+  const earlier = upgradeBundleToV10(buildBundleForMerge({ personKey: "empty-session", generatedAt: "2026-05-27T08:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T01:00:00.000Z", userMessageCount: 2, inputTokens: 300, fiveHour: 10 }), { estimatedUsd: 0.2 });
+  const later = upgradeBundleToV10(buildBundleForMerge({ personKey: "empty-session", generatedAt: "2026-05-27T20:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T09:00:00.000Z", userMessageCount: 9, inputTokens: 999, fiveHour: 42 }), { estimatedUsd: 0.9 });
+  delete earlier.rawEvents[0].rawPayload.session_id;
+  delete later.rawEvents[0].rawPayload.session_id;
+  const bundles = [
+    { filePath: "empty-session-a.json", bundle: earlier as any },
+    { filePath: "empty-session-b.json", bundle: later as any },
+  ];
+
+  const detailRows = buildAggregatedDetailRows(bundles);
+  const dailyRows = buildAggregatedDailyRows(bundles);
+  const weeklyRows = buildAggregatedWeeklyRows(bundles);
+
+  assert.equal(detailRows.length, 1);
+  assert.equal(dailyRows[0].userMessageCount, 9);
+  assert.equal(dailyRows[0].inputTokens, 999);
+  assert.equal(dailyRows[0].estimatedApiEquivalentCostUsd, 0.9);
+  assert.equal(weeklyRows[0].userMessageCount, 9);
+  assert.equal(weeklyRows[0].estimatedApiEquivalentCostUsd, 0.9);
+});
+
+test("aggregate sessionId bridge merges all transitively connected exports", () => {
+  const first = upgradeBundleToV10(buildBundleForMerge({ personKey: "bridge", generatedAt: "2026-05-27T08:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T01:00:00.000Z", userMessageCount: 2, inputTokens: 200, fiveHour: 10, sessionId: "session-a" }), { estimatedUsd: 0.2 });
+  const second = upgradeBundleToV10(buildBundleForMerge({ personKey: "bridge", generatedAt: "2026-05-27T09:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T02:00:00.000Z", userMessageCount: 3, inputTokens: 300, fiveHour: 20, sessionId: "session-b" }), { estimatedUsd: 0.3 });
+  const bridge = upgradeBundleToV10(buildBundleForMerge({ personKey: "bridge", generatedAt: "2026-05-27T10:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T03:00:00.000Z", userMessageCount: 9, inputTokens: 900, fiveHour: 40, sessionId: "session-a" }), { estimatedUsd: 0.9 });
+  bridge.rawEvents.push({
+    ...bridge.rawEvents[0],
+    timestamp: "2026-05-26T03:01:00.000Z",
+    rawPayload: { ...bridge.rawEvents[0].rawPayload, session_id: "session-b" },
+  });
+  const bundles = [
+    { filePath: "bridge-a.json", bundle: first as any },
+    { filePath: "bridge-b.json", bundle: second as any },
+    { filePath: "bridge-link.json", bundle: bridge as any },
+  ];
+
+  const detailRows = buildAggregatedDetailRows(bundles);
+  const dailyRows = buildAggregatedDailyRows(bundles);
+  const weeklyRows = buildAggregatedWeeklyRows(bundles);
+
+  assert.equal(detailRows.length, 2);
+  assert.equal(dailyRows[0].userMessageCount, 9);
+  assert.equal(dailyRows[0].inputTokens, 900);
+  assert.equal(dailyRows[0].estimatedApiEquivalentCostUsd, 0.9);
+  assert.equal(weeklyRows[0].userMessageCount, 9);
+  assert.equal(weeklyRows[0].estimatedApiEquivalentCostUsd, 0.9);
+});
+
 test("aggregate same day different machines: stacks up independently", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-stack-"));
   try {
     // 同一个人同一天，tj 机器（msgs=111，sessionId 独立）和 tj2 机器（msgs=3，sessionId 独立）。
     // sessionId 集合不相交 → 视为不同机器 → 叠加 → msgs=114。
+    const machineA = upgradeBundleToV10(buildBundleForMerge({ personKey: "user", generatedAt: "2026-05-27T15:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T10:00:00.000Z", userMessageCount: 111, inputTokens: 5000, fiveHour: 60, sessionId: "user-session-tj" }), { estimatedUsd: 0.5 });
+    const machineB = upgradeBundleToV10(buildBundleForMerge({ personKey: "user", generatedAt: "2026-05-27T17:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T16:00:00.000Z", userMessageCount: 3, inputTokens: 100, fiveHour: 20, sessionId: "user-session-tj2" }), { estimatedUsd: 0.1 });
     await fs.writeFile(
       path.join(root, "user_tj.json"),
-      JSON.stringify(buildBundleForMerge({ personKey: "user", generatedAt: "2026-05-27T15:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T10:00:00.000Z", userMessageCount: 111, inputTokens: 5000, fiveHour: 60, sessionId: "user-session-tj" })),
+      JSON.stringify(machineA),
       "utf8",
     );
     await fs.writeFile(
       path.join(root, "user_tj2.json"),
-      JSON.stringify(buildBundleForMerge({ personKey: "user", generatedAt: "2026-05-27T17:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T16:00:00.000Z", userMessageCount: 3, inputTokens: 100, fiveHour: 20, sessionId: "user-session-tj2" })),
+      JSON.stringify(machineB),
       "utf8",
     );
 
@@ -475,6 +669,9 @@ test("aggregate same day different machines: stacks up independently", async () 
     assert.equal(dailyRows[0].inputTokens, 5100);
     assert.equal(dailyRows[0].fiveHourPeakUsagePct, 60);
     assert.equal(weeklyRows[0].userMessageCount, 114);
+    assert.equal(dailyRows[0].estimatedApiEquivalentCostUsd, 0.6);
+    assert.equal(dailyRows[0].pricedApiRequestCount, 2);
+    assert.equal(weeklyRows[0].estimatedApiEquivalentCostUsd, 0.6);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -679,7 +876,7 @@ test("loadWeeklyExportBundles rejects old schema bundles explicitly", async () =
 
     await assert.rejects(
       () => loadWeeklyExportBundles(root),
-      /schemaVersion 6\/7\/8\/9 bundles/,
+      /schemaVersion 6\/7\/8\/9\/10 bundles/,
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });

@@ -147,7 +147,7 @@ ccus aggregate --input-dir ./team-exports --out-dir ./team-report
 ccus aggregate serve --input-dir ./team-exports
 ```
 
-`serve` 会启动一个本地 HTTP 服务，默认监听 `127.0.0.1` 上的随机端口，并在每次请求时实时读取最新日志生成页面。`serve` 默认查看 `this-week`（整周）使用量曲线（`build` / `open` 仍默认 `today`），可用 `--range` 覆盖。
+`dashboard build/open` 会在看板同目录生成独立 `pricing.html`。两种 `serve` 都通过 `/pricing.html` 提供当前价格页；看板的合计成本卡下可直接进入。`serve` 默认监听 `127.0.0.1` 上的随机端口，并在每次请求时实时读取最新日志生成页面。`dashboard serve` 默认查看 `this-week`（整周）使用量曲线（`build` / `open` 仍默认 `today`），可用 `--range` 覆盖。
 
 其中：
 
@@ -167,7 +167,9 @@ ccus aggregate serve --input-dir ./team-exports
 - 默认输出一个 `json` 数据包，里面同时包含 `rawEvents`、`weeklySummary`、`dailySummaries`
 - 导出文件内容为**紧凑 JSON**（无缩进），并默认 **gzip 压缩**后写成 `.json.gz`；gzip 与紧凑化都只是存储/展示层变化，解压后的字段集合与 `schemaVersion` 不变
 - 默认写 `.json.gz`；若用 `--out` 指定一个非 `.gz` 结尾的路径，则按明文 JSON 写出（不压缩）
-- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `9`：v7 起新增 `weeklySummary.codex` 与 `dailySummaries[].codex`（Codex CLI 的消息/请求/token 统计），v8 起该 codex 段再加 5h/7d 的 peak/latest 额度（从 `source="codex"` 事件重算、与 Claude 额度分开看），v9 起 codex `inputTokens` 改为净输入（`input_tokens - cached_input_tokens`，不含缓存命中）以对齐 Claude 的 `input_tokens` 口径；aggregate daily/weekly CSV 的主字段（消息/请求/token/额度）已把 Codex **叠加进 Claude 合计**（累加量相加、额度 peak 取两源 max、latest 两源相加、7d 累计含两源读数），不再单列 `codex*` 列，detail.csv 加 `source` 列区分来源
+- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `10`。顶层 `pricing` 记录本地价格目录版本、USD 币种和 `event-time-standard-api` 基准；`weeklySummary.apiEquivalentCost` 与 `dailySummaries[].apiEquivalentCost` 分别包含 `claude`、`codex`、`total` 的金额及定价覆盖度。v10 延续 v9 的 Codex token 口径：`inputTokens = max(0, input_tokens - cached_input_tokens)`，缓存输入由 `cacheReadInputTokens` 单列
+- 等效 API 成本按每次请求的模型、发生时间和 token 分类套用内置标准同步 API 价格。Claude 区分输入、输出、缓存读取及 5 分钟/1 小时缓存写入；Codex 区分净输入、缓存输入和输出。它不是 Claude/Codex 订阅账单，也不含税费、折扣、批处理、工具附加费或区域溢价
+- 未知模型不会丢弃：有部分请求可定价时金额是已知小计，页面显示“至少为”；全部请求均无法定价时金额为不可用。个人 dashboard 在顶部第五张卡显示 Claude 与 Codex 的合计成本，不显示来源分项。全部模型价格集中维护在 `src/lib/api-pricing-catalog.json`，价格目录随 ccus 发布，统计过程不联网；个人与多人 dashboard 的合计成本卡下链接独立 `pricing.html` 并在新页面打开，价格页只保留一套标题，Codex 排在 Claude 前并按模型版本从新到旧排列。当前 Claude 目录包含 Opus 4.7、Opus 4.8、Opus 5、Sonnet 5 和 Fable 5；Sonnet 5 按事件时间区分活动价与标准价
 - 默认文件名会带 git email 的帐号名前缀和起止日期，例如：`alice_export_2026-05-26_to_2026-06-01.json.gz`
 - `userMessageCount` 来自 `~/.claude/projects/**/*.jsonl` 的非 meta `type:user` 事件
 - `apiRequestCount` 与 token 指标来自 `~/.claude/projects/**/*.jsonl` 中带 `message.usage` 的 `type:assistant` 事件
@@ -184,13 +186,14 @@ ccus aggregate serve --input-dir ./team-exports
 ## 多人汇总
 
 - 输入目录放很多通过 `ccus export` 导出的 bundle 文件，`.json.gz`（gzip 压缩）与明文 `.json` 都能识别，gzip 文件读取时自动解压
-- `aggregate` 接受 `schemaVersion: 6/7/8/9` 的 bundle（v9 codex inputTokens 为净输入，v8 含 codex 额度，v7/v6 容错回退 null/零值）；更旧的导出请先用当前版本重新 `ccus export`
+- `aggregate` 接受 `schemaVersion: 6/7/8/9/10`。v6–v9 继续聚合原统计；存在 API 请求时成本为空并全部计入未定价，没有请求时成本为 0。旧版与 v10 或不同价格目录混用时，`pricingCatalogVersion` 按规则标记为 `mixed`
 - 同一个人在多台电脑上各自导出 bundle 时会自动合并去重：去重以**天**为粒度，对每个「同人同天」取 `generatedAt` 最新的那份导出，避免同一台机器重复导出或周与周重叠造成翻倍；**周汇总不取整周单份，而是把按天去重后的各天数据上卷累加**，所以多台电脑在不同天产生的用量会正确合进同一周。usage（5h / 7d）从选中事件按真实时间戳重算，Claude+Codex 合并：peak 取两源 max、latest 两源相加
 - `ccus aggregate --input-dir DIR --out-dir DIR`
 - 输出三个文件：
   - `detail.csv`：来自 winner bundle 的 `rawEvents`（同人同天只展开最新那份的事件），`contextUsedM` / `contextMaxM` 为单条事件的 context window token；另附带 `inputTokensM` / `outputTokensM` / `cacheReadInputTokensM`（按 `date` 取自当天 `dailySummaries` 的日总量，同一天多行会重复，不能按行求和）
   - `daily.csv`：同人同天取最新导出 bundle 的 `dailySummaries`，usage 从该 bundle 当天事件重算
   - `weekly.csv`：把同人同周的各天 winner（已按天去重）上卷累加得到，usage 从该周全部 winner 天的事件重算
+- `daily.csv` / `weekly.csv` 在列尾包含 `estimatedApiEquivalentCostUsd`、`pricingCatalogVersion`，金额最多 6 位小数，无法定价时留空；成本沿 token 的按天代表选择与周上卷路径去重。`pricedApiRequestCount`、`unpricedApiRequestCount` 保留在 bundle 与 dashboard，不写入 CSV；`detail.csv` 保持原列集合，不包含成本字段
 - `daily.csv` / `weekly.csv` 还各带一列 `sevenDayCumulativeUsagePct`：7 天额度的**累计真实使用量**，把锯齿波（涨到峰值→窗口重置归零→再涨）还原成实际消耗。计算分两层：先**去毛刺**（把持续短于 2 分钟的 stale 瞬时读数尖峰抹平，只保留真实持续的水平），再做**分段峰谷和**（按 reset 跌破段峰值一半切成上升段，每段累加「段内峰值−谷值」）。以百分比累加表达、可大于 100（用掉多于一个 7d 额度）。对 ±1 采样抖动和 stale 读数尖峰都鲁棒，不会被噪声虚增
   - 该列**绕开按天 winner**，对同一个人**所有机器、所有周**的 bundle `rawEvents`（含 Claude 与 Codex 两源 7d 读数，codex 事件不再过滤）先按时间合并去重成一条账号级曲线再算，绝不分机相加（同账号 7d 额度共享）
   - 区间内第一个有效样本无前值、不贡献增量，所以 **`daily.csv` 逐行相加只是对全局总量的近似**（跨天边界增量不计入单天）；`weekly.csv` 在整周连续算、把跨天增量也计入，更连续，恒有 `weekly ≥ Σ 同周 daily`，想要更准的总量请看 weekly 这列

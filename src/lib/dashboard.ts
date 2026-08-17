@@ -1,6 +1,7 @@
-import { DashboardBucket, DashboardDailyMessagePoint, DashboardSummary, StatuslineEvent } from "../types";
+import { ApiEquivalentCostBreakdown, ApiEquivalentCostResult, DashboardBucket, DashboardDailyMessagePoint, DashboardSummary, StatuslineEvent } from "../types";
 import { addNullable, buildSevenDayCurveFromEvents, computeCumulativeSevenDay, computeCumulativeSevenDayCurve } from "./aggregate";
 import { ChartSpec, renderUplotChart, uplotBodyScripts, uplotHeadAssets } from "./chart-assets";
+import { API_PRICING_PAGE_FILE } from "./api-pricing-table";
 import { isCodexSourceEvent } from "./payload";
 import { formatLocalTimestamp, roundNumber } from "./time";
 
@@ -245,6 +246,43 @@ function statValue(value: number | null, suffix = "%"): string {
   return value === null ? "--" : `${value.toFixed(1)}${suffix}`;
 }
 
+function formatCostUsd(value: number): string {
+  return `$${value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`;
+}
+
+function costDisplay(result: ApiEquivalentCostResult): { value: string; note: string } {
+  if (result.pricedApiRequestCount === 0 && result.unpricedApiRequestCount > 0) {
+    return { value: "不可用", note: `${result.unpricedApiRequestCount} 个请求未定价` };
+  }
+  const amount = formatCostUsd(result.estimatedUsd ?? 0);
+  if (result.unpricedApiRequestCount > 0) {
+    return { value: `≥ ${amount}`, note: `${result.unpricedApiRequestCount} 个请求未定价，结果不完整` };
+  }
+  return { value: amount, note: `${result.pricedApiRequestCount} 个请求已定价` };
+}
+
+function renderApiEquivalentCostCard(costs: ApiEquivalentCostBreakdown | null): string {
+  if (!costs) {
+    return "";
+  }
+  const display = costDisplay(costs.total);
+  return `<article class="panel stat-card">
+    <h2>合计等效 API 成本</h2>
+    <p class="stat-value">${escapeHtml(display.value)}</p>
+    <p class="stat-note">${escapeHtml(display.note)}</p>
+    <a class="pricing-link" href="${API_PRICING_PAGE_FILE}" target="_blank" rel="noopener noreferrer">查看当前价格表</a>
+  </article>`;
+}
+
+function renderApiEquivalentCostNote(
+  costs: ApiEquivalentCostBreakdown | null,
+  pricingCatalogVersion: string | null,
+): string {
+  return costs
+    ? `<p class="muted">标准同步 API 等效成本，不是订阅或实际账单 · 事件时间计价 · 目录 ${escapeHtml(pricingCatalogVersion ?? "不可用")}</p>`
+    : "";
+}
+
 /** 最近事件表帮助回看 statusline 在某一时刻到底输出了什么。 */
 function renderRecentEvents(events: StatuslineEvent[]): string {
   const rows = [...events]
@@ -302,6 +340,8 @@ export function buildDashboardHtml(
   start: Date,
   end: Date,
   dailyUserMessages: DashboardDailyMessagePoint[] = [],
+  apiEquivalentCost: ApiEquivalentCostBreakdown | null = null,
+  pricingCatalogVersion: string | null = null,
 ): string {
   const summary = summarizeEvents(events);
   const buckets = bucketizeEvents(events, start, end, pickBucketMinutes(start, end));
@@ -413,6 +453,7 @@ export function buildDashboardHtml(
         color: var(--muted);
         font-size: 14px;
       }
+      .pricing-link { display: inline-block; margin-top: 12px; color: var(--accent); font-size: 13px; }
       .panel-header {
         display: flex;
         align-items: end;
@@ -504,7 +545,9 @@ export function buildDashboardHtml(
           <p class="stat-value">${combinedUserMessages}</p>
           <p class="stat-note">窗口内每日真实用户请求数合计（Claude ${totalUserMessages} · Codex ${codexTotalUserMessages}）</p>
         </article>
+        ${renderApiEquivalentCostCard(apiEquivalentCost)}
       </section>
+      ${renderApiEquivalentCostNote(apiEquivalentCost, pricingCatalogVersion)}
       ${renderChart(buckets)}
       ${renderDailyMessages(dailyUserMessages)}
       ${renderRecentEvents(events)}

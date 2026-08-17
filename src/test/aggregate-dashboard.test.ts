@@ -10,6 +10,10 @@ const dailyRows: AggregatedDailyRow[] = [
     date: "2026-05-26",
     userMessageCount: 5,
     apiRequestCount: 3,
+    estimatedApiEquivalentCostUsd: 1,
+    pricedApiRequestCount: 3,
+    unpricedApiRequestCount: 0,
+    pricingCatalogVersion: "2026-08-14",
     inputTokens: 1000,
     outputTokens: 120,
     cacheReadInputTokens: 50,
@@ -27,6 +31,10 @@ const dailyRows: AggregatedDailyRow[] = [
     date: "2026-05-27",
     userMessageCount: 2,
     apiRequestCount: 1,
+    estimatedApiEquivalentCostUsd: null,
+    pricedApiRequestCount: 0,
+    unpricedApiRequestCount: 1,
+    pricingCatalogVersion: "2026-08-14",
     inputTokens: 200,
     outputTokens: 30,
     cacheReadInputTokens: 10,
@@ -44,6 +52,10 @@ const dailyRows: AggregatedDailyRow[] = [
     date: "2026-05-27",
     userMessageCount: 9,
     apiRequestCount: 7,
+    estimatedApiEquivalentCostUsd: 2.5,
+    pricedApiRequestCount: 7,
+    unpricedApiRequestCount: 0,
+    pricingCatalogVersion: "2026-08-14",
     inputTokens: 800,
     outputTokens: 90,
     cacheReadInputTokens: 30,
@@ -64,6 +76,10 @@ const weeklyRows: AggregatedWeeklyRow[] = [
     week: "2026-05-25",
     userMessageCount: 7,
     apiRequestCount: 4,
+    estimatedApiEquivalentCostUsd: 1,
+    pricedApiRequestCount: 3,
+    unpricedApiRequestCount: 1,
+    pricingCatalogVersion: "2026-08-14",
     inputTokens: 1200,
     outputTokens: 150,
     cacheReadInputTokens: 60,
@@ -81,6 +97,10 @@ const weeklyRows: AggregatedWeeklyRow[] = [
     week: "2026-05-25",
     userMessageCount: 9,
     apiRequestCount: 7,
+    estimatedApiEquivalentCostUsd: 2.5,
+    pricedApiRequestCount: 7,
+    unpricedApiRequestCount: 0,
+    pricingCatalogVersion: "2026-08-14",
     inputTokens: 800,
     outputTokens: 90,
     cacheReadInputTokens: 30,
@@ -150,6 +170,9 @@ test("summarizePeople rolls up daily rows per person and sorts by user messages 
   assert.equal(people[1].activeDays, 2);
   assert.equal(people[1].firstDate, "2026-05-26");
   assert.equal(people[1].lastDate, "2026-05-27");
+  assert.equal(people[1].estimatedApiEquivalentCostUsd, 1);
+  assert.equal(people[1].pricedApiRequestCount, 3);
+  assert.equal(people[1].unpricedApiRequestCount, 1);
 });
 
 test("summarizeOverall aggregates the whole team", () => {
@@ -163,6 +186,9 @@ test("summarizeOverall aggregates the whole team", () => {
   assert.equal(overall.totalCacheReadInputTokens, 90);
   assert.equal(overall.startDate, "2026-05-26");
   assert.equal(overall.endDate, "2026-05-27");
+  assert.equal(overall.estimatedApiEquivalentCostUsd, 3.5);
+  assert.equal(overall.pricedApiRequestCount, 10);
+  assert.equal(overall.unpricedApiRequestCount, 1);
 });
 
 test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", () => {
@@ -183,7 +209,63 @@ test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", ()
   assert.match(html, /70\.0%/);
   assert.match(html, />alice</);
   assert.match(html, />bob</);
-  assert.match(html, /Total API requests/);
+  const topStats = html.match(/<section class="stats">([\s\S]*?)<\/section>/)?.[1] ?? "";
+  const topStatArticles = topStats.match(/<article\b[\s\S]*?<\/article>/g) ?? [];
+  assert.equal(topStatArticles.length, 6);
+  assert.match(topStatArticles[4], /<h2>Peak 7d usage<\/h2>/);
+  assert.match(topStatArticles[5], /<h2>合计等效 API 成本<\/h2>/);
+  assert.match(topStatArticles[5], /href="pricing\.html" target="_blank" rel="noopener noreferrer"[\s\S]*查看当前价格表/);
+  assert.doesNotMatch(html, /Total API requests/);
+  const peopleSection = html.match(/<section class="panel table-panel">[\s\S]*?<h2>多人对比<\/h2>[\s\S]*?<\/section>/)?.[0] ?? "";
+  assert.notEqual(peopleSection, "");
+  assert.doesNotMatch(peopleSection, /<th class="muted-col">API 请求<\/th>/);
+  assert.match(html, /等效 API 成本/);
+  assert.match(html, /≥ \$3\.50/);
+  assert.match(html, /\$2\.50/);
+  assert.match(html, /价格目录/);
+  assert.doesNotMatch(html, /<h2>当前模型价格<\/h2>/);
+});
+
+test("buildAggregateDashboardHtml renders unavailable and mixed pricing states", () => {
+  const unavailableDaily = [{
+    ...dailyRows[0],
+    estimatedApiEquivalentCostUsd: null,
+    pricedApiRequestCount: 0,
+    unpricedApiRequestCount: dailyRows[0].apiRequestCount,
+    pricingCatalogVersion: null,
+  }];
+  const unavailableWeekly = [{
+    ...weeklyRows[0],
+    estimatedApiEquivalentCostUsd: null,
+    pricedApiRequestCount: 0,
+    unpricedApiRequestCount: weeklyRows[0].apiRequestCount,
+    pricingCatalogVersion: "mixed",
+  }];
+  const html = buildAggregateDashboardHtml([], unavailableDaily, unavailableWeekly, new Date("2026-05-27T08:00:00Z"));
+  assert.match(html, /不可用/);
+
+  const mixedHtml = buildAggregateDashboardHtml([], [{ ...dailyRows[0], pricingCatalogVersion: "mixed" }], [{ ...weeklyRows[0], pricingCatalogVersion: "mixed" }]);
+  assert.match(mixedHtml, /旧版 schema 或不同价格目录/);
+  assert.match(mixedHtml, /价格目录：mixed/);
+});
+
+test("dashboard summaries mark legacy requests on another day or person as mixed", () => {
+  const legacyDay = {
+    ...dailyRows[1],
+    estimatedApiEquivalentCostUsd: null,
+    pricedApiRequestCount: 0,
+    unpricedApiRequestCount: dailyRows[1].apiRequestCount,
+    pricingCatalogVersion: null,
+  };
+  const person = summarizePeople([dailyRows[0], legacyDay]);
+  assert.equal(person[0].pricingCatalogVersion, "mixed");
+
+  const legacyPerson = summarizePeople([{ ...legacyDay, personKey: "legacy" }]);
+  const overall = summarizeOverall([dailyRows[0], { ...legacyDay, personKey: "legacy" }], [
+    summarizePeople([dailyRows[0]])[0],
+    legacyPerson[0],
+  ]);
+  assert.equal(overall.pricingCatalogVersion, "mixed");
 });
 
 /** 两张折线改用 uPlot：断言从 SVG path/title 改为容器 + 内联 series 配置（5h 实线 / 7d 虚线）。 */
@@ -282,6 +364,8 @@ test("buildAggregateDashboardHtml stays graceful with empty rows", () => {
   const html = buildAggregateDashboardHtml([], [], [], new Date("2026-05-27T08:00:00.000Z"));
   assert.match(html, /<!doctype html>/i);
   assert.match(html, /人数：0/);
+  assert.match(html, /href="pricing\.html"/);
+  assert.doesNotMatch(html, /<h2>当前模型价格<\/h2>/);
 });
 
 /** 多人时间戳并集对齐：不同 series 的不规则时间戳合成统一 x 轴，缺失点填 null。 */
