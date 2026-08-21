@@ -65,13 +65,21 @@ test("fetchCodexQuota parses primary/secondary usedPercent (camelCase) and reset
       );
     }
   });
-  const spawn: CodexSpawnFn = () => asChild(child);
+  const captured: { command?: string; args?: string[] } = {};
+  const spawn: CodexSpawnFn = (command, args) => {
+    captured.command = command;
+    captured.args = args;
+    return asChild(child);
+  };
   const out = await fetchCodexQuota({ spawn, timeoutMs: 1000 });
 
   assert.equal(out.status, "ok");
   assert.equal(out.fiveHour, 42);
   assert.equal(out.sevenDay, 18);
   assert.equal(out.resetsAt, 1730947200 * 1000);
+  assert.equal(captured.command, "codex");
+  assert.deepEqual(captured.args, ["-s", "read-only", "-a", "never", "app-server"]);
+  assert.equal(captured.args?.includes("untrusted"), false);
   // 握手顺序：initialize → initialized 通知 → account/rateLimits/read。
   const methods = child.sent.map((line) => (JSON.parse(line.trim()) as { method: string }).method);
   assert.deepEqual(methods, ["initialize", "initialized", "account/rateLimits/read"]);

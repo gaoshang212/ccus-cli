@@ -7,8 +7,8 @@ import { debugLog } from "./debug";
 import { httpRequest, type HttpRequestOptions } from "./api-mode";
 import { getCodexQuotaCachePath } from "./paths";
 
-// app-server 子进程参数：read-only + untrusted，Codex 官方推荐的最低权限拉额度姿态。
-const CODEX_ARGS = ["-s", "read-only", "-a", "untrusted", "app-server"];
+// app-server 子进程参数：read-only + never，避免新版 Codex 拒绝已移除的 untrusted 审批策略。
+const CODEX_ARGS = ["-s", "read-only", "-a", "never", "app-server"];
 const DEFAULT_TIMEOUT_MS = 10_000;
 // notify 每 turn 触发，额度缓存 5 分钟，命中秒回避免阻塞 Codex 主流程。
 const DEFAULT_TTL_MS = 5 * 60 * 1000;

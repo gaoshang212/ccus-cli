@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-08-21
+
+### 修复
+- Codex 额度 RPC 启动参数由已被新版 CLI 拒绝的 `-a untrusted` 改为非交互模式 `-a never`，继续配合 `-s read-only` 只读沙箱，恢复 `app-server` 额度采集。
+
 ## [0.2.11] - 2026-08-17
 
 ### 新增
