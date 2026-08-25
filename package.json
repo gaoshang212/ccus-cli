@@ -1,6 +1,6 @@
 {
   "name": "ccus-cli",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "Claude Code statusline usage logger and dashboard CLI",
   "type": "commonjs",
   "bin": {

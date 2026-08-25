@@ -12,7 +12,7 @@ const CODEX_ARGS = ["-s", "read-only", "-a", "never", "app-server"];
 const DEFAULT_TIMEOUT_MS = 10_000;
 // notify 每 turn 触发，额度缓存 5 分钟，命中秒回避免阻塞 Codex 主流程。
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
-// ChatGPT 后端 wham/usage 回退：仅本机无 codex CLI（spawn unavailable）时走，直连读 auth.json 的 OAuth token。
+// ChatGPT 后端 wham/usage 回退：app-server 未返回可用额度时走，直连读 auth.json 的 OAuth token。
 const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const WHAM_TIMEOUT_MS = 15_000;
 // wham 各窗口自带的时长（秒）：5h 窗 18000、周窗 604800，按它认桶、不假设 primary/secondary 顺序。
@@ -368,7 +368,7 @@ export async function fetchCodexQuota(options: FetchCodexQuotaOptions = {}): Pro
   });
 }
 
-// --- wham/usage HTTP 直连回退（仅主路径 unavailable 时由 resolveCodexQuota 编排） ---
+// --- wham/usage HTTP 直连回退（主路径未返回可用额度时由 resolveCodexQuota 编排） ---
 
 /** 读 wham 窗口使用率：主字段 `used_percent`（下划线，wham 实际返回），驼峰 / `used_percentage` 防御性 fallback；窗口为 null 返回 null。 */
 function readWhamUsedPercent(window: Record<string, unknown> | null): number | null {
@@ -464,7 +464,7 @@ export type CodexWhamFetcher = (options?: FetchCodexQuotaWhamOptions) => Promise
 /**
  * wham/usage HTTP 直连回退：读 auth.json 的 chatgpt OAuth token → `GET wham/usage` → parseWhamUsage 认桶。
  *
- * 仅在主路径 `unavailable`（本机无 codex CLI）时由 resolveCodexQuota 编排调用。全程不抛错：
+ * 主路径未返回可用额度时由 resolveCodexQuota 编排调用。全程不抛错：
  * 无 token / HTTP 失败 / 非 2xx / JSON 异常 / 解析空 → `{ status: "error", ... }`，成功 → `{ status: "ok", ... }`。
  * 请求经 api-mode 的 httpRequest（自带统一 env 代理通道，代理环境也能回退采到额度）。
  */
@@ -557,7 +557,7 @@ function hasAnyQuota(quota: CodexQuota): boolean {
 export type CodexFetcher = (options?: FetchCodexQuotaOptions) => Promise<CodexFetchOutcome>;
 
 /**
- * 缓存优先解析额度：新鲜直接返回；过期拉一次（带超时）；拉取失败 / 无有效数据回退旧缓存，全失败返回 null。
+ * 缓存优先解析额度：新鲜直接返回；过期先拉 app-server，未得到可用额度再拉 wham；两路均失败或全空返回 null。
  *
  * notify 路径用，全程不抛错、不写 stdout。`options.fetcher` 供测试注入。
  */
@@ -591,27 +591,23 @@ export async function resolveCodexQuota(
     if (outcome.status === "ok" && hasAnyQuota(outcome)) {
       return await persist({ fiveHour: outcome.fiveHour, sevenDay: outcome.sevenDay, resetsAt: outcome.resetsAt });
     }
-    // 主路径 unavailable（本机无 codex CLI）→ wham/usage HTTP 直连回退；
-    // error（超时 / RPC 错 / 进程崩）不触发，避免瞬时故障多扛一次 15s HTTP。
-    if (outcome.status === "unavailable") {
-      try {
-        const whamOutcome = await whamFetcher({
-          codexHomePath: options.fetchOptions?.codexHomePath,
-          env: options.fetchOptions?.env,
-        });
-        if (whamOutcome.status === "ok" && hasAnyQuota(whamOutcome)) {
-          return await persist({ fiveHour: whamOutcome.fiveHour, sevenDay: whamOutcome.sevenDay, resetsAt: whamOutcome.resetsAt });
-        }
-        debugLog("codex", "wham fallback did not yield usable quota", { status: whamOutcome.status });
-      } catch (error) {
-        debugLog("codex", "wham fallback threw", error instanceof Error ? error.message : String(error));
-      }
-    } else {
-      debugLog("codex", "fetch did not yield usable quota", { status: outcome.status });
-    }
+    debugLog("codex", "app-server did not yield usable quota", { status: outcome.status });
   } catch (error) {
-    debugLog("codex", "fetch threw, fallback to cache", error instanceof Error ? error.message : String(error));
+    debugLog("codex", "app-server fetch threw", error instanceof Error ? error.message : String(error));
   }
 
-  return cached ? quotaFromCache(cached) : null;
+  try {
+    const whamOutcome = await whamFetcher({
+      codexHomePath: options.fetchOptions?.codexHomePath,
+      env: options.fetchOptions?.env,
+    });
+    if (whamOutcome.status === "ok" && hasAnyQuota(whamOutcome)) {
+      return await persist({ fiveHour: whamOutcome.fiveHour, sevenDay: whamOutcome.sevenDay, resetsAt: whamOutcome.resetsAt });
+    }
+    debugLog("codex", "wham fallback did not yield usable quota", { status: whamOutcome.status });
+  } catch (error) {
+    debugLog("codex", "wham fallback threw", error instanceof Error ? error.message : String(error));
+  }
+
+  return null;
 }

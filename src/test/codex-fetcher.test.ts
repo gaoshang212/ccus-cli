@@ -302,19 +302,6 @@ test("resolveCodexQuota refetches after ttl expires", async () => {
   assert.equal(calls, 2);
 });
 
-test("resolveCodexQuota falls back to stale cache when fetch fails", async () => {
-  const dir = await mkdtemp("ccus-codex-cache-");
-  const ok = async () => ({ fiveHour: 10, sevenDay: 20, resetsAt: null, status: "ok" as const });
-  const unavailable = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "unavailable" as const });
-  const whamUnavailable = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "error" as const });
-  const t0 = new Date("2026-07-27T10:00:00Z");
-  await resolveCodexQuota(dir, { now: t0, fetcher: ok });
-  const later = new Date("2026-07-27T10:06:00Z");
-  const q = await resolveCodexQuota(dir, { now: later, fetcher: unavailable, whamFetcher: whamUnavailable });
-
-  assert.deepEqual(q, { fiveHour: 10, sevenDay: 20, resetsAt: null });
-});
-
 test("resolveCodexQuota returns null when fetch fails and no cache", async () => {
   const dir = await mkdtemp("ccus-codex-cache-");
   const unavailable = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "unavailable" as const });
@@ -324,13 +311,20 @@ test("resolveCodexQuota returns null when fetch fails and no cache", async () =>
   assert.equal(q, null);
 });
 
-test("resolveCodexQuota skips persisting when fetch ok but both windows null", async () => {
+test("resolveCodexQuota falls back to wham when app-server returns ok but both windows null", async () => {
   const dir = await mkdtemp("ccus-codex-cache-");
   const empty = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "ok" as const });
-  const q = await resolveCodexQuota(dir, { fetcher: empty });
+  let whamCalls = 0;
+  const q = await resolveCodexQuota(dir, {
+    fetcher: empty,
+    whamFetcher: async () => {
+      whamCalls += 1;
+      return { fiveHour: 30, sevenDay: 12, resetsAt: null, status: "ok" as const };
+    },
+  });
 
-  assert.equal(q, null);
-  assert.equal(readCodexQuotaCacheSync(dir), null);
+  assert.deepEqual(q, { fiveHour: 30, sevenDay: 12, resetsAt: null });
+  assert.equal(whamCalls, 1);
 });
 
 // --- auth.json 读取 ---
@@ -505,7 +499,7 @@ test("resolveCodexQuota falls back to wham when app-server unavailable and wham 
   assert.equal(readCodexQuotaCacheSync(dir)?.fiveHour, 30); // wham 额度写进缓存
 });
 
-test("resolveCodexQuota returns stale cache when both app-server unavailable and wham fail", async () => {
+test("resolveCodexQuota returns null when app-server unavailable and wham fail with stale cache", async () => {
   const dir = await mkdtemp("ccus-codex-wham-");
   const t0 = new Date("2026-07-27T10:00:00Z");
   const ok = async () => ({ fiveHour: 10, sevenDay: 20, resetsAt: null, status: "ok" as const });
@@ -514,7 +508,7 @@ test("resolveCodexQuota returns stale cache when both app-server unavailable and
   const unavailable = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "unavailable" as const });
   const whamFail = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "error" as const });
   const q = await resolveCodexQuota(dir, { now: later, fetcher: unavailable, whamFetcher: whamFail });
-  assert.deepEqual(q, { fiveHour: 10, sevenDay: 20, resetsAt: null });
+  assert.equal(q, null);
 });
 
 test("resolveCodexQuota returns null when unavailable + wham fail + no cache", async () => {
@@ -525,7 +519,7 @@ test("resolveCodexQuota returns null when unavailable + wham fail + no cache", a
   assert.equal(q, null);
 });
 
-test("resolveCodexQuota does not call wham when app-server returns error", async () => {
+test("resolveCodexQuota falls back to wham when app-server returns error", async () => {
   const dir = await mkdtemp("ccus-codex-wham-");
   const errorFetch = async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "error" as const });
   let whamCalls = 0;
@@ -534,8 +528,53 @@ test("resolveCodexQuota does not call wham when app-server returns error", async
     return { fiveHour: 1, sevenDay: 2, resetsAt: null, status: "ok" as const };
   };
   const q = await resolveCodexQuota(dir, { fetcher: errorFetch, whamFetcher });
+  assert.deepEqual(q, { fiveHour: 1, sevenDay: 2, resetsAt: null });
+  assert.equal(whamCalls, 1);
+});
+
+test("resolveCodexQuota returns null when app-server error and wham fail with stale cache", async () => {
+  const dir = await mkdtemp("ccus-codex-wham-");
+  const t0 = new Date("2026-07-27T10:00:00Z");
+  const ok = async () => ({ fiveHour: 10, sevenDay: 20, resetsAt: null, status: "ok" as const });
+  await resolveCodexQuota(dir, { now: t0, fetcher: ok });
+  const q = await resolveCodexQuota(dir, {
+    now: new Date("2026-07-27T10:06:00Z"),
+    fetcher: async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "error" as const }),
+    whamFetcher: async () => ({ fiveHour: null, sevenDay: null, resetsAt: null, status: "error" as const }),
+  });
+
   assert.equal(q, null);
-  assert.equal(whamCalls, 0); // error 不触发 wham
+});
+
+test("resolveCodexQuota tries wham when app-server fetcher throws", async () => {
+  const dir = await mkdtemp("ccus-codex-wham-");
+  let whamCalls = 0;
+  const q = await resolveCodexQuota(dir, {
+    fetcher: async () => {
+      throw new Error("rpc failed");
+    },
+    whamFetcher: async () => {
+      whamCalls += 1;
+      return { fiveHour: 30, sevenDay: 12, resetsAt: null, status: "ok" as const };
+    },
+  });
+
+  assert.deepEqual(q, { fiveHour: 30, sevenDay: 12, resetsAt: null });
+  assert.equal(whamCalls, 1);
+});
+
+test("resolveCodexQuota returns null when app-server and wham both throw", async () => {
+  const dir = await mkdtemp("ccus-codex-wham-");
+  const q = await resolveCodexQuota(dir, {
+    fetcher: async () => {
+      throw new Error("rpc failed");
+    },
+    whamFetcher: async () => {
+      throw new Error("wham failed");
+    },
+  });
+
+  assert.equal(q, null);
 });
 
 test("resolveCodexQuota serves fresh cache without calling app-server or wham", async () => {
