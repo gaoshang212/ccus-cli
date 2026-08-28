@@ -6,8 +6,8 @@ import { summarizeEvents } from "./lib/dashboard";
 import { buildAggregateDashboardHtml } from "./lib/aggregate-dashboard";
 import { API_PRICING_PAGE_FILE, buildApiPricingPage } from "./lib/api-pricing-table";
 import { renderDashboardPage } from "./lib/dashboard-pages";
-import { findActiveSessionFiles, summarizeClaudeProjectUsage, summarizeClaudeProjectUsageByDay } from "./lib/claude";
-import { findActiveCodexSessionFiles, summarizeCodexSessionUsage, summarizeCodexSessionUsageByDay } from "./lib/codex-sessions";
+import { findActiveSessionFiles, summarizeClaudeProjectUsageCombined } from "./lib/claude";
+import { findActiveCodexSessionFiles, summarizeCodexSessionUsageCombined } from "./lib/codex-sessions";
 import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeeklyCsv, buildSummaryRows, buildWeeklyExportBundleJson, writeGzipFile, writeTextFile } from "./lib/export";
 import { buildAggregatedDailyRows, buildAggregatedDetailRows, buildAggregatedWeeklyRows, loadWeeklyExportBundles } from "./lib/aggregate";
 import { debugLog, resolveDebugEnabled, setDebugEnabled } from "./lib/debug";
@@ -21,7 +21,7 @@ import { installScheduler, uninstallScheduler } from "./lib/scheduler";
 import { applyQuotaToPayload, fetchQuota, readApiConfig, readApiQuotaCacheSync, readClaudeSettingsEnvTokenSync, resolveApiQuota, resolveApiToken, resolveApiTokenWithSettings, writeApiConfig } from "./lib/api-mode";
 import { resolveCodexQuota } from "./lib/codex-fetcher";
 import { installCodexHook, uninstallCodexHook } from "./lib/codex-install";
-import { isSyncDue, maybeSpawnBackgroundSync, performSync, readSyncConfig, readSyncStateSync, sanitizeSuffix, writeSyncConfig } from "./lib/sync";
+import { formatSyncElapsed, isSyncDue, maybeSpawnBackgroundSync, performSync, readSyncConfig, readSyncStateSync, sanitizeSuffix, writeSyncConfig } from "./lib/sync";
 import type { ApiModeConfig, RawStatuslinePayload } from "./types";
 import { appendEvent, readEventsForRange } from "./lib/storage";
 import { enumerateDateKeys, expandToFullWeekWindow, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
@@ -253,8 +253,12 @@ async function loadDashboardData(
   // codex 消息柱图走 dailyUserMessages，不受影响。
   const events = (await readEventsForRange(dataDir, range, now))
     .map((record) => computeStatuslineEvent(record));
-  const claudeDailyUsage = await summarizeClaudeProjectUsageByDay(window.start, window.end);
-  const codexDailyUsage = await summarizeCodexSessionUsageByDay(window.start, window.end);
+  const [claudeUsage, codexUsage] = await Promise.all([
+    summarizeClaudeProjectUsageCombined(window.start, window.end),
+    summarizeCodexSessionUsageCombined(window.start, window.end),
+  ]);
+  const claudeDailyUsage = claudeUsage.daily;
+  const codexDailyUsage = codexUsage.daily;
   const dailyUserMessages = enumerateDateKeys(window.start, window.end).map((date) => ({
     date,
     userMessageCount: claudeDailyUsage.get(date)?.userMessageCount ?? 0,
@@ -404,10 +408,14 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
   const statuslineDailyRows = buildSummaryRows(claudeEvents);
   const codexStatuslineSummary = summarizeEvents(codexEvents);
   const codexStatuslineDailyRows = buildSummaryRows(codexEvents);
-  const claudeUsage = await summarizeClaudeProjectUsage(window.start, window.end);
-  const claudeDailyUsage = await summarizeClaudeProjectUsageByDay(window.start, window.end);
-  const codexUsage = await summarizeCodexSessionUsage(window.start, window.end);
-  const codexDailyUsage = await summarizeCodexSessionUsageByDay(window.start, window.end);
+  const [claudeScan, codexScan] = await Promise.all([
+    summarizeClaudeProjectUsageCombined(window.start, window.end),
+    summarizeCodexSessionUsageCombined(window.start, window.end),
+  ]);
+  const claudeUsage = claudeScan.weekly;
+  const claudeDailyUsage = claudeScan.daily;
+  const codexUsage = codexScan.weekly;
+  const codexDailyUsage = codexScan.daily;
   const claudeWeeklyCost = mergeApiEquivalentCosts([...claudeDailyUsage.values()].map((day) => day.apiEquivalentCost));
   const codexWeeklyCost = mergeApiEquivalentCosts([...codexDailyUsage.values()].map((day) => day.apiEquivalentCost));
   debugLog("export", "data collected", {
@@ -869,6 +877,7 @@ async function handleBackgroundCheckUpdate(options: CliOptions): Promise<void> {
  * 不带参数则用已存配置同步。最终仍无目标目录则报错引导用户先配置。
  */
 async function handleSync(options: CliOptions): Promise<void> {
+  const startedAt = process.hrtime.bigint();
   const dataDir = getDataDir(options);
   const target = getStringOption(options, "target");
   const interval = getStringOption(options, "interval");
@@ -897,6 +906,8 @@ async function handleSync(options: CliOptions): Promise<void> {
   if (result.archivedLastWeekDest) {
     process.stdout.write(`已归档上一周到 ${result.archivedLastWeekDest}\n`);
   }
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  process.stdout.write(`耗时：${formatSyncElapsed(elapsedMs)}\n`);
 }
 
 /**

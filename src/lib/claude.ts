@@ -22,6 +22,19 @@ interface ClaudeDailyUsageSummary extends ClaudeProjectUsageSummary {
   date: string;
 }
 
+type ClaudeWeeklyUsageSummary = WeeklyExportSummary["counts"]
+  & WeeklyExportSummary["tokens"]
+  & {
+    matchedFileCount: number;
+    claudeDataDir: string;
+    apiEquivalentCost: ApiEquivalentCostResult;
+  };
+
+export interface ClaudeProjectUsageCombined {
+  weekly: ClaudeWeeklyUsageSummary;
+  daily: Map<string, ClaudeDailyUsageSummary>;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -110,6 +123,14 @@ function localDateKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+async function fileMayContainRange(filePath: string, start: Date): Promise<boolean> {
+  try {
+    return (await fs.stat(filePath)).mtimeMs >= start.getTime();
+  } catch {
+    return true;
+  }
+}
+
 /**
  * 判断一条 `type:"user"` 事件是否算作一次用户请求。
  *
@@ -145,56 +166,22 @@ function isHumanUserMessage(record: Record<string, unknown>): boolean {
   return true;
 }
 
-function summarizeProjectTranscript(content: string, start: Date, end: Date): ClaudeProjectUsageSummary {
-  const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
-  const summary: ClaudeProjectUsageSummary = {
-    userMessageCount: 0,
-    apiRequestCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadInputTokens: 0,
-    apiEquivalentCost: emptyApiEquivalentCost(),
-  };
-
-  for (const line of lines) {
-    try {
-      const record = JSON.parse(line) as unknown;
-      const timestamp = isRecord(record) ? getString(record.timestamp) : null;
-      if (!isRecord(record) || !timestampInRange(timestamp, start, end)) {
-        continue;
-      }
-
-      if (isHumanUserMessage(record)) {
-        summary.userMessageCount += 1;
-      }
-
-      if (record.type !== "assistant" || !isRecord(record.message) || !isRecord(record.message.usage)) {
-        continue;
-      }
-
-      const assistantUsage = summarizeAssistantUsage(record.message, timestamp!);
-      summary.apiRequestCount += 1;
-      summary.inputTokens += assistantUsage.inputTokens;
-      summary.outputTokens += assistantUsage.outputTokens;
-      summary.cacheReadInputTokens += assistantUsage.cacheReadInputTokens;
-      summary.apiEquivalentCost = mergeApiEquivalentCosts([summary.apiEquivalentCost, assistantUsage.apiEquivalentCost]);
-    } catch {
-      continue;
-    }
-  }
-
-  return summary;
-}
-
 /**
  * 从 Claude 本地 project transcript 中统计本周消息数、请求数、token 用量和标准 API 等效成本。
  */
 export async function summarizeClaudeProjectUsage(start: Date, end: Date): Promise<WeeklyExportSummary["counts"] & WeeklyExportSummary["tokens"] & { matchedFileCount: number; claudeDataDir: string; apiEquivalentCost: ApiEquivalentCostResult }> {
+  return (await summarizeClaudeProjectUsageCombined(start, end)).weekly;
+}
+
+/** 单次扫描同时生成周汇总与按天汇总。 */
+export async function summarizeClaudeProjectUsageCombined(
+  start: Date,
+  end: Date,
+): Promise<ClaudeProjectUsageCombined> {
   const claudeDataDir = getClaudeDataDir();
   const projectDir = path.join(claudeDataDir, "projects");
   const files = await collectProjectJsonlFiles(projectDir);
-
-  const totals = {
+  const weekly: ClaudeWeeklyUsageSummary = {
     userMessageCount: 0,
     apiRequestCount: 0,
     inputTokens: 0,
@@ -204,26 +191,84 @@ export async function summarizeClaudeProjectUsage(start: Date, end: Date): Promi
     matchedFileCount: files.length,
     claudeDataDir,
   };
+  const daily = new Map<string, ClaudeDailyUsageSummary>();
 
   for (const filePath of files) {
+    if (!(await fileMayContainRange(filePath, start))) {
+      continue;
+    }
+
+    let content = "";
     try {
-      const content = await fs.readFile(filePath, "utf8");
-      const summary = summarizeProjectTranscript(content, start, end);
-      totals.userMessageCount += summary.userMessageCount;
-      totals.apiRequestCount += summary.apiRequestCount;
-      totals.inputTokens += summary.inputTokens;
-      totals.outputTokens += summary.outputTokens;
-      totals.cacheReadInputTokens += summary.cacheReadInputTokens;
-      totals.apiEquivalentCost = mergeApiEquivalentCosts([totals.apiEquivalentCost, summary.apiEquivalentCost]);
+      content = await fs.readFile(filePath, "utf8");
     } catch {
       continue;
     }
+
+    const fileSummary: ClaudeProjectUsageSummary = {
+      userMessageCount: 0,
+      apiRequestCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      apiEquivalentCost: emptyApiEquivalentCost(),
+    };
+    const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+    for (const line of lines) {
+      try {
+        const record = JSON.parse(line) as unknown;
+        const timestamp = isRecord(record) ? getString(record.timestamp) : null;
+        if (!isRecord(record) || !timestampInRange(timestamp, start, end)) {
+          continue;
+        }
+
+        const date = localDateKey(new Date(timestamp!));
+        const day = daily.get(date) ?? {
+          date,
+          userMessageCount: 0,
+          apiRequestCount: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          apiEquivalentCost: emptyApiEquivalentCost(),
+        };
+
+        if (isHumanUserMessage(record)) {
+          fileSummary.userMessageCount += 1;
+          day.userMessageCount += 1;
+        }
+
+        if (record.type === "assistant" && isRecord(record.message) && isRecord(record.message.usage)) {
+          const usage = summarizeAssistantUsage(record.message, timestamp!);
+          fileSummary.apiRequestCount += 1;
+          fileSummary.inputTokens += usage.inputTokens;
+          fileSummary.outputTokens += usage.outputTokens;
+          fileSummary.cacheReadInputTokens += usage.cacheReadInputTokens;
+          fileSummary.apiEquivalentCost = mergeApiEquivalentCosts([fileSummary.apiEquivalentCost, usage.apiEquivalentCost]);
+          day.apiRequestCount += 1;
+          day.inputTokens += usage.inputTokens;
+          day.outputTokens += usage.outputTokens;
+          day.cacheReadInputTokens += usage.cacheReadInputTokens;
+          day.apiEquivalentCost = mergeApiEquivalentCosts([day.apiEquivalentCost, usage.apiEquivalentCost]);
+        }
+
+        daily.set(date, day);
+      } catch {
+        continue;
+      }
+    }
+
+    weekly.userMessageCount += fileSummary.userMessageCount;
+    weekly.apiRequestCount += fileSummary.apiRequestCount;
+    weekly.inputTokens += fileSummary.inputTokens;
+    weekly.outputTokens += fileSummary.outputTokens;
+    weekly.cacheReadInputTokens += fileSummary.cacheReadInputTokens;
+    weekly.apiEquivalentCost = mergeApiEquivalentCosts([weekly.apiEquivalentCost, fileSummary.apiEquivalentCost]);
   }
 
-  return totals;
+  return { weekly, daily };
 }
 
-/** 在时间范围内有活动的 session 文件信息。 */
 export interface ActiveSessionFile {
   filePath: string;
   /** 相对于 ~/.claude/projects 的子目录名（Claude Code 对工作区路径的编码形式）。 */
@@ -278,62 +323,5 @@ export async function findActiveSessionFiles(start: Date, end: Date): Promise<Ac
  * 按天汇总 Claude project transcript 中的消息数、请求数、token 用量和标准 API 等效成本。
  */
 export async function summarizeClaudeProjectUsageByDay(start: Date, end: Date): Promise<Map<string, ClaudeDailyUsageSummary>> {
-  const claudeDataDir = getClaudeDataDir();
-  const projectDir = path.join(claudeDataDir, "projects");
-  const files = await collectProjectJsonlFiles(projectDir);
-  const daily = new Map<string, ClaudeDailyUsageSummary>();
-
-  for (const filePath of files) {
-    let content = "";
-    try {
-      content = await fs.readFile(filePath, "utf8");
-    } catch {
-      continue;
-    }
-
-    const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
-    for (const line of lines) {
-      try {
-        const record = JSON.parse(line) as unknown;
-        if (!isRecord(record)) {
-          continue;
-        }
-
-        const timestamp = getString(record.timestamp);
-        if (!timestampInRange(timestamp, start, end)) {
-          continue;
-        }
-
-        const date = localDateKey(new Date(timestamp!));
-        const current = daily.get(date) ?? {
-          date,
-          userMessageCount: 0,
-          apiRequestCount: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadInputTokens: 0,
-          apiEquivalentCost: emptyApiEquivalentCost(),
-        };
-
-        if (isHumanUserMessage(record)) {
-          current.userMessageCount += 1;
-        }
-
-        if (record.type === "assistant" && isRecord(record.message) && isRecord(record.message.usage)) {
-          const assistantUsage = summarizeAssistantUsage(record.message, timestamp!);
-          current.apiRequestCount += 1;
-          current.inputTokens += assistantUsage.inputTokens;
-          current.outputTokens += assistantUsage.outputTokens;
-          current.cacheReadInputTokens += assistantUsage.cacheReadInputTokens;
-          current.apiEquivalentCost = mergeApiEquivalentCosts([current.apiEquivalentCost, assistantUsage.apiEquivalentCost]);
-        }
-
-        daily.set(date, current);
-      } catch {
-        continue;
-      }
-    }
-  }
-
-  return daily;
+  return (await summarizeClaudeProjectUsageCombined(start, end)).daily;
 }

@@ -48,6 +48,17 @@ interface RolloutFileGroup {
   filePaths: string[];
 }
 
+interface RolloutFileRef {
+  filePath: string;
+  identityKey: string | null;
+  mtimeMs: number | null;
+}
+
+export interface CodexSessionUsageCombined {
+  weekly: CodexSessionUsageSummary & { matchedFileCount: number; codexDataDir: string };
+  daily: Map<string, CodexDailyUsageSummary>;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -178,15 +189,60 @@ function mergeRolloutContents(contents: string[]): string {
   return mergedLines.length > 0 ? `${mergedLines.join("\n")}\n` : "";
 }
 
-async function readMergedRollout(group: RolloutFileGroup): Promise<string> {
-  const reads = await Promise.all(group.filePaths.map(async (filePath) => {
+async function readRolloutFileRef(filePath: string): Promise<RolloutFileRef> {
+  try {
+    const stat = await fs.stat(filePath, { bigint: true });
+    return {
+      filePath,
+      identityKey: stat.ino === 0n ? null : `${stat.dev}:${stat.ino}`,
+      mtimeMs: Number(stat.mtimeMs),
+    };
+  } catch {
+    return { filePath, identityKey: null, mtimeMs: null };
+  }
+}
+
+function isCompletePrefix(shorter: string, longer: string): boolean {
+  return shorter.length === 0
+    || ((shorter.endsWith("\n") || shorter.endsWith("\r")) && longer.startsWith(shorter));
+}
+
+async function readMergedRollout(group: RolloutFileGroup): Promise<string>;
+async function readMergedRollout(group: RolloutFileGroup, start: Date): Promise<string | null>;
+async function readMergedRollout(group: RolloutFileGroup, start?: Date): Promise<string | null> {
+  const refs = await Promise.all(group.filePaths.map((filePath) => readRolloutFileRef(filePath)));
+  if (start && refs.length > 0 && refs.every((ref) => ref.mtimeMs !== null && ref.mtimeMs < start.getTime())) {
+    return null;
+  }
+
+  const uniqueRefs = new Map<string, RolloutFileRef>();
+  for (const ref of refs) {
+    const key = ref.identityKey ?? `path:${rolloutPathKey(ref.filePath)}`;
+    if (!uniqueRefs.has(key)) {
+      uniqueRefs.set(key, ref);
+    }
+  }
+
+  const reads = await Promise.all([...uniqueRefs.values()].map(async ({ filePath }) => {
     try {
       return await fs.readFile(filePath, "utf8");
     } catch {
       return null;
     }
   }));
-  return mergeRolloutContents(reads.filter((content): content is string => content !== null));
+  const contents = reads.filter((content): content is string => content !== null);
+  if (contents.length === 0) {
+    return "";
+  }
+  if (contents.length === 1 || contents.every((content) => content === contents[0])) {
+    return contents[0];
+  }
+
+  const longest = contents.reduce((current, content) => content.length > current.length ? content : current);
+  if (contents.every((content) => content === longest || isCompletePrefix(content, longest))) {
+    return longest;
+  }
+  return mergeRolloutContents(contents);
 }
 
 function timestampInRange(timestamp: string | null, start: Date, end: Date): boolean {
@@ -218,6 +274,9 @@ export async function findActiveCodexSessionFiles(start: Date, end: Date): Promi
   for (const group of groups) {
     try {
       const content = await readMergedRollout(group);
+      if (content === null) {
+        continue;
+      }
       const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
       let hasInRange = false;
       for (const line of lines) {
@@ -267,7 +326,29 @@ function extractLastTokenUsage(payload: Record<string, unknown>): Record<string,
  *   turn_id 全局去重（取最早 timestamp），不能在单文件层计数。
  * - `event_msg` + `payload.type=="token_count"`：一次模型请求，token 取 `info.last_token_usage` 增量。
  */
-function summarizeRollout(content: string, start: Date, end: Date): RolloutParse {
+function ensureCodexDay(daily: Map<string, CodexDailyUsageSummary>, date: string): CodexDailyUsageSummary {
+  let current = daily.get(date);
+  if (!current) {
+    current = {
+      date,
+      userMessageCount: 0,
+      apiRequestCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      apiEquivalentCost: emptyApiEquivalentCost(),
+    };
+    daily.set(date, current);
+  }
+  return current;
+}
+
+function summarizeRollout(
+  content: string,
+  start: Date,
+  end: Date,
+  daily?: Map<string, CodexDailyUsageSummary>,
+): RolloutParse {
   const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
   const result: RolloutParse = {
     turns: [],
@@ -309,21 +390,28 @@ function summarizeRollout(content: string, start: Date, end: Date): RolloutParse
         if (usage) {
           const { inputTokens, cacheReadInputTokens } = splitInputTokens(usage);
           const outputTokens = getNumber(usage.output_tokens);
+          const cost = priceApiRequest({
+            provider: "codex",
+            timestamp: timestamp!,
+            model: currentModel,
+            inputTokens,
+            outputTokens,
+            cacheReadInputTokens,
+          });
           result.apiRequestCount += 1;
           result.inputTokens += inputTokens;
           result.outputTokens += outputTokens;
           result.cacheReadInputTokens += cacheReadInputTokens;
-          result.apiEquivalentCost = mergeApiEquivalentCosts([
-            result.apiEquivalentCost,
-            priceApiRequest({
-              provider: "codex",
-              timestamp: timestamp!,
-              model: currentModel,
-              inputTokens,
-              outputTokens,
-              cacheReadInputTokens,
-            }),
-          ]);
+          result.apiEquivalentCost = mergeApiEquivalentCosts([result.apiEquivalentCost, cost]);
+
+          if (daily) {
+            const day = ensureCodexDay(daily, localDateKey(new Date(timestamp!)));
+            day.apiRequestCount += 1;
+            day.inputTokens += inputTokens;
+            day.outputTokens += outputTokens;
+            day.cacheReadInputTokens += cacheReadInputTokens;
+            day.apiEquivalentCost = mergeApiEquivalentCosts([day.apiEquivalentCost, cost]);
+          }
         }
       }
     } catch {
@@ -341,14 +429,14 @@ function summarizeRollout(content: string, start: Date, end: Date): RolloutParse
  * 消息数 = task_started 的 distinct turn_id（跨文件去重）。重放副本会让同一 turn_id 出现在多个文件，
  * 故用全局 Map<turn_id, minMs> 收集（取最早 timestamp = 真实发生时刻，早于任何重放副本），最后取 size。
  */
-export async function summarizeCodexSessionUsage(
+export async function summarizeCodexSessionUsageCombined(
   start: Date,
   end: Date,
-): Promise<CodexSessionUsageSummary & { matchedFileCount: number; codexDataDir: string }> {
+): Promise<CodexSessionUsageCombined> {
   const codexDataDir = getCodexHome();
   const groups = await collectRolloutFileGroups();
-
   const turnMinMs = new Map<string, number>();
+  const daily = new Map<string, CodexDailyUsageSummary>();
   let apiRequestCount = 0;
   let inputTokens = 0;
   let outputTokens = 0;
@@ -357,14 +445,14 @@ export async function summarizeCodexSessionUsage(
 
   for (const group of groups) {
     try {
-      const content = await readMergedRollout(group);
-      if (isGuardianRollout(content)) {
+      const content = await readMergedRollout(group, start);
+      if (content === null || isGuardianRollout(content)) {
         continue;
       }
-      const parsed = summarizeRollout(content, start, end);
+      const parsed = summarizeRollout(content, start, end, daily);
       for (const turn of parsed.turns) {
-        const prev = turnMinMs.get(turn.turnId);
-        if (prev === undefined || turn.ms < prev) {
+        const previous = turnMinMs.get(turn.turnId);
+        if (previous === undefined || turn.ms < previous) {
           turnMinMs.set(turn.turnId, turn.ms);
         }
       }
@@ -378,16 +466,30 @@ export async function summarizeCodexSessionUsage(
     }
   }
 
+  for (const ms of turnMinMs.values()) {
+    ensureCodexDay(daily, localDateKey(new Date(ms))).userMessageCount += 1;
+  }
+
   return {
-    userMessageCount: turnMinMs.size,
-    apiRequestCount,
-    inputTokens,
-    outputTokens,
-    cacheReadInputTokens,
-    apiEquivalentCost,
-    matchedFileCount: groups.length,
-    codexDataDir,
+    weekly: {
+      userMessageCount: turnMinMs.size,
+      apiRequestCount,
+      inputTokens,
+      outputTokens,
+      cacheReadInputTokens,
+      apiEquivalentCost,
+      matchedFileCount: groups.length,
+      codexDataDir,
+    },
+    daily,
   };
+}
+
+export async function summarizeCodexSessionUsage(
+  start: Date,
+  end: Date,
+): Promise<CodexSessionUsageSummary & { matchedFileCount: number; codexDataDir: string }> {
+  return (await summarizeCodexSessionUsageCombined(start, end)).weekly;
 }
 
 /**
@@ -401,99 +503,5 @@ export async function summarizeCodexSessionUsageByDay(
   start: Date,
   end: Date,
 ): Promise<Map<string, CodexDailyUsageSummary>> {
-  const groups = await collectRolloutFileGroups();
-
-  const turnMinMs = new Map<string, number>();
-  const daily = new Map<string, CodexDailyUsageSummary>();
-
-  const ensureDay = (date: string): CodexDailyUsageSummary => {
-    let current = daily.get(date);
-    if (!current) {
-      current = {
-        date,
-        userMessageCount: 0,
-        apiRequestCount: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadInputTokens: 0,
-        apiEquivalentCost: emptyApiEquivalentCost(),
-      };
-      daily.set(date, current);
-    }
-    return current;
-  };
-
-  for (const group of groups) {
-    const content = await readMergedRollout(group);
-    if (isGuardianRollout(content)) {
-      continue;
-    }
-
-    const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
-    let currentModel: string | null = null;
-    for (const line of lines) {
-      try {
-        const record = JSON.parse(line) as unknown;
-        if (!isRecord(record) || !isRecord(record.payload)) {
-          continue;
-        }
-        const payload = record.payload;
-        if (record.type === "turn_context") {
-          if (typeof payload.model === "string") {
-            currentModel = payload.model;
-          }
-          continue;
-        }
-        const timestamp = getString(record.timestamp);
-        if (!timestampInRange(timestamp, start, end)) {
-          continue;
-        }
-        if (record.type !== "event_msg") {
-          continue;
-        }
-        const ms = new Date(timestamp!).getTime();
-
-        if (payload.type === "task_started" && typeof payload.turn_id === "string") {
-          if (Number.isFinite(ms)) {
-            const prev = turnMinMs.get(payload.turn_id);
-            if (prev === undefined || ms < prev) {
-              turnMinMs.set(payload.turn_id, ms);
-            }
-          }
-        }
-
-        if (payload.type === "token_count") {
-          const usage = extractLastTokenUsage(payload);
-          if (usage) {
-            const current = ensureDay(localDateKey(new Date(ms)));
-            const { inputTokens, cacheReadInputTokens } = splitInputTokens(usage);
-            const outputTokens = getNumber(usage.output_tokens);
-            current.apiRequestCount += 1;
-            current.inputTokens += inputTokens;
-            current.outputTokens += outputTokens;
-            current.cacheReadInputTokens += cacheReadInputTokens;
-            current.apiEquivalentCost = mergeApiEquivalentCosts([
-              current.apiEquivalentCost,
-              priceApiRequest({
-                provider: "codex",
-                timestamp: timestamp!,
-                model: currentModel,
-                inputTokens,
-                outputTokens,
-                cacheReadInputTokens,
-              }),
-            ]);
-          }
-        }
-      } catch {
-        continue;
-      }
-    }
-  }
-
-  for (const ms of turnMinMs.values()) {
-    ensureDay(localDateKey(new Date(ms))).userMessageCount += 1;
-  }
-
-  return daily;
+  return (await summarizeCodexSessionUsageCombined(start, end)).daily;
 }

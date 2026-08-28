@@ -6,6 +6,7 @@ import path from "node:path";
 import { SyncConfig } from "../types";
 import {
   applyFileSuffix,
+  formatSyncElapsed,
   isSyncDue,
   parseSyncInterval,
   performSync,
@@ -19,6 +20,12 @@ import {
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
+
+test("formatSyncElapsed renders seconds with three decimals", () => {
+  assert.equal(formatSyncElapsed(0), "0.000s");
+  assert.equal(formatSyncElapsed(1_852), "1.852s");
+  assert.equal(formatSyncElapsed(61_234), "61.234s");
+});
 
 test("parseSyncInterval maps daily / empty / unknown to daily, and <N>h <N>m to rolling TTL", () => {
   assert.deepEqual(parseSyncInterval("daily"), { kind: "daily" });

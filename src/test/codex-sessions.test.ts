@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { findActiveCodexSessionFiles, summarizeCodexSessionUsage, summarizeCodexSessionUsageByDay } from "../lib/codex-sessions";
+import { findActiveCodexSessionFiles, summarizeCodexSessionUsage, summarizeCodexSessionUsageByDay, summarizeCodexSessionUsageCombined } from "../lib/codex-sessions";
 import { mergeApiEquivalentCosts } from "../lib/api-equivalent-cost";
 import { getCodexSessionHomes } from "../lib/paths";
 
@@ -348,6 +348,9 @@ test("Codex session 统计合并 Orca runtime home 并对重复 rollout 去重",
     assert.equal(summary.apiEquivalentCost.unpricedApiRequestCount, 0);
 
     const daily = await summarizeCodexSessionUsageByDay(RANGE_START, RANGE_END);
+    const combined = await summarizeCodexSessionUsageCombined(RANGE_START, RANGE_END);
+    assert.deepEqual(combined.weekly, summary);
+    assert.deepEqual(combined.daily, daily);
     assert.deepEqual(daily.get(DAY), {
       date: DAY,
       userMessageCount: 2,
@@ -362,6 +365,53 @@ test("Codex session 统计合并 Orca runtime home 并对重复 rollout 去重",
     assert.equal(active.length, 1);
     assert.equal(active[0].relativePath.replaceAll("\\", "/"), relativePath);
     assert.equal(active[0].content.trim().split(/\r?\n/).length, 6);
+  } finally {
+    restore();
+  }
+});
+
+test("Codex session 组合扫描按物理文件去重硬链接副本", async () => {
+  const { home, orcaHome, restore } = await withTempCodexHome("ccus-codex-hardlink-");
+  try {
+    const relativePath = "2026/07/27/rollout-hardlink.jsonl";
+    const lines = [
+      `{"timestamp":"${ts(10, 0)}","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
+      `{"timestamp":"${ts(10, 1)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-hardlink"}}`,
+      `{"timestamp":"${ts(10, 2)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":20}}}}`,
+    ];
+    await writeRollout(home, relativePath, lines);
+    const sourcePath = path.join(home, "sessions", relativePath);
+    const mirrorPath = path.join(orcaHome, "sessions", relativePath);
+    await fs.mkdir(path.dirname(mirrorPath), { recursive: true });
+    await fs.link(sourcePath, mirrorPath);
+
+    const combined = await summarizeCodexSessionUsageCombined(RANGE_START, RANGE_END);
+    assert.equal(combined.weekly.matchedFileCount, 1);
+    assert.equal(combined.weekly.userMessageCount, 1);
+    assert.equal(combined.weekly.apiRequestCount, 1);
+    assert.equal(combined.daily.get(DAY)?.apiRequestCount, 1);
+  } finally {
+    restore();
+  }
+});
+
+test("Codex session 组合扫描保留真正分叉副本的独有事件", async () => {
+  const { home, orcaHome, restore } = await withTempCodexHome("ccus-codex-diverged-");
+  try {
+    const relativePath = "2026/07/27/rollout-diverged.jsonl";
+    const context = `{"timestamp":"${ts(10, 0)}","type":"turn_context","payload":{"model":"gpt-5.4"}}`;
+    const standardTask = `{"timestamp":"${ts(10, 1)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-standard"}}`;
+    const standardTokens = `{"timestamp":"${ts(10, 2)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":20}}}}`;
+    const orcaTask = `{"timestamp":"${ts(20, 1)}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-orca"}}`;
+    const orcaTokens = `{"timestamp":"${ts(20, 2)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"output_tokens":20,"cached_input_tokens":50}}}}`;
+    await writeRollout(home, relativePath, [context, standardTask, standardTokens]);
+    await writeRollout(orcaHome, relativePath, [context, orcaTask, orcaTokens]);
+
+    const combined = await summarizeCodexSessionUsageCombined(RANGE_START, RANGE_END);
+    assert.equal(combined.weekly.userMessageCount, 2);
+    assert.equal(combined.weekly.apiRequestCount, 2);
+    assert.equal(combined.weekly.inputTokens, 230);
+    assert.equal(combined.daily.get(DAY)?.apiRequestCount, 2);
   } finally {
     restore();
   }

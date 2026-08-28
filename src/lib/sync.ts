@@ -181,6 +181,11 @@ export interface SyncResult {
   archivedLastWeekDest: string | null;
 }
 
+/** 把同步耗时统一格式化为秒，保留三位小数。 */
+export function formatSyncElapsed(elapsedMs: number): string {
+  return `${(Math.max(0, elapsedMs) / 1000).toFixed(3)}s`;
+}
+
 /**
  * 导出某个 range 的 bundle，并复制到目标目录下对应的「按周」子目录。
  *

@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { mergeApiEquivalentCosts } from "../lib/api-equivalent-cost";
-import { summarizeClaudeProjectUsage, summarizeClaudeProjectUsageByDay } from "../lib/claude";
+import { summarizeClaudeProjectUsage, summarizeClaudeProjectUsageByDay, summarizeClaudeProjectUsageCombined } from "../lib/claude";
 
 test("summarizeClaudeProjectUsage counts non-meta users and assistant usage tokens", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-claude-"));
@@ -130,7 +130,11 @@ test("summarizeClaudeProjectUsage prices model switches, cache TTL details and f
     const end = new Date("2026-05-27T23:59:59.999Z");
     const weekly = await summarizeClaudeProjectUsage(start, end);
     const daily = await summarizeClaudeProjectUsageByDay(start, end);
+    const combined = await summarizeClaudeProjectUsageCombined(start, end);
     const mergedDailyCost = mergeApiEquivalentCosts([...daily.values()].map((day) => day.apiEquivalentCost));
+
+    assert.deepEqual(combined.weekly, weekly);
+    assert.deepEqual(combined.daily, daily);
 
     assert.equal(weekly.apiRequestCount, 4);
     assert.equal(weekly.inputTokens, 2_000_007);
