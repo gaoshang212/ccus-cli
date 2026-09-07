@@ -1,5 +1,5 @@
 {
-  "catalogVersion": "2026-08-17",
+  "catalogVersion": "2026-09-07",
   "currency": "USD",
   "basis": "event-time-standard-api",
   "entries": [
@@ -264,6 +264,17 @@
       "longContext": {
         "thresholdInputTokens": 272000,
         "prices": { "inputUsdPerMillion": 2, "outputUsdPerMillion": 9, "cacheReadInputUsdPerMillion": 0.2 }
+      }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-6-astra",
+      "effectiveFrom": "2026-09-03T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 10, "outputUsdPerMillion": 50, "cacheReadInputUsdPerMillion": 1 },
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "prices": { "inputUsdPerMillion": 20, "outputUsdPerMillion": 75, "cacheReadInputUsdPerMillion": 2 }
       }
     }
   ]

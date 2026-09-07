@@ -203,6 +203,10 @@ test("buildDashboardHtml returns a full html document", () => {
 
 test("buildApiPricingPage renders a standalone current pricing page with Codex first", () => {
   const html = buildApiPricingPage(new Date("2026-08-17T00:00:00.000Z"));
+  const currentHtml = buildApiPricingPage(new Date("2026-09-07T00:00:00.000Z"));
+  assert.match(currentHtml, /gpt-6-astra/);
+  assert.ok(currentHtml.indexOf("gpt-6-astra") < currentHtml.indexOf("gpt-5.6-sol"));
+  assert.doesNotMatch(html, /gpt-6-astra/);
   assert.match(html, /<!doctype html>/i);
   assert.match(html, /<h1>当前模型价格<\/h1>/);
   assert.equal(html.match(/<h[12]>当前模型价格<\/h[12]>/g)?.length, 1);

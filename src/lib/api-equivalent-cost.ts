@@ -162,6 +162,9 @@ function normalizeCodexModel(model: string): string | null {
   if (value === "gpt-5.6") {
     return "gpt-5.6-sol";
   }
+  if (value === "gpt-6") {
+    return "gpt-6-astra";
+  }
   return /^gpt-[a-z0-9.-]+$/.test(value) ? value : null;
 }
 

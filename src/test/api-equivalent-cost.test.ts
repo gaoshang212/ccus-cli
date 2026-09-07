@@ -121,6 +121,30 @@ test("normalizeApiModel handles Orca thinking aliases and the bare GPT 5.6 alias
   assert.equal(normalizeApiModel("codex", "gpt-5.6"), "gpt-5.6-sol");
   assert.equal(normalizeApiModel("codex", "gpt-5.6-terra-high"), "gpt-5.6-terra");
   assert.equal(normalizeApiModel("codex", "gpt-5.6-luna"), "gpt-5.6-luna");
+  assert.equal(normalizeApiModel("codex", "gpt-6"), "gpt-6-astra");
+  assert.equal(normalizeApiModel("codex", "openai/gpt-6-astra-xhigh"), "gpt-6-astra");
+  assert.equal(normalizeApiModel("codex", "gpt-6 (reasoning: high)"), "gpt-6-astra");
+});
+
+test("GPT-6 aliases price input, cached input and output across the long-context boundary", () => {
+  assert.equal(findApiModelPrice({ provider: "codex", model: "gpt-6", timestamp: "2026-09-02T23:59:59Z" }), null);
+  assert.equal(findApiModelPrice({ provider: "codex", model: "gpt-6", timestamp: "2026-09-03T00:00:00Z" })?.model, "gpt-6-astra");
+  for (const model of ["gpt-6", "gpt-6-astra", "openai/gpt-6-astra-max"]) {
+    const request = {
+      provider: "codex" as const,
+      timestamp: "2026-09-07T00:00:00Z",
+      model,
+      inputTokens: 172_000,
+      cacheReadInputTokens: 100_000,
+      outputTokens: 10_000,
+    };
+    assert.deepEqual(priceApiRequest(request), {
+      estimatedUsd: 2.32, pricedApiRequestCount: 1, unpricedApiRequestCount: 0,
+    });
+    assert.deepEqual(priceApiRequest({ ...request, inputTokens: 172_001 }), {
+      estimatedUsd: 4.39002, pricedApiRequestCount: 1, unpricedApiRequestCount: 0,
+    });
+  }
 });
 
 test("default catalog includes current Orca Claude models and Sonnet 5 event-time pricing", () => {
