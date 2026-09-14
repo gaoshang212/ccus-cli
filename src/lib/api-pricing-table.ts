@@ -174,6 +174,7 @@ export function buildApiPricingPage(
           <h1>当前模型价格</h1>
         </div>
         <p class="muted">标准同步 API 参考价格，不是订阅或实际账单。</p>
+        <p class="muted">gpt-5.3-codex-spark 按 gpt-5.3-codex 价格估算，非 Spark 官方公开 API 定价。</p>
       </section>
       ${renderCurrentApiPricingTable(catalog, generatedAt)}
     </main>

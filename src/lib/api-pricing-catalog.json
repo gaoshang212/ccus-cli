@@ -1,5 +1,5 @@
 {
-  "catalogVersion": "2026-09-07",
+  "catalogVersion": "2026-09-14",
   "currency": "USD",
   "basis": "event-time-standard-api",
   "entries": [
@@ -208,6 +208,13 @@
       "provider": "codex",
       "model": "gpt-5.3-codex",
       "effectiveFrom": "2026-02-05T00:00:00.000Z",
+      "effectiveTo": null,
+      "prices": { "inputUsdPerMillion": 1.75, "outputUsdPerMillion": 14, "cacheReadInputUsdPerMillion": 0.175 }
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-5.3-codex-spark",
+      "effectiveFrom": "2026-02-12T00:00:00.000Z",
       "effectiveTo": null,
       "prices": { "inputUsdPerMillion": 1.75, "outputUsdPerMillion": 14, "cacheReadInputUsdPerMillion": 0.175 }
     },

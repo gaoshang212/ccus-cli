@@ -26,6 +26,25 @@ test("default pricing catalog is loaded from the packaged JSON file", () => {
   assert.doesNotThrow(() => validatePricingCatalog(API_PRICING_CATALOG));
 });
 
+test("Spark 按约定单价估算，兼容推理后缀并遵守生效日期", () => {
+  const request = {
+    provider: "codex" as const,
+    timestamp: "2026-02-12T00:00:00.000Z",
+    model: "gpt-5.3-codex-spark",
+    inputTokens: 100_000,
+    outputTokens: 10_000,
+    cacheReadInputTokens: 50_000,
+  };
+  for (const model of [request.model, "openai/gpt-5.3-codex-spark-xhigh"]) {
+    assert.deepEqual(priceApiRequest({ ...request, model }), {
+      estimatedUsd: 0.32375,
+      pricedApiRequestCount: 1,
+      unpricedApiRequestCount: 0,
+    });
+  }
+  assert.equal(findApiModelPrice({ ...request, timestamp: "2026-02-11T23:59:59.999Z" }), null);
+});
+
 const TEST_CATALOG: ApiPricingCatalog = {
   catalogVersion: "test-v1",
   currency: "USD",
