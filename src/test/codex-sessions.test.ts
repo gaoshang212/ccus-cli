@@ -200,6 +200,7 @@ test("summarizeCodexSessionUsage tolerates token_count missing info/usage", asyn
       estimatedUsd: null,
       pricedApiRequestCount: 0,
       unpricedApiRequestCount: 1,
+      unpricedModels: [{ model: null, requestCount: 1 }],
     });
   } finally {
     restore();

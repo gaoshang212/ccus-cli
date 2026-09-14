@@ -50,7 +50,14 @@ function hasApiEquivalentCostResultShape(value: unknown): boolean {
     value.pricedApiRequestCount >= 0 &&
     typeof value.unpricedApiRequestCount === "number" &&
     Number.isInteger(value.unpricedApiRequestCount) &&
-    value.unpricedApiRequestCount >= 0
+    value.unpricedApiRequestCount >= 0 &&
+    (value.unpricedModels === undefined || (
+      Array.isArray(value.unpricedModels) &&
+      value.unpricedModels.every((item) => isRecord(item) &&
+        (typeof item.model === "string" || item.model === null) &&
+        typeof item.requestCount === "number" && Number.isSafeInteger(item.requestCount) && item.requestCount > 0) &&
+      value.unpricedModels.reduce((sum, item) => sum + item.requestCount, 0) === value.unpricedApiRequestCount
+    ))
   );
 }
 
@@ -78,7 +85,7 @@ function isWeeklyExportBundle(value: unknown): value is WeeklyExportBundle {
     return false;
   }
 
-  if (typeof value.schemaVersion !== "number" || ![6, 7, 8, 9, 10].includes(value.schemaVersion)) {
+  if (typeof value.schemaVersion !== "number" || ![6, 7, 8, 9, 10, 11].includes(value.schemaVersion)) {
     return false;
   }
 
@@ -90,7 +97,7 @@ function isWeeklyExportBundle(value: unknown): value is WeeklyExportBundle {
     return false;
   }
 
-  if (value.schemaVersion !== 10) {
+  if (value.schemaVersion < 10) {
     return true;
   }
 
@@ -186,7 +193,7 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
 
   if (invalidFiles.length > 0) {
     throw new Error(
-      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 6/7/8/9/10 bundles.`,
+      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 6/7/8/9/10/11 bundles.`,
     );
   }
 
@@ -673,7 +680,7 @@ interface ApiCostContribution {
  * 把代表日转换为成本贡献。v10 使用按请求计价后导出的日汇总成本；旧版无法补算，全部请求视为未定价。
  */
 function apiCostContribution(rep: DailyRepresentative): ApiCostContribution {
-  if (rep.bundle.schemaVersion === 10) {
+  if (rep.bundle.schemaVersion >= 10) {
     return {
       result: rep.day.apiEquivalentCost.total,
       catalogVersion: rep.bundle.pricing.catalogVersion,

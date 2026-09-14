@@ -17,6 +17,7 @@ export interface ApiEquivalentCostResult {
   estimatedUsd: number | null;
   pricedApiRequestCount: number;
   unpricedApiRequestCount: number;
+  unpricedModels?: Array<{ model: string | null; requestCount: number }>;
 }
 
 export interface ApiTokenPrices {
@@ -224,7 +225,10 @@ export function priceApiRequest(
 ): ApiEquivalentCostResult {
   const price = findApiModelPrice(request, catalog);
   if (!price) {
-    return { estimatedUsd: null, pricedApiRequestCount: 0, unpricedApiRequestCount: 1 };
+    return {
+      estimatedUsd: null, pricedApiRequestCount: 0, unpricedApiRequestCount: 1,
+      unpricedModels: [{ model: request.model, requestCount: 1 }],
+    };
   }
   return {
     estimatedUsd: computeRequestUsd(request, price),
@@ -238,7 +242,11 @@ export function mergeApiEquivalentCosts(results: Iterable<ApiEquivalentCostResul
   let estimatedUsd = 0;
   let pricedApiRequestCount = 0;
   let unpricedApiRequestCount = 0;
+  const models = new Map<string | null, number>();
   for (const result of results) {
+    for (const { model, requestCount } of result.unpricedModels ?? []) {
+      models.set(model, (models.get(model) ?? 0) + requestCount);
+    }
     pricedApiRequestCount += result.pricedApiRequestCount;
     unpricedApiRequestCount += result.unpricedApiRequestCount;
     if (result.estimatedUsd !== null) {
@@ -249,6 +257,9 @@ export function mergeApiEquivalentCosts(results: Iterable<ApiEquivalentCostResul
     estimatedUsd: pricedApiRequestCount > 0 || unpricedApiRequestCount === 0 ? estimatedUsd : null,
     pricedApiRequestCount,
     unpricedApiRequestCount,
+    ...(models.size > 0 ? { unpricedModels: [...models].sort(([a], [b]) =>
+      a === b ? 0 : a === null ? -1 : b === null ? 1 : a < b ? -1 : 1,
+    ).map(([model, requestCount]) => ({ model, requestCount })) } : {}),
   };
 }
 

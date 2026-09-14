@@ -46,6 +46,7 @@ test("summarizeClaudeProjectUsage counts non-meta users and assistant usage toke
       estimatedUsd: null,
       pricedApiRequestCount: 0,
       unpricedApiRequestCount: 1,
+      unpricedModels: [{ model: null, requestCount: 1 }],
     });
     assert.equal(summary.matchedFileCount, 1);
   } finally {
@@ -149,6 +150,7 @@ test("summarizeClaudeProjectUsage prices model switches, cache TTL details and f
       estimatedUsd: 15,
       pricedApiRequestCount: 1,
       unpricedApiRequestCount: 1,
+      unpricedModels: [{ model: "unknown-model", requestCount: 1 }],
     });
     assert.deepEqual(weekly.apiEquivalentCost, mergedDailyCost);
     assert.equal(weekly.apiEquivalentCost.pricedApiRequestCount + weekly.apiEquivalentCost.unpricedApiRequestCount, weekly.apiRequestCount);

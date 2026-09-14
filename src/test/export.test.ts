@@ -11,9 +11,9 @@ import { enumerateDateKeys, formatGitEmailFilePrefix, formatRangeFileLabel, reso
 import { AggregatedDailyRow, AggregatedWeeklyRow, PersistedStatuslineEvent, WeeklyExportBundle, WeeklyExportSummary } from "../types";
 
 const COST_BREAKDOWN = {
-  claude: { estimatedUsd: 1.23456789, pricedApiRequestCount: 6, unpricedApiRequestCount: 1 },
+  claude: { estimatedUsd: 1.23456789, pricedApiRequestCount: 6, unpricedApiRequestCount: 1, unpricedModels: [{ model: "unknown-model", requestCount: 1 }] },
   codex: { estimatedUsd: 0.25, pricedApiRequestCount: 1, unpricedApiRequestCount: 0 },
-  total: { estimatedUsd: 1.48456789, pricedApiRequestCount: 7, unpricedApiRequestCount: 1 },
+  total: { estimatedUsd: 1.48456789, pricedApiRequestCount: 7, unpricedApiRequestCount: 1, unpricedModels: [{ model: "unknown-model", requestCount: 1 }] },
 };
 
 /** 导出测试使用的基础样本，覆盖两个不同时间点和 workspace。 */
@@ -78,7 +78,7 @@ test("buildRawJsonl exports persisted raw records", () => {
 /** 默认导出已切到周汇总 JSON，需要稳定输出关键统计字段。 */
 test("buildWeeklySummaryJson renders weekly summary document", () => {
   const summary: WeeklyExportSummary = {
-    schemaVersion: 10,
+    schemaVersion: 11,
     generatedAt: "2026-05-27T08:00:00.000Z",
     range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
     identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
@@ -120,14 +120,14 @@ test("buildWeeklySummaryJson renders weekly summary document", () => {
 /** 默认导出文件要同时包含原始事件和按天汇总，避免丢掉明细。 */
 test("buildWeeklyExportBundleJson includes raw events and daily summaries", () => {
   const bundle: WeeklyExportBundle = {
-    schemaVersion: 10,
+    schemaVersion: 11,
     generatedAt: "2026-05-27T08:00:00.000Z",
     range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
     identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
     pricing: { catalogVersion: "2026-08-14", currency: "USD", basis: "event-time-standard-api" },
     rawEvents: records,
     weeklySummary: {
-      schemaVersion: 10,
+      schemaVersion: 11,
       generatedAt: "2026-05-27T08:00:00.000Z",
       range: { label: "this-week", start: "2026-05-25T00:00:00.000Z", end: "2026-05-27T08:00:00.000Z" },
       identity: { gitUserName: "alice", gitUserEmail: "alice@example.com" },
@@ -186,9 +186,11 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
   assert.equal(parsed.dailySummaries[0].fiveHourPeakUsagePct, 31);
   assert.equal(parsed.dailySummaries[0].sevenDayLatestUsagePct, 62);
   assert.equal(parsed.dailySummaries[0].sevenDayPeakUsagePct, 71);
-  assert.equal(parsed.schemaVersion, 10);
+  assert.equal(parsed.schemaVersion, 11);
   assert.equal(parsed.pricing.catalogVersion, "2026-08-14");
   assert.equal(parsed.weeklySummary.apiEquivalentCost.total.unpricedApiRequestCount, 1);
+  assert.deepEqual(parsed.weeklySummary.apiEquivalentCost.total.unpricedModels, COST_BREAKDOWN.total.unpricedModels);
+  assert.deepEqual(parsed.dailySummaries[0].apiEquivalentCost.claude.unpricedModels, COST_BREAKDOWN.claude.unpricedModels);
   assert.equal(parsed.dailySummaries[0].apiEquivalentCost.claude.estimatedUsd, 1.23456789);
 });
 

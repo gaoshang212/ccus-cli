@@ -435,7 +435,7 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
     exportUserName = gitIdentity.userName;
   }
   const weeklySummary = {
-    schemaVersion: 10,
+    schemaVersion: 11,
     generatedAt: new Date().toISOString(),
     range: {
       label: window.label,
@@ -531,7 +531,7 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
     };
   });
   const bundle = {
-    schemaVersion: 10,
+    schemaVersion: 11,
     generatedAt: new Date().toISOString(),
     range: {
       label: window.label,

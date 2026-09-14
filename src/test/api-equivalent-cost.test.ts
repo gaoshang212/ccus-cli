@@ -6,6 +6,7 @@ import {
   API_PRICING_CATALOG,
   API_PRICING_METADATA,
   ApiPricingCatalog,
+  ApiCostRequest,
   emptyApiEquivalentCost,
   findApiModelPrice,
   mergeApiEquivalentCosts,
@@ -283,4 +284,25 @@ test("mergeApiEquivalentCosts preserves coverage semantics", () => {
     { estimatedUsd: null, pricedApiRequestCount: 0, unpricedApiRequestCount: 1 },
   ]), { estimatedUsd: 1.25, pricedApiRequestCount: 2, unpricedApiRequestCount: 1 });
   assert.deepEqual(mergeApiEquivalentCosts([{ estimatedUsd: null, pricedApiRequestCount: 0, unpricedApiRequestCount: 3 }]), { estimatedUsd: null, pricedApiRequestCount: 0, unpricedApiRequestCount: 3 });
+});
+
+test("未定价模型保留原名、合并请求数并支持缺失模型", () => {
+  const request: ApiCostRequest = {
+    provider: "codex", timestamp: "2026-09-14T00:00:00Z",
+    model: "openai/unknown-model-xhigh", inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0,
+  };
+  const unknown = priceApiRequest(request);
+  assert.deepEqual(unknown.unpricedModels, [{ model: request.model, requestCount: 1 }]);
+  const merged = mergeApiEquivalentCosts([
+    mergeApiEquivalentCosts([unknown, unknown]),
+    priceApiRequest({ ...request, model: null }),
+    priceApiRequest({ ...request, model: "another-model" }),
+  ]);
+  assert.equal(merged.unpricedApiRequestCount, 4);
+  assert.deepEqual(merged.unpricedModels, [
+    { model: null, requestCount: 1 },
+    { model: "another-model", requestCount: 1 },
+    { model: request.model, requestCount: 2 },
+  ]);
+  assert.equal(emptyApiEquivalentCost().unpricedModels, undefined);
 });

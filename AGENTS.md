@@ -76,13 +76,14 @@
 
 当前导出契约版本：
 
-- `schemaVersion: 10`
+- `schemaVersion: 11`
 
-成本契约（v10）：
+成本契约（v11，兼容 v10）：
 
 - 顶层 `pricing`：`{ catalogVersion, currency: "USD", basis: "event-time-standard-api" }`
 - `weeklySummary.apiEquivalentCost` / `dailySummaries[].apiEquivalentCost`：`{ claude, codex, total }`
 - 每个来源结果：`{ estimatedUsd, pricedApiRequestCount, unpricedApiRequestCount }`
+- v11 有未定价请求时增加 `unpricedModels: [{ model, requestCount }]`，保留原始模型名，缺失记 `null`，同名累计；无未定价请求省略。仅 JSON 携带，页面和 CSV 不展示；v10 不含模型明细。
 - 按请求的模型与事件时间使用本地价格目录。该值是标准同步 API 等效成本，不是订阅或实际账单
 - 部分未定价时保留已知小计；全部未定价时 `estimatedUsd: null`；空范围为 0
 
@@ -112,10 +113,10 @@ Codex 统计（与 Codex 字段单列）：
 
 `ccus aggregate` 当前接受：
 
-- `schemaVersion: 6/7/8/9/10` 的 bundle JSON；v6–v9 有请求时成本按不可用映射、请求全部计入未定价，无请求时成本为 0
+- `schemaVersion: 6/7/8/9/10/11` 的 bundle JSON；v6–v9 有请求时成本按不可用映射、请求全部计入未定价，无请求时成本为 0
 - 通过 `ccus export` 导出的 `.json.gz`（gzip 压缩，默认）或明文 `.json` 文件，`.gz` 读取时自动 gunzip
 
-schemaVersion 6/7/8/9/10 以外的 bundle 会被明确拒绝，不再静默读取。
+schemaVersion 6/7/8/9/10/11 以外的 bundle 会被明确拒绝，不再静默读取。
 不支持把 raw-event jsonl 直接作为 `aggregate` 输入。
 
 ### 2.6 aggregate 输出契约
@@ -259,7 +260,7 @@ schemaVersion 6/7/8/9/10 以外的 bundle 会被明确拒绝，不再静默读�
 - `src/lib/aggregate.ts`
   - 读取 bundle JSON
   - 从 bundle 展开 detail/daily/weekly 行
-  - 当前校验 `schemaVersion` 为 6/7/8/9/10；旧版成本按不可用兼容，v10 校验价格元数据和成本结构
+  - 当前校验 `schemaVersion` 为 6/7/8/9/10/11；旧版成本按不可用兼容，v10 校验价格元数据和成本结构
   - 同一个人多台电脑导出多个 bundle 时按 personKey 合并去重（见 2.6）
 
 - `src/lib/Codex.ts`
@@ -397,16 +398,17 @@ node dist/cli.js aggregate --input-dir "$env:LOCALAPPDATA\ccus\exports" --out-di
 
 ### 5.4 aggregate 向后兼容
 
-当前接受 `schemaVersion: 6/7/8/9/10`，对旧版本做显式容错映射（不默默放宽）：
+当前接受 `schemaVersion: 6/7/8/9/10/11`，对旧版本做显式容错映射（不默默放宽）：
 
-- v10：完整，含价格目录与等效 API 成本；codex `inputTokens` 延续 v9 的净输入口径
+- v11：沿用 v10 成本，增加未定价模型明细 `unpricedModels`
+- v10：含价格目录与等效 API 成本，无模型明细；codex `inputTokens` 延续 v9 的净输入口径
 - 模型价格集中维护在 `src/lib/api-pricing-catalog.json`；个人与多人 dashboard 的合计成本卡下链接独立 `pricing.html`，服务模式同时响应 `/pricing.html`
 - v9：无成本字段，codex `inputTokens` 按 `max(0, input_tokens - cached_input_tokens)` 计算
 - v8：完整（codex 含额度字段，`inputTokens` 仍为含 cache 的旧口径）
 - v7：codex 有 token/消息、无额度字段 → 额度按 null
 - v6：无 codex 子结构 → codex 回退零值
 - v6–v9：有请求时成本不可用并全部计入未定价；无请求时成本为 0
-- 6/7/8/9/10 以外：拒绝，让用户重新导出
+- 6/7/8/9/10/11 以外：拒绝，让用户重新导出
 
 codex 额度在 aggregate 层从 `rawEvents` 的 `source="codex"` 事件重算，所以 v6/v7 时期混进 rawEvents 的 codex 事件也能被正确分流（Codex usage 变干净、codex 额度算出）。
 

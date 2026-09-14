@@ -167,10 +167,11 @@ ccus aggregate serve --input-dir ./team-exports
 - 默认输出一个 `json` 数据包，里面同时包含 `rawEvents`、`weeklySummary`、`dailySummaries`
 - 导出文件内容为**紧凑 JSON**（无缩进），并默认 **gzip 压缩**后写成 `.json.gz`；gzip 与紧凑化都只是存储/展示层变化，解压后的字段集合与 `schemaVersion` 不变
 - 默认写 `.json.gz`；若用 `--out` 指定一个非 `.gz` 结尾的路径，则按明文 JSON 写出（不压缩）
-- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `10`。顶层 `pricing` 记录本地价格目录版本、USD 币种和 `event-time-standard-api` 基准；`weeklySummary.apiEquivalentCost` 与 `dailySummaries[].apiEquivalentCost` 分别包含 `claude`、`codex`、`total` 的金额及定价覆盖度。v10 延续 v9 的 Codex token 口径：`inputTokens = max(0, input_tokens - cached_input_tokens)`，缓存输入由 `cacheReadInputTokens` 单列
+- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `11`。顶层 `pricing` 记录本地价格目录版本、USD 币种和 `event-time-standard-api` 基准；`weeklySummary.apiEquivalentCost` 与 `dailySummaries[].apiEquivalentCost` 分别包含 `claude`、`codex`、`total` 的金额及定价覆盖度。v10 延续 v9 的 Codex token 口径：`inputTokens = max(0, input_tokens - cached_input_tokens)`，缓存输入由 `cacheReadInputTokens` 单列
+- v11 在有未定价请求的成本结果中增加 `unpricedModels: [{ model, requestCount }]`，按原始模型名累计请求数，模型缺失记为 `null`，无未定价请求时省略。该明细仅写入 JSON，不增加页面或 CSV 字段；v10 导出仍可读取，但没有模型明细。
 - 等效 API 成本按每次请求的模型、发生时间和 token 分类套用内置标准同步 API 价格。Claude 区分输入、输出、缓存读取及 5 分钟/1 小时缓存写入；Codex 区分净输入、缓存输入和输出。它不是 Claude/Codex 订阅账单，也不含税费、折扣、批处理、工具附加费或区域溢价
 - 未知模型不会丢弃：有部分请求可定价时金额是已知小计，页面显示“至少为”；全部请求均无法定价时金额为不可用。个人 dashboard 在顶部第五张卡显示 Claude 与 Codex 的合计成本，不显示来源分项。全部模型价格集中维护在 `src/lib/api-pricing-catalog.json`，价格目录随 ccus 发布，统计过程不联网；个人与多人 dashboard 的合计成本卡下链接独立 `pricing.html` 并在新页面打开，价格页只保留一套标题，Codex 排在 Claude 前并按模型版本从新到旧排列。当前 Claude 目录包含 Opus 4.7、Opus 4.8、Opus 5、Sonnet 5 和 Fable 5；Sonnet 5 按事件时间区分活动价与标准价
-- GPT-6 使用 `gpt-6-astra` 定价，兼容 `gpt-6` 别名及推理强度后缀。自 2026-09-03 起，每百万 token 输入 / 缓存读取 / 输出为 $10 / $1 / $50；输入与缓存读取合计超过 272K 时为 $20 / $2 / $75。来源：[OpenAI 模型定价](https://developers.openai.com/api/docs/models/gpt-6-astra)。价格目录版本为 `2026-09-14`，导出 schemaVersion 仍为 10
+- GPT-6 使用 `gpt-6-astra` 定价，兼容 `gpt-6` 别名及推理强度后缀。自 2026-09-03 起，每百万 token 输入 / 缓存读取 / 输出为 $10 / $1 / $50；输入与缓存读取合计超过 272K 时为 $20 / $2 / $75。来源：[OpenAI 模型定价](https://developers.openai.com/api/docs/models/gpt-6-astra)。价格目录版本为 `2026-09-14`
 - `gpt-5.3-codex-spark` 自 2026-02-12 起按 `gpt-5.3-codex` 价格估算：每百万 token 输入 $1.75、输出 $14、缓存读取 $0.175。这是本项目采用的估算单价，并非 Spark 官方公开 API 定价。
 - 默认文件名会带 git email 的帐号名前缀和起止日期，例如：`alice_export_2026-05-26_to_2026-06-01.json.gz`
 - `userMessageCount` 来自 `~/.claude/projects/**/*.jsonl` 的非 meta `type:user` 事件
@@ -188,7 +189,7 @@ ccus aggregate serve --input-dir ./team-exports
 ## 多人汇总
 
 - 输入目录放很多通过 `ccus export` 导出的 bundle 文件，`.json.gz`（gzip 压缩）与明文 `.json` 都能识别，gzip 文件读取时自动解压
-- `aggregate` 接受 `schemaVersion: 6/7/8/9/10`。v6–v9 继续聚合原统计；存在 API 请求时成本为空并全部计入未定价，没有请求时成本为 0。旧版与 v10 或不同价格目录混用时，`pricingCatalogVersion` 按规则标记为 `mixed`
+- `aggregate` 接受 `schemaVersion: 6/7/8/9/10/11`。v6–v9 继续聚合原统计；存在 API 请求时成本为空并全部计入未定价，没有请求时成本为 0。旧版与 v10 或不同价格目录混用时，`pricingCatalogVersion` 按规则标记为 `mixed`
 - 同一个人在多台电脑上各自导出 bundle 时会自动合并去重：去重以**天**为粒度，对每个「同人同天」取 `generatedAt` 最新的那份导出，避免同一台机器重复导出或周与周重叠造成翻倍；**周汇总不取整周单份，而是把按天去重后的各天数据上卷累加**，所以多台电脑在不同天产生的用量会正确合进同一周。usage（5h / 7d）从选中事件按真实时间戳重算，Claude+Codex 合并：peak 取两源 max、latest 两源相加
 - `ccus aggregate --input-dir DIR --out-dir DIR`
 - 输出三个文件：

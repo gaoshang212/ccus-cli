@@ -168,14 +168,16 @@ test("aggregate separates claude and codex usage by source", () => {
   assert.equal(codexRow?.inputTokens, 0);
 });
 
-/** aggregate 接受 schemaVersion 6/7/8/9/10 的 bundle（向后兼容旧导出）。 */
-test("loadWeeklyExportBundles accepts schemaVersion 6/7/8/9/10 bundles", async () => {
+/** aggregate 接受 schemaVersion 6/7/8/9/10/11 的 bundle（向后兼容旧导出）。 */
+test("loadWeeklyExportBundles accepts schemaVersion 6/7/8/9/10/11 bundles", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-versions-"));
   try {
-    for (const sv of [6, 7, 8, 9, 10]) {
+    for (const sv of [6, 7, 8, 9, 10, 11]) {
       const b = buildMinimalBundle(`p${sv}`);
-      if (sv === 10) {
+      if (sv >= 10) {
         upgradeBundleToV10(b);
+        b.schemaVersion = sv;
+        b.weeklySummary.schemaVersion = sv;
       } else {
         b.schemaVersion = sv;
         b.weeklySummary.schemaVersion = sv;
@@ -183,7 +185,7 @@ test("loadWeeklyExportBundles accepts schemaVersion 6/7/8/9/10 bundles", async (
       await fs.writeFile(path.join(root, `p${sv}.json`), JSON.stringify(b), "utf8");
     }
     const bundles = await loadWeeklyExportBundles(root);
-    assert.equal(bundles.length, 5);
+    assert.equal(bundles.length, 6);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -203,8 +205,33 @@ test("loadWeeklyExportBundles rejects v10 missing pricing or daily cost", async 
 
     await assert.rejects(
       () => loadWeeklyExportBundles(root),
-      /schemaVersion 6\/7\/8\/9\/10 bundles/,
+      /schemaVersion 6\/7\/8\/9\/10\/11 bundles/,
     );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("v11 保留模型明细和已知成本，拒绝非法模型计数", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-unpriced-models-"));
+  try {
+    const bundle = upgradeBundleToV10(buildMinimalBundle("models"), { estimatedUsd: 0.75, priced: 1 });
+    bundle.schemaVersion = 11;
+    bundle.weeklySummary.schemaVersion = 11;
+    const cost = bundle.dailySummaries[0].apiEquivalentCost.total;
+    cost.unpricedApiRequestCount = 2;
+    cost.unpricedModels = [{ model: "unknown-model", requestCount: 2 }];
+    const file = path.join(root, "bundle.json");
+    await fs.writeFile(file, JSON.stringify(bundle), "utf8");
+    const loaded = await loadWeeklyExportBundles(root);
+    assert.deepEqual(loaded[0].bundle.dailySummaries[0].apiEquivalentCost.total.unpricedModels, cost.unpricedModels);
+    assert.equal(buildAggregatedDailyRows(loaded)[0].estimatedApiEquivalentCostUsd, 0.75);
+    assert.equal(buildAggregatedWeeklyRows(loaded)[0].unpricedApiRequestCount, 2);
+    for (const invalid of [null, [{ model: 42, requestCount: 2 }], [{ model: "x", requestCount: -1 }], [{ model: "x", requestCount: 1 }]]) {
+      cost.unpricedModels = invalid;
+      await fs.writeFile(file, JSON.stringify(bundle), "utf8");
+      await assert.rejects(() => loadWeeklyExportBundles(root), /schemaVersion/);
+    }
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -876,7 +903,7 @@ test("loadWeeklyExportBundles rejects old schema bundles explicitly", async () =
 
     await assert.rejects(
       () => loadWeeklyExportBundles(root),
-      /schemaVersion 6\/7\/8\/9\/10 bundles/,
+      /schemaVersion 6\/7\/8\/9\/10\/11 bundles/,
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
