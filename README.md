@@ -209,6 +209,22 @@ ccus aggregate serve --input-dir ./team-exports
 
 ## 定时同步
 
+session 内容已更新但文件修改时间仍旧，导致统计遗漏时，可手动修复：
+
+```bash
+ccus sessions repair --dry-run        # 预览全部待修复文件
+ccus sessions repair                 # 修复全部类型
+ccus sessions repair codex           # 仅修复 Codex（含 Orca）
+ccus sessions repair claude          # 仅修复 Claude
+ccus sessions repair codex --dry-run # 仅预览 Codex
+ccus sessions repair codex --min-gap 3h # 至少落后 3 小时才修复
+ccus sync                   # 重新统计并同步
+```
+
+预览和执行均按实际文件标识去重：Codex 与 Orca 的硬链接只显示、计数一次，修复一个路径会同时更新所有硬链接路径。普通独立副本仍分别处理。
+
+默认扫描 Claude projects、Codex 与 Orca sessions 的 JSONL；指定类型时只扫描对应目录。从尾部分块读取最后一条非空记录。默认仅当文件修改时间落后于记录的 `timestamp`，且两者按本机时区跨自然日时修复（不是必须相差 24 小时）。`--min-gap` 改为按实际时差判断，支持非负整数加 `m`（分钟）、`h`（小时）、`d`（24 小时）；达到阈值即修复，`0m` 表示任何正差值。保留更晚的修改时间，不改写会话内容。末条 JSON 不完整、时间戳缺失或无效时跳过并列出原因。此命令不限制本周，处理所选类型的所有历史 session；日常统计的修改时间预筛保持不变。
+
 把每个人的 `ccus export` 攒到一个共享目录（团队网盘 / 共享盘）通常是手动的，容易漏。`ccus sync` 用来自动化这一步：周期到了就 `export` 一次，并把导出文件**复制**到目标目录下**按周命名的子目录**里。
 
 ```bash

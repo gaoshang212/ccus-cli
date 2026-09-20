@@ -86,7 +86,7 @@ function summarizeAssistantUsage(
   };
 }
 
-async function collectProjectJsonlFiles(directoryPath: string): Promise<string[]> {
+export async function collectProjectJsonlFiles(directoryPath: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(directoryPath, { withFileTypes: true });
     const nested = await Promise.all(

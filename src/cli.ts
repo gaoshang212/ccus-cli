@@ -35,7 +35,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
-  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]   (默认装 Claude statusLine；--codex 改写 Codex 的 ~/.codex/config.toml notify，配 --uninstall 移除)\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus sessions [RANGE] [--out FILE] [--data-dir PATH]   (把 Claude 与 Codex 的活跃 session 打包成 zip，默认本周)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus api config [--enable|--disable] [--provider zhipu|custom] [--token-env NAME] [--token VAL] [--url URL] [--project P] [--organization O] [--ttl 5m] [--extractor-file FILE] [--data-dir PATH]\n  ccus api test [--data-dir PATH]   (立即拉取第三方额度并打印，验证配置是否生效)\n  ccus api status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
+  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]   (默认装 Claude statusLine；--codex 改写 Codex 的 ~/.codex/config.toml notify，配 --uninstall 移除)\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus sessions [RANGE] [--out FILE] [--data-dir PATH]   (把 Claude 与 Codex 的活跃 session 打包成 zip，默认本周)\n  ccus sessions repair [codex|claude] [--min-gap 3h] [--dry-run]   (按末条记录时间修复 session 修改时间，默认仅跨天)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus api config [--enable|--disable] [--provider zhipu|custom] [--token-env NAME] [--token VAL] [--url URL] [--project P] [--organization O] [--ttl 5m] [--extractor-file FILE] [--data-dir PATH]\n  ccus api test [--data-dir PATH]   (立即拉取第三方额度并打印，验证配置是否生效)\n  ccus api status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
 /** 一个轻量的参数解析器，当前命令面不复杂，没必要引入额外依赖。 */
@@ -780,9 +780,41 @@ async function handleSessions(options: CliOptions): Promise<void> {
   process.stdout.write(`${outputPath}\n`);
 }
 
-/**
- * 解析 sessions 命令的参数，支持 RANGE 作为位置参数简写。
- */
+/** 手动修复 session 修改时间，并报告逐文件结果。 */
+async function handleRepairSessionMtimes(args: string[]): Promise<void> {
+  const startedAt = performance.now();
+  let source: "codex" | "claude" | undefined;
+  let dryRun = false;
+  let minGapMs: number | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--dry-run") dryRun = true;
+    else if (arg === "--min-gap" && minGapMs === undefined) {
+      const match = /^(\d+)(m|h|d)$/.exec(args[++index] ?? "");
+      if (!match) throw new Error("--min-gap 需要非负整数和单位 m/h/d，例如 30m、3h、1d；0m 表示任何正差值。");
+      minGapMs = Number(match[1]) * ({ m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2]]!);
+      if (!Number.isSafeInteger(minGapMs)) throw new Error("--min-gap 数值过大。");
+    }
+    else if (["--verbose", "--debug", "-v"].includes(arg)) continue;
+    else if ((arg === "codex" || arg === "claude") && source === undefined) source = arg;
+    else throw new Error(`不支持的修复参数：${arg}。用法：ccus sessions repair [codex|claude] [--min-gap 3h] [--dry-run]`);
+  }
+  const { repairSessionMtimes } = await import("./lib/session-mtime");
+  const results = await repairSessionMtimes(dryRun, source, minGapMs);
+  for (const result of results) {
+    if (result.status === "repaired") {
+      process.stdout.write(`${dryRun ? "待修复" : "已修复"} ${result.filePath}: ${result.before!.toISOString()} → ${result.after!.toISOString()}\n`);
+    } else if (result.status === "skipped" || result.status === "failed") {
+      process.stderr.write(`${result.status === "failed" ? "失败" : "跳过"} ${result.filePath}: ${result.reason}\n`);
+    }
+  }
+  const count = (status: typeof results[number]["status"]) => results.filter((result) => result.status === status).length;
+  process.stdout.write(`扫描 ${results.length}，${dryRun ? "待修复" : "已修复"} ${count("repaired")}，无需修复 ${count("unchanged")}，跳过 ${count("skipped")}，失败 ${count("failed")}\n`);
+  process.stdout.write(`耗时：${formatSyncElapsed(performance.now() - startedAt)}\n`);
+  if (count("failed") > 0) process.exitCode = 1;
+}
+
+/** 解析 sessions 命令的参数，支持 RANGE 作为位置参数简写。 */
 function resolveSessionsOptions(action: string | undefined, args: string[], rest: string[]): CliOptions {
   if (!action || action.startsWith("--")) {
     return parseOptions(args.slice(1));
@@ -1543,6 +1575,11 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   if (group === "export") {
     const exportOptions = resolveExportOptions(action, args, rest);
     await handleExport(exportOptions);
+    return;
+  }
+
+  if (group === "sessions" && action === "repair") {
+    await handleRepairSessionMtimes(rest);
     return;
   }
 
