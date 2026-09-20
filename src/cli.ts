@@ -233,6 +233,25 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
   }
 }
 
+/** 统计前静默同步会话修改时间，修复失败时仍尝试原有统计流程。 */
+async function loadSessionUsage(start: Date, end: Date) {
+  try {
+    const { repairSessionMtimes } = await import("./lib/session-mtime");
+    const results = await repairSessionMtimes(false);
+    debugLog("sessions", "统计前同步修改时间", {
+      scanned: results.length,
+      repaired: results.filter((result) => result.status === "repaired").length,
+      issues: results.filter((result) => result.status === "failed" || result.status === "skipped"),
+    });
+  } catch (error) {
+    debugLog("sessions", "统计前同步修改时间失败", error);
+  }
+  return Promise.all([
+    summarizeClaudeProjectUsageCombined(start, end),
+    summarizeCodexSessionUsageCombined(start, end),
+  ]);
+}
+
 /**
  * 加载 dashboard 渲染数据：statusline 事件、Claude/Codex 每日消息数与标准 API 等效成本。
  *
@@ -253,10 +272,7 @@ async function loadDashboardData(
   // codex 消息柱图走 dailyUserMessages，不受影响。
   const events = (await readEventsForRange(dataDir, range, now))
     .map((record) => computeStatuslineEvent(record));
-  const [claudeUsage, codexUsage] = await Promise.all([
-    summarizeClaudeProjectUsageCombined(window.start, window.end),
-    summarizeCodexSessionUsageCombined(window.start, window.end),
-  ]);
+  const [claudeUsage, codexUsage] = await loadSessionUsage(window.start, window.end);
   const claudeDailyUsage = claudeUsage.daily;
   const codexDailyUsage = codexUsage.daily;
   const dailyUserMessages = enumerateDateKeys(window.start, window.end).map((date) => ({
@@ -408,10 +424,7 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
   const statuslineDailyRows = buildSummaryRows(claudeEvents);
   const codexStatuslineSummary = summarizeEvents(codexEvents);
   const codexStatuslineDailyRows = buildSummaryRows(codexEvents);
-  const [claudeScan, codexScan] = await Promise.all([
-    summarizeClaudeProjectUsageCombined(window.start, window.end),
-    summarizeCodexSessionUsageCombined(window.start, window.end),
-  ]);
+  const [claudeScan, codexScan] = await loadSessionUsage(window.start, window.end);
   const claudeUsage = claudeScan.weekly;
   const claudeDailyUsage = claudeScan.daily;
   const codexUsage = codexScan.weekly;

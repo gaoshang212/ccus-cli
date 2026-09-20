@@ -209,6 +209,8 @@ ccus aggregate serve --input-dir ./team-exports
 
 ## 定时同步
 
+`sync`（含后台同步）、`export` 和个人 dashboard 在统计前自动同步 session 文件修改时间，默认仅修复跨天差异，并按实际文件去重硬链接。自动同步保持静默，异常信息可通过 `--verbose` 查看。
+
 session 内容已更新但文件修改时间仍旧，导致统计遗漏时，可手动修复：
 
 ```bash

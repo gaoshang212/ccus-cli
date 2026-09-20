@@ -3,9 +3,74 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { gunzipSync } from "node:zlib";
 import { main } from "../cli";
 import { summarizeClaudeProjectUsage } from "../lib/claude";
 import { summarizeCodexSessionUsage } from "../lib/codex-sessions";
+import { writeSyncConfig } from "../lib/sync";
+import type { WeeklyExportBundle } from "../types";
+
+test("导出、同步与个人看板在统计前静默修复修改时间，后台同步不输出", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-auto-repair-"));
+  const env = { CCUS_CLAUDE_DATA_DIR: path.join(root, "claude"), CODEX_HOME: path.join(root, "codex"), APPDATA: path.join(root, "appdata") };
+  const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  const dataDir = path.join(root, "data");
+  const targetDir = path.join(root, "target");
+  const timestamp = new Date();
+  const old = new Date("2000-01-01T00:00:00Z");
+  const claudeFile = path.join(env.CCUS_CLAUDE_DATA_DIR, "projects", "project", "session.jsonl");
+  const codexFile = path.join(env.CODEX_HOME, "sessions", "rollout.jsonl");
+  const alias = path.join(env.APPDATA, "orca", "codex-runtime-home", "home", "sessions", "rollout.jsonl");
+  const exported = path.join(root, "export.json");
+  let stdout = "";
+  const stdoutMock = mock.method(process.stdout, "write", (chunk: string | Uint8Array) => { stdout += chunk.toString(); return true; });
+  const assertCounts = (bundle: WeeklyExportBundle) => {
+    assert.equal(bundle.weeklySummary.counts.userMessageCount, 1);
+    assert.equal(bundle.weeklySummary.codex?.userMessageCount, 1);
+  };
+  try {
+    for (const file of [claudeFile, codexFile, alias]) await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(claudeFile, JSON.stringify({ timestamp: timestamp.toISOString(), type: "user", message: { content: "hello" } }));
+    await fs.writeFile(codexFile, JSON.stringify({ timestamp: timestamp.toISOString(), type: "event_msg", payload: { type: "task_started", turn_id: "auto-repair" } }));
+    await fs.link(codexFile, alias);
+    await writeSyncConfig(dataDir, { targetDir, intervalLabel: "3h", range: "this-week", suffix: null });
+    const commands = [
+      ["export", "--out", exported],
+      ["sync"],
+      ["__sync"],
+      ["dashboard", "build", "--out", path.join(root, "dashboard.html")],
+    ];
+    for (const command of commands) {
+      for (const file of [claudeFile, codexFile]) await fs.utimes(file, old, old);
+      stdout = "";
+      await main([...command, "--data-dir", dataDir]);
+      for (const file of [claudeFile, codexFile, alias]) {
+        assert.equal((await fs.stat(file)).mtimeMs, timestamp.getTime(), command.join(" "));
+      }
+      assert.ok(!stdout.includes("已修复"));
+      if (command[0] === "export") {
+        assert.equal(stdout.trim(), exported);
+        assertCounts(JSON.parse(await fs.readFile(exported, "utf8")));
+      } else if (command[0] === "sync" || command[0] === "__sync") {
+        if (command[0] === "__sync") assert.equal(stdout, "");
+        const files = await fs.readdir(path.join(dataDir, "exports"));
+        const bundles: WeeklyExportBundle[] = await Promise.all(files.filter((file) => file.endsWith(".json.gz")).map(async (file) =>
+          JSON.parse(gunzipSync(await fs.readFile(path.join(dataDir, "exports", file))).toString("utf8"))));
+        assertCounts(bundles.find((bundle) => bundle.weeklySummary.counts.userMessageCount === 1)!);
+      } else {
+        assert.equal(stdout.trim(), path.join(root, "dashboard.html"));
+      }
+    }
+  } finally {
+    stdoutMock.mock.restore();
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 test("sessions repair 支持按类型修复与预览，恢复统计且重复运行不改动", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-repair-mtime-"));
