@@ -171,7 +171,9 @@ ccus aggregate serve --input-dir ./team-exports
 - v11 在有未定价请求的成本结果中增加 `unpricedModels: [{ model, requestCount }]`，按原始模型名累计请求数，模型缺失记为 `null`，无未定价请求时省略。该明细仅写入 JSON，不增加页面或 CSV 字段；v10 导出仍可读取，但没有模型明细。
 - 等效 API 成本按每次请求的模型、发生时间和 token 分类套用内置标准同步 API 价格。Claude 区分输入、输出、缓存读取及 5 分钟/1 小时缓存写入；Codex 区分净输入、缓存输入和输出。它不是 Claude/Codex 订阅账单，也不含税费、折扣、批处理、工具附加费或区域溢价
 - 未知模型不会丢弃：有部分请求可定价时金额是已知小计，页面显示“至少为”；全部请求均无法定价时金额为不可用。个人 dashboard 在顶部第五张卡显示 Claude 与 Codex 的合计成本，不显示来源分项。全部模型价格集中维护在 `src/lib/api-pricing-catalog.json`，价格目录随 ccus 发布，统计过程不联网；个人与多人 dashboard 的合计成本卡下链接独立 `pricing.html` 并在新页面打开，价格页只保留一套标题，Codex 排在 Claude 前并按模型版本从新到旧排列。当前 Claude 目录包含 Opus 4.7、Opus 4.8、Opus 5、Sonnet 5 和 Fable 5；Sonnet 5 按事件时间区分活动价与标准价
-- GPT-6 使用 `gpt-6-astra` 定价，兼容 `gpt-6` 别名及推理强度后缀。自 2026-09-03 起，每百万 token 输入 / 缓存读取 / 输出为 $10 / $1 / $50；输入与缓存读取合计超过 272K 时为 $20 / $2 / $75。来源：[OpenAI 模型定价](https://developers.openai.com/api/docs/models/gpt-6-astra)。价格目录版本为 `2026-09-14`
+- GPT-6 使用 `gpt-6-astra` 定价，兼容 `gpt-6` 别名及推理强度后缀。自 2026-09-03 起，每百万 token 输入 / 缓存读取 / 输出为 $10 / $1 / $50；输入与缓存读取合计超过 272K 时为 $20 / $2 / $75。来源：[OpenAI 模型定价](https://developers.openai.com/api/docs/models/gpt-6-astra)。价格目录版本为 `2026-09-23`
+- 自 2026-09-22 起，`gpt-6-sol` 每百万 token 输入 / 缓存读取 / 输出为 $2 / $0.20 / $10，`gpt-6-luna` 为 $0.10 / $0.01 / $0.50；输入与缓存读取合计超过 272K 时，分别为 $4 / $0.40 / $15 和 $0.20 / $0.02 / $0.75。均兼容推理强度后缀。来源：[OpenAI 价格表](https://developers.openai.com/api/docs/pricing)。
+- 自 2026-09-22 起，`claude-opus-5-5`（目录名 `claude-opus-5.5`）每百万 token 输入 / 输出 / 缓存读取 / 5 分钟缓存写入 / 1 小时缓存写入为 $4 / $20 / $0.20 / $5 / $8。来源：[官方发布公告](https://www.anthropic.com/claude-opus-5-5)、[缓存计价说明](https://claude.com/blog/what-a-task-costs-on-opus-5-5)。
 - `gpt-5.3-codex-spark` 自 2026-02-12 起按 `gpt-5.3-codex` 价格估算：每百万 token 输入 $1.75、输出 $14、缓存读取 $0.175。这是本项目采用的估算单价，并非 Spark 官方公开 API 定价。
 - 默认文件名会带 git email 的帐号名前缀和起止日期，例如：`alice_export_2026-05-26_to_2026-06-01.json.gz`
 - `userMessageCount` 来自 `~/.claude/projects/**/*.jsonl` 的非 meta `type:user` 事件

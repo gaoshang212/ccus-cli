@@ -167,6 +167,41 @@ test("GPT-6 aliases price input, cached input and output across the long-context
   }
 });
 
+test("Opus 5.5 按生效日期计价，兼容模型别名并区分缓存读写", () => {
+  for (const model of ["claude-opus-5-5", "claude-opus-5.5", "anthropic/claude-opus-5-5-thinking[1m]"]) {
+    const request = {
+      provider: "claude" as const, model, timestamp: "2026-09-22T00:00:00Z",
+      inputTokens: 100_000, outputTokens: 10_000, cacheReadInputTokens: 50_000,
+      cacheWrite5mInputTokens: 30_000, cacheWrite1hInputTokens: 40_000,
+    };
+    assert.equal(findApiModelPrice({ ...request, timestamp: "2026-09-21T23:59:59.999Z" }), null);
+    assert.deepEqual(priceApiRequest(request), {
+      estimatedUsd: 1.08, pricedApiRequestCount: 1, unpricedApiRequestCount: 0,
+    });
+  }
+});
+
+test("GPT-6 Sol 和 Luna 按生效日期、推理后缀及长上下文边界计价", () => {
+  for (const [name, standard, long] of [
+    ["gpt-6-sol", 0.464, 0.878004],
+    ["gpt-6-luna", 0.0232, 0.0439002],
+  ] as const) {
+    for (const model of [name, `openai/${name}-max`]) {
+      const request = {
+        provider: "codex" as const, model, timestamp: "2026-09-22T00:00:00Z",
+        inputTokens: 172_000, cacheReadInputTokens: 100_000, outputTokens: 10_000,
+      };
+      assert.equal(findApiModelPrice({ ...request, timestamp: "2026-09-21T23:59:59.999Z" }), null);
+      assert.deepEqual(priceApiRequest(request), {
+        estimatedUsd: standard, pricedApiRequestCount: 1, unpricedApiRequestCount: 0,
+      });
+      const result = priceApiRequest({ ...request, inputTokens: 172_001 });
+      assert.ok(Math.abs(result.estimatedUsd! - long) < 1e-12);
+      assert.equal(result.pricedApiRequestCount, 1);
+    }
+  }
+});
+
 test("default catalog includes current Orca Claude models and Sonnet 5 event-time pricing", () => {
   assert.equal(findApiModelPrice({ provider: "claude", model: "claude-opus-4-7", timestamp: "2026-04-16T00:00:00Z" })?.prices.inputUsdPerMillion, 5);
   assert.equal(findApiModelPrice({ provider: "claude", model: "claude-opus-4-8", timestamp: "2026-05-28T00:00:00Z" })?.prices.outputUsdPerMillion, 25);

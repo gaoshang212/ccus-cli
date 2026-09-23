@@ -207,6 +207,13 @@ test("buildApiPricingPage renders a standalone current pricing page with Codex f
   assert.match(currentHtml, /gpt-6-astra/);
   assert.ok(currentHtml.indexOf("gpt-6-astra") < currentHtml.indexOf("gpt-5.6-sol"));
   assert.doesNotMatch(html, /gpt-6-astra/);
+  const latestHtml = buildApiPricingPage(new Date("2026-09-22T00:00:00Z"));
+  assert.match(latestHtml, /<code>claude-opus-5\.5<\/code>/);
+  assert.doesNotMatch(currentHtml, /claude-opus-5\.5/);
+  for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+    assert.equal(latestHtml.split(`<code>${model}</code>`).length - 1, 2);
+    assert.doesNotMatch(currentHtml, new RegExp(model));
+  }
   assert.match(html, /<!doctype html>/i);
   assert.match(html, /<h1>当前模型价格<\/h1>/);
   assert.equal(html.match(/<h[12]>当前模型价格<\/h[12]>/g)?.length, 1);
