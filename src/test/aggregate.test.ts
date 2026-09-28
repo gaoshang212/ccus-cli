@@ -9,6 +9,11 @@ import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeekl
 import { StatuslineEvent } from "../types";
 import { main } from "../cli";
 
+/** 让测试时钟与旧版 bundle 的本地日期保持一致。 */
+function localTimestamp(value: string): string {
+  return new Date(value.replace(/Z$/, "")).toISOString();
+}
+
 /** 构造一个最小可用的 schemaVersion 6 bundle，供 gzip 兼容性测试使用。 */
 function buildMinimalBundle(personKey: string) {
   return {
@@ -19,7 +24,7 @@ function buildMinimalBundle(personKey: string) {
     rawEvents: [
       {
         schemaVersion: 3,
-        timestamp: "2026-05-26T01:00:00.000Z",
+        timestamp: localTimestamp("2026-05-26T01:00:00.000Z"),
         gitUserName: personKey,
         gitUserEmail: `${personKey}@example.com`,
         gitUserAccount: personKey,
@@ -102,7 +107,7 @@ function upgradeBundleToV10(
 function buildMixedBundle() {
   const makeEvent = (timestamp: string, five: number, seven: number, codex: boolean) => ({
     schemaVersion: 3,
-    timestamp,
+    timestamp: localTimestamp(timestamp),
     gitUserName: "alice",
     gitUserEmail: "alice@example.com",
     gitUserAccount: "alice",
@@ -291,7 +296,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
           rawEvents: [
             {
               schemaVersion: 2,
-              timestamp: "2026-05-26T01:00:00.000Z",
+              timestamp: localTimestamp("2026-05-26T01:00:00.000Z"),
               gitUserName: "alice",
               gitUserEmail: "alice@example.com",
               rawPayload: {
@@ -355,7 +360,7 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
           rawEvents: [
             {
               schemaVersion: 2,
-              timestamp: "2026-05-27T05:00:00.000Z",
+              timestamp: localTimestamp("2026-05-27T05:00:00.000Z"),
               gitUserName: "bob",
               gitUserEmail: "bob@example.com",
               rawPayload: {
@@ -425,8 +430,8 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
     assert.equal(detailCsv.includes("sourceFile"), false);
     assert.equal(detailCsv.includes("gitUserName"), false);
     assert.equal(detailCsv.includes("gitUserEmail"), false);
-    assert.match(detailCsv, /^"alice","2026-05-26T01:00:00\.000Z",/m);
-    assert.match(detailCsv, /^"bob","2026-05-27T05:00:00\.000Z",/m);
+    assert.ok(detailCsv.includes(`"alice","${localTimestamp("2026-05-26T01:00:00.000Z")}",`));
+    assert.ok(detailCsv.includes(`"bob","${localTimestamp("2026-05-27T05:00:00.000Z")}",`));
     // detail 行尾：contextUsedM/contextMaxM 及当天 token（取自 dailySummaries）都换算成 M。
     // alice：contextUsed 100→0.0001，contextMax 1000→0.001，token 300/40/20。
     assert.match(detailCsv, /,0\.0001,0\.001,0\.0003,0\.00004,0\.00002$/m);
@@ -475,7 +480,7 @@ function buildBundleForMerge(options: {
     rawEvents: [
       {
         schemaVersion: 3,
-        timestamp: eventTimestamp,
+        timestamp: localTimestamp(eventTimestamp),
         gitUserName: personKey,
         gitUserEmail: `${personKey}@example.com`,
         gitUserAccount: personKey,
@@ -648,7 +653,7 @@ test("aggregate same-machine repeated export: deduplicates by shared sessionId, 
     assert.equal(dailyRows[0].estimatedApiEquivalentCostUsd, 0.9);
     assert.equal(weeklyRows[0].estimatedApiEquivalentCostUsd, 0.9);
     // detail 只来自代表那一条事件。
-    assert.equal(detailRows[0].timestamp, "2026-05-26T09:00:00.000Z");
+    assert.equal(detailRows[0].timestamp, localTimestamp("2026-05-26T09:00:00.000Z"));
     assert.equal(detailRows[0].inputTokens, 999);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -683,7 +688,7 @@ test("aggregate sessionId bridge merges all transitively connected exports", () 
   const bridge = upgradeBundleToV10(buildBundleForMerge({ personKey: "bridge", generatedAt: "2026-05-27T10:00:00.000Z", date: "2026-05-26", eventTimestamp: "2026-05-26T03:00:00.000Z", userMessageCount: 9, inputTokens: 900, fiveHour: 40, sessionId: "session-a" }), { estimatedUsd: 0.9 });
   bridge.rawEvents.push({
     ...bridge.rawEvents[0],
-    timestamp: "2026-05-26T03:01:00.000Z",
+    timestamp: localTimestamp("2026-05-26T03:01:00.000Z"),
     rawPayload: { ...bridge.rawEvents[0].rawPayload, session_id: "session-b" },
   });
   const bundles = [
@@ -754,7 +759,7 @@ test("aggregate stacks codex counts/usage into claude main fields", async () => 
       rawEvents: [
         {
           schemaVersion: 3,
-          timestamp: "2026-05-26T01:00:00.000Z",
+          timestamp: localTimestamp("2026-05-26T01:00:00.000Z"),
           gitUserName: "zoe",
           gitUserEmail: "zoe@example.com",
           gitUserAccount: "zoe",
@@ -767,7 +772,7 @@ test("aggregate stacks codex counts/usage into claude main fields", async () => 
         },
         {
           schemaVersion: 3,
-          timestamp: "2026-05-26T02:00:00.000Z",
+          timestamp: localTimestamp("2026-05-26T02:00:00.000Z"),
           gitUserName: "zoe",
           gitUserEmail: "zoe@example.com",
           gitUserAccount: "zoe",
@@ -1032,7 +1037,7 @@ function buildSevenDayBundle(options: { personKey: string; generatedAt: string; 
     identity: { gitUserName: personKey, gitUserEmail: `${personKey}@example.com` },
     rawEvents: samples.map((sample, index) => ({
       schemaVersion: 3,
-      timestamp: sample.timestamp,
+      timestamp: localTimestamp(sample.timestamp),
       gitUserName: personKey,
       gitUserEmail: `${personKey}@example.com`,
       gitUserAccount: personKey,

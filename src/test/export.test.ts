@@ -282,7 +282,7 @@ test("resolveRange resolves last-week to the previous full Mon-Sun window", () =
 
 /** 周导出里的 dailySummaries 应该覆盖整个周范围，而不只是有 statusline 样本的日期。 */
 test("enumerateDateKeys covers every local date in weekly range", () => {
-  const keys = enumerateDateKeys(new Date("2026-05-25T00:00:00.000Z"), new Date("2026-05-27T08:00:00.000Z"));
+  const keys = enumerateDateKeys(new Date(2026, 4, 25), new Date(2026, 4, 27, 8));
 
   assert.deepEqual(keys, ["2026-05-25", "2026-05-26", "2026-05-27"]);
 });

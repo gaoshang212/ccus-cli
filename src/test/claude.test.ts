@@ -69,7 +69,7 @@ test("summarizeClaudeProjectUsage prices model switches, cache TTL details and f
       [
         JSON.stringify({
           type: "assistant",
-          timestamp: "2026-05-26T01:00:00.000Z",
+          timestamp: new Date(2026, 4, 26, 9).toISOString(),
           message: {
             role: "assistant",
             model: "claude-4-sonnet-20250514",
@@ -87,7 +87,7 @@ test("summarizeClaudeProjectUsage prices model switches, cache TTL details and f
         }),
         JSON.stringify({
           type: "assistant",
-          timestamp: "2026-05-26T02:00:00.000Z",
+          timestamp: new Date(2026, 4, 26, 10).toISOString(),
           message: {
             role: "assistant",
             model: "claude-4-sonnet-20250514",
@@ -107,7 +107,7 @@ test("summarizeClaudeProjectUsage prices model switches, cache TTL details and f
       [
         JSON.stringify({
           type: "assistant",
-          timestamp: "2026-05-27T01:00:00.000Z",
+          timestamp: new Date(2026, 4, 27, 9).toISOString(),
           message: {
             role: "assistant",
             model: "claude-opus-4-1-20250805",
@@ -116,7 +116,7 @@ test("summarizeClaudeProjectUsage prices model switches, cache TTL details and f
         }),
         JSON.stringify({
           type: "assistant",
-          timestamp: "2026-05-27T02:00:00.000Z",
+          timestamp: new Date(2026, 4, 27, 10).toISOString(),
           message: {
             role: "assistant",
             model: "unknown-model",
@@ -127,8 +127,8 @@ test("summarizeClaudeProjectUsage prices model switches, cache TTL details and f
       "utf8",
     );
 
-    const start = new Date("2026-05-26T00:00:00.000Z");
-    const end = new Date("2026-05-27T23:59:59.999Z");
+    const start = new Date(2026, 4, 26);
+    const end = new Date(2026, 4, 27, 23, 59, 59, 999);
     const weekly = await summarizeClaudeProjectUsage(start, end);
     const daily = await summarizeClaudeProjectUsageByDay(start, end);
     const combined = await summarizeClaudeProjectUsageCombined(start, end);
@@ -159,6 +159,39 @@ test("summarizeClaudeProjectUsage prices model switches, cache TTL details and f
     }
   } finally {
     delete process.env.CCUS_CLAUDE_DATA_DIR;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Claude 日汇总默认按本地 7 点切日，支持 7:30 和零点覆盖", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-claude-day-start-"));
+  const previous = process.env.CCUS_CLAUDE_DATA_DIR;
+  process.env.CCUS_CLAUDE_DATA_DIR = root;
+  try {
+    const projectsDir = path.join(root, "projects", "test");
+    await fs.mkdir(projectsDir, { recursive: true });
+    const dates = [new Date(2026, 4, 27, 6, 59, 59, 999), new Date(2026, 4, 27, 7), new Date(2026, 4, 27, 7, 30)];
+    await fs.writeFile(path.join(projectsDir, "boundary.jsonl"), dates.flatMap((date, i) => [
+      JSON.stringify({ type: "user", timestamp: date.toISOString(), message: { role: "user", content: "hello" } }),
+      JSON.stringify({ type: "assistant", timestamp: date.toISOString(), message: { model: "claude-4-sonnet-20250514", usage: { input_tokens: (i + 1) * 10 } } }),
+    ]).join("\n"));
+    const start = new Date(2026, 4, 27);
+    const end = new Date(2026, 4, 27, 8);
+    for (const [dayStart, priorTokens, currentTokens, priorMessages] of [[undefined, 10, 50, 1], [450, 30, 30, 2], [0, 0, 60, 0]] as const) {
+      const combined = await summarizeClaudeProjectUsageCombined(start, end, dayStart);
+      const daily = await summarizeClaudeProjectUsageByDay(start, end, dayStart);
+      assert.deepEqual(daily, combined.daily);
+      assert.equal(daily.get("2026-05-26")?.inputTokens ?? 0, priorTokens);
+      assert.equal(daily.get("2026-05-26")?.userMessageCount ?? 0, priorMessages);
+      assert.equal(daily.get("2026-05-27")?.inputTokens, currentTokens);
+      assert.equal(daily.get("2026-05-27")?.userMessageCount, 3 - priorMessages);
+      assert.equal(daily.get("2026-05-27")?.apiRequestCount, 3 - priorMessages);
+      assert.equal(combined.weekly.apiRequestCount, 3);
+      assert.equal(combined.weekly.apiEquivalentCost.estimatedUsd, 0.00018);
+      assert.deepEqual(mergeApiEquivalentCosts([...daily.values()].map((day) => day.apiEquivalentCost)), combined.weekly.apiEquivalentCost);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.CCUS_CLAUDE_DATA_DIR; else process.env.CCUS_CLAUDE_DATA_DIR = previous;
     await fs.rm(root, { recursive: true, force: true });
   }
 });

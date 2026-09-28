@@ -42,11 +42,11 @@ async function writeRollout(home: string, relPath: string, lines: string[]): Pro
 }
 
 const DAY = "2026-07-27";
-const RANGE_START = new Date("2026-07-27T00:00:00Z");
-const RANGE_END = new Date("2026-07-27T23:59:59Z");
+const RANGE_START = new Date(2026, 6, 27);
+const RANGE_END = new Date(2026, 6, 27, 23, 59, 59);
 
 function ts(minute: number, second = 0): string {
-  return `2026-07-27T02:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}.000Z`;
+  return new Date(2026, 6, 27, 10, minute, second).toISOString();
 }
 
 test("getCodexSessionHomes keeps ~/.codex when CODEX_HOME points to Orca", async () => {
@@ -170,8 +170,8 @@ test("summarizeCodexSessionUsage ignores task_started outside the time window", 
   const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
   try {
     await writeRollout(home, "2026/07/27/rollout-c.jsonl", [
-      `{"timestamp":"2026-07-27T02:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-in"}}`,
-      `{"timestamp":"2026-07-28T02:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-out"}}`,
+      `{"timestamp":"${new Date(2026, 6, 27, 10).toISOString()}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-in"}}`,
+      `{"timestamp":"${new Date(2026, 6, 28, 10).toISOString()}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-out"}}`,
     ]);
 
     const summary = await summarizeCodexSessionUsage(RANGE_START, RANGE_END);
@@ -258,7 +258,7 @@ test("summarizeCodexSessionUsage uses model context before the requested range",
   const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
   try {
     await writeRollout(home, "2026/07/27/rollout-prior-context.jsonl", [
-      `{"timestamp":"2026-07-26T23:59:00.000Z","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
+      `{"timestamp":"${new Date(2026, 6, 26, 23, 59).toISOString()}","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
       `{"timestamp":"${ts(10, 0)}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000000,"output_tokens":0,"cached_input_tokens":0}}}}`,
     ]);
 
@@ -422,17 +422,17 @@ test("summarizeCodexSessionUsageByDay buckets task_started by local date", async
   const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
   try {
     await writeRollout(home, "2026/07/27/rollout-e.jsonl", [
-      `{"timestamp":"2026-07-27T02:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-a"}}`,
-      `{"timestamp":"2026-07-27T02:05:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":1,"cached_input_tokens":0}}}}`,
+      `{"timestamp":"${new Date(2026, 6, 27, 10).toISOString()}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-a"}}`,
+      `{"timestamp":"${new Date(2026, 6, 27, 10, 5).toISOString()}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":1,"cached_input_tokens":0}}}}`,
     ]);
     await writeRollout(home, "2026/07/28/rollout-f.jsonl", [
-      `{"timestamp":"2026-07-28T02:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-b"}}`,
+      `{"timestamp":"${new Date(2026, 6, 28, 10).toISOString()}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-b"}}`,
     ]);
 
     // 跨两天范围。
     const daily = await summarizeCodexSessionUsageByDay(
-      new Date("2026-07-27T00:00:00Z"),
-      new Date("2026-07-28T23:59:59Z"),
+      new Date(2026, 6, 27),
+      new Date(2026, 6, 28, 23, 59, 59),
     );
 
     assert.equal(daily.size, 2);
@@ -447,14 +447,14 @@ test("summarizeCodexSessionUsageByDay buckets task_started by local date", async
 
 test("Codex weekly cost equals merged daily costs and preserves request coverage", async () => {
   const { home, restore } = await withTempCodexHome("ccus-codex-sessions-");
-  const start = new Date("2026-07-27T00:00:00Z");
-  const end = new Date("2026-07-28T23:59:59Z");
+  const start = new Date(2026, 6, 27);
+  const end = new Date(2026, 6, 28, 23, 59, 59);
   try {
     await writeRollout(home, "2026/07/27/rollout-cost-days.jsonl", [
-      `{"timestamp":"2026-07-27T02:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
-      `{"timestamp":"2026-07-27T02:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":20}}}}`,
-      `{"timestamp":"2026-07-28T02:00:00.000Z","type":"turn_context","payload":{"model":"unknown-model"}}`,
-      `{"timestamp":"2026-07-28T02:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"output_tokens":20,"cached_input_tokens":50}}}}`,
+      `{"timestamp":"${new Date(2026, 6, 27, 10).toISOString()}","type":"turn_context","payload":{"model":"gpt-5.4"}}`,
+      `{"timestamp":"${new Date(2026, 6, 27, 10, 1).toISOString()}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":20}}}}`,
+      `{"timestamp":"${new Date(2026, 6, 28, 10).toISOString()}","type":"turn_context","payload":{"model":"unknown-model"}}`,
+      `{"timestamp":"${new Date(2026, 6, 28, 10, 1).toISOString()}","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"output_tokens":20,"cached_input_tokens":50}}}}`,
     ]);
 
     const weekly = await summarizeCodexSessionUsage(start, end);
@@ -514,15 +514,15 @@ test("summarizeCodexSessionUsageByDay dedups task_started by turn_id and buckets
   try {
     // turn-replay 真实发生在 07-27，重放副本（更晚 timestamp）在 07-28 → 只算 1 且归到最早 timestamp 的本地日 07-27。
     await writeRollout(home, "2026/07/27/rollout-g1.jsonl", [
-      `{"timestamp":"2026-07-27T02:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-replay"}}`,
+      `{"timestamp":"${new Date(2026, 6, 27, 10).toISOString()}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-replay"}}`,
     ]);
     await writeRollout(home, "2026/07/28/rollout-g2.jsonl", [
-      `{"timestamp":"2026-07-28T02:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-replay"}}`,
+      `{"timestamp":"${new Date(2026, 6, 28, 10).toISOString()}","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-replay"}}`,
     ]);
 
     const daily = await summarizeCodexSessionUsageByDay(
-      new Date("2026-07-27T00:00:00Z"),
-      new Date("2026-07-28T23:59:59Z"),
+      new Date(2026, 6, 27),
+      new Date(2026, 6, 28, 23, 59, 59),
     );
 
     // 去重后 1 个 turn，归到最早 timestamp 的本地日 07-27；07-28 无 token_count 故无 entry。
@@ -533,5 +533,33 @@ test("summarizeCodexSessionUsageByDay dedups task_started by turn_id and buckets
   }
 });
 
-// 防止上面 DAY 常量未使用告警（保留可读性）。
-void DAY;
+test("Codex 日汇总默认按本地 7 点切日，支持 7:30 和零点覆盖", async () => {
+  const { home, restore } = await withTempCodexHome("ccus-codex-day-start-");
+  try {
+    const dates = [new Date(2026, 6, 27, 6, 59, 59, 999), new Date(2026, 6, 27, 7), new Date(2026, 6, 27, 7, 30)];
+    await writeRollout(home, "2026/07/27/boundary.jsonl", [
+      JSON.stringify({ type: "turn_context", payload: { model: "gpt-5.4" } }),
+      ...dates.flatMap((date, i) => [
+        JSON.stringify({ type: "event_msg", timestamp: date.toISOString(), payload: { type: "task_started", turn_id: `turn-${i}` } }),
+        JSON.stringify({ type: "event_msg", timestamp: date.toISOString(), payload: { type: "token_count", info: { last_token_usage: { input_tokens: (i + 1) * 10 } } } }),
+      ]),
+    ]);
+    const end = new Date(2026, 6, 27, 8);
+    for (const [dayStart, priorTokens, currentTokens, priorMessages] of [[undefined, 10, 50, 1], [450, 30, 30, 2], [0, 0, 60, 0]] as const) {
+      const combined = await summarizeCodexSessionUsageCombined(RANGE_START, end, dayStart);
+      const daily = await summarizeCodexSessionUsageByDay(RANGE_START, end, dayStart);
+      assert.deepEqual(daily, combined.daily);
+      assert.equal(daily.get("2026-07-26")?.inputTokens ?? 0, priorTokens);
+      assert.equal(daily.get("2026-07-26")?.userMessageCount ?? 0, priorMessages);
+      assert.equal(daily.get(DAY)?.inputTokens, currentTokens);
+      assert.equal(daily.get(DAY)?.userMessageCount, 3 - priorMessages);
+      assert.equal(daily.get(DAY)?.apiRequestCount, 3 - priorMessages);
+      assert.equal(combined.weekly.apiRequestCount, 3);
+      assert.ok(Math.abs((combined.weekly.apiEquivalentCost.estimatedUsd ?? 0) - 0.00015) < 1e-12);
+      assert.deepEqual(mergeApiEquivalentCosts([...daily.values()].map((day) => day.apiEquivalentCost)), combined.weekly.apiEquivalentCost);
+    }
+  } finally {
+    restore();
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});

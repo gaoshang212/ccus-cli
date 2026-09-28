@@ -97,7 +97,8 @@ test("跨午夜从两个自然日目录读取日志，统计开始时间调整�
   }
 });
 
-test("CLI 导出、Claude/Codex 消息和 token、额度、聚合与看板使用同一统计日", async () => {
+test("CLI 导出、Claude/Codex 消息和 token、额度、聚合与看板使用同一统计日", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 5, 3, 12) });
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-day-export-"));
   const saved = { CCUS_CLAUDE_DATA_DIR: process.env.CCUS_CLAUDE_DATA_DIR, CODEX_HOME: process.env.CODEX_HOME, APPDATA: process.env.APPDATA };
   try {
