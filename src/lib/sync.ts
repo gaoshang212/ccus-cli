@@ -4,8 +4,9 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { RangeWindow, SyncConfig, SyncState } from "../types";
 import { debugLog } from "./debug";
+import { readConfig } from "./config";
 import { getSyncConfigPath, getSyncStatePath } from "./paths";
-import { formatWeekDirName, resolveRange } from "./time";
+import { formatWeekDirName, parseDayStart, resolveRange, startOfReportingDay } from "./time";
 
 /** 默认同步周期标签：每 3 小时最多同步一次（滚动 TTL）。 */
 const DEFAULT_INTERVAL_LABEL = "3h";
@@ -199,7 +200,7 @@ async function exportAndCopy(
   suffix: string | null,
 ): Promise<{ outputPath: string; destPath: string; weekDir: string; targetWeekDir: string }> {
   const { outputPath, window } = await runExport({ "data-dir": dataDir, range });
-  const weekDir = formatWeekDirName(window.start, window.end);
+  const weekDir = formatWeekDirName(window.start, window.end, window.dayStartMinutes ?? 0);
   const targetWeekDir = path.join(targetDir, weekDir);
   await fsp.mkdir(targetWeekDir, { recursive: true });
   // 后缀只加在目标目录的副本上，本地 exports 原文件名保持不变。
@@ -227,13 +228,14 @@ export async function performSync(dataDir: string, runExport: RunExport, now: Da
   let lastArchivedWeek = state?.lastArchivedWeek;
 
   try {
+    const dayStartMinutes = parseDayStart((await readConfig(dataDir)).dayStart);
     const primary = await exportAndCopy(dataDir, runExport, config.targetDir, config.range, config.suffix);
 
-    // 周一（getDay() === 1）是上一周结束后第一个能拿到完整数据的日子：顺带归档 last-week。
+    // 统计日进入周一后才归档，避免周一凌晨提前归档尚未结束的一周。
     let archivedLastWeekDest: string | null = null;
-    if (now.getDay() === 1) {
-      const lastWeek = resolveRange("last-week", now);
-      const lastWeekDir = formatWeekDirName(lastWeek.start, lastWeek.end);
+    if (startOfReportingDay(now, dayStartMinutes).getDay() === 1) {
+      const lastWeek = resolveRange("last-week", now, dayStartMinutes);
+      const lastWeekDir = formatWeekDirName(lastWeek.start, lastWeek.end, dayStartMinutes);
       if (lastArchivedWeek !== lastWeekDir) {
         const archived = await exportAndCopy(dataDir, runExport, config.targetDir, "last-week", config.suffix);
         lastArchivedWeek = archived.weekDir;

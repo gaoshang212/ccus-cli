@@ -1,7 +1,32 @@
 import { RangeWindow } from "../types";
 
 const HOUR_MS = 60 * 60 * 1000;
-const DAY_MS = 24 * HOUR_MS;
+export const DEFAULT_DAY_START_MINUTES = 7 * 60;
+
+/** 支持整点或 HH:mm，拒绝越界时间。 */
+export function parseDayStart(value: string): number {
+  const match = /^(\d{1,2})(?::([0-5]\d))?$/.exec(value.trim());
+  if (!match || Number(match[1]) > 23) {
+    throw new Error("每天开始时间必须是 0–23 的整点或 HH:mm，例如 7、07:00、07:30。");
+  }
+  return Number(match[1]) * 60 + Number(match[2] ?? 0);
+}
+
+export function formatDayStart(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+/** 返回时间所在统计日的起点；边界前归到前一天。 */
+export function startOfReportingDay(date: Date, dayStartMinutes = DEFAULT_DAY_START_MINUTES): Date {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, dayStartMinutes);
+  return date.getTime() < start.getTime()
+    ? new Date(date.getFullYear(), date.getMonth(), date.getDate() - 1, 0, dayStartMinutes)
+    : start;
+}
+
+export function reportingDateKey(date: Date, dayStartMinutes = DEFAULT_DAY_START_MINUTES): string {
+  return localDateKey(startOfReportingDay(date, dayStartMinutes));
+}
 
 /**
  * 统一按本地时区切日，避免“今天 / 本周”与用户直觉不一致。
@@ -13,22 +38,22 @@ function startOfLocalDay(date: Date): Date {
 /**
  * 以周一作为一周开始，便于输出 `this-week` 统计。
  */
-function startOfLocalWeek(date: Date): Date {
-  const day = date.getDay();
+function startOfLocalWeek(date: Date, dayStartMinutes: number): Date {
+  const start = startOfReportingDay(date, dayStartMinutes);
+  const day = start.getDay();
   const diff = day === 0 ? -6 : 1 - day;
-  const start = new Date(date);
-  start.setDate(date.getDate() + diff);
-  return startOfLocalDay(start);
+  return new Date(start.getFullYear(), start.getMonth(), start.getDate() + diff, 0, dayStartMinutes);
 }
 
 /**
- * 以周日 23:59:59.999 作为一周结束（周一为起始）。
+ * 以下周一统计日开始前 1 毫秒作为一周结束。
  *
  * 和 `startOfLocalWeek` 对称，用来把 `this-week` 补齐成完整一周。
  */
-function endOfLocalWeek(date: Date): Date {
-  const start = startOfLocalWeek(date);
-  return new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6, 23, 59, 59, 999);
+function endOfLocalWeek(date: Date, dayStartMinutes: number): Date {
+  const start = startOfLocalWeek(date, dayStartMinutes);
+  const next = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 7, 0, dayStartMinutes);
+  return new Date(next.getTime() - 1);
 }
 
 /** range 短别名：保持解析后的 label 仍为规范名，避免影响文件名与 bundle 契约。 */
@@ -42,24 +67,25 @@ const RANGE_ALIASES: Record<string, string> = {
  *
  * 当前支持：`today`、`this-week`（简写 `tw`）、`last-week`（简写 `lw`）、`5h`、`30m` 这类相对窗口。
  */
-export function resolveRange(range: string | undefined, now = new Date()): RangeWindow {
+export function resolveRange(range: string | undefined, now = new Date(), dayStartMinutes = DEFAULT_DAY_START_MINUTES): RangeWindow {
   const raw = (range ?? "5h").trim().toLowerCase();
   const normalized = RANGE_ALIASES[raw] ?? raw;
 
   if (normalized === "today") {
-    return { label: "today", start: startOfLocalDay(now), end: now };
+    return { label: "today", start: startOfReportingDay(now, dayStartMinutes), end: now, dayStartMinutes };
   }
 
   if (normalized === "this-week") {
-    return { label: "this-week", start: startOfLocalWeek(now), end: now };
+    return { label: "this-week", start: startOfLocalWeek(now, dayStartMinutes), end: now, dayStartMinutes };
   }
 
   if (normalized === "last-week") {
-    const thisWeekStart = startOfLocalWeek(now);
+    const thisWeekStart = startOfLocalWeek(now, dayStartMinutes);
     const start = new Date(thisWeekStart);
     start.setDate(start.getDate() - 7);
+    start.setHours(0, dayStartMinutes, 0, 0);
     const end = new Date(thisWeekStart.getTime() - 1);
-    return { label: "last-week", start, end };
+    return { label: "last-week", start, end, dayStartMinutes };
   }
 
   const match = normalized.match(/^(\d+)([hm])$/);
@@ -74,6 +100,7 @@ export function resolveRange(range: string | undefined, now = new Date()): Range
     label: normalized,
     start: new Date(now.getTime() - duration),
     end: now,
+    dayStartMinutes,
   };
 }
 
@@ -88,7 +115,7 @@ export function expandToFullWeekWindow(window: RangeWindow): RangeWindow {
   if (window.label !== "this-week") {
     return window;
   }
-  return { ...window, end: endOfLocalWeek(window.start) };
+  return { ...window, end: endOfLocalWeek(window.start, window.dayStartMinutes ?? DEFAULT_DAY_START_MINUTES) };
 }
 
 /**
@@ -104,8 +131,8 @@ export function localDateKey(date: Date): string {
 /**
  * 把时间窗口渲染成用于文件名的起止日期标记。
  */
-export function formatRangeFileLabel(start: Date, end: Date): string {
-  return `${localDateKey(start)}_to_${localDateKey(end)}`;
+export function formatRangeFileLabel(start: Date, end: Date, dayStartMinutes = 0): string {
+  return `${reportingDateKey(start, dayStartMinutes)}_to_${reportingDateKey(end, dayStartMinutes)}`;
 }
 
 /**
@@ -114,8 +141,8 @@ export function formatRangeFileLabel(start: Date, end: Date): string {
  * 与 formatRangeFileLabel 同源（都基于 localDateKey 的周一~周日窗口），
  * 但分隔符统一成下划线，例如 `2026_06_01_2026_06_07`。
  */
-export function formatWeekDirName(start: Date, end: Date): string {
-  const normalize = (date: Date): string => localDateKey(date).replaceAll("-", "_");
+export function formatWeekDirName(start: Date, end: Date, dayStartMinutes = 0): string {
+  const normalize = (date: Date): string => reportingDateKey(date, dayStartMinutes).replaceAll("-", "_");
   return `${normalize(start)}_${normalize(end)}`;
 }
 
@@ -164,7 +191,19 @@ export function enumerateDateKeys(start: Date, end: Date): string[] {
   const cursor = startOfLocalDay(start);
   while (cursor.getTime() <= end.getTime()) {
     keys.push(localDateKey(cursor));
-    cursor.setTime(cursor.getTime() + DAY_MS);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return keys;
+}
+
+/** 枚举统计日；存储读取继续使用自然日枚举。 */
+export function enumerateReportingDateKeys(start: Date, end: Date, dayStartMinutes = DEFAULT_DAY_START_MINUTES): string[] {
+  const keys: string[] = [];
+  const cursor = startOfReportingDay(start, dayStartMinutes);
+  while (cursor.getTime() <= end.getTime()) {
+    keys.push(localDateKey(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+    cursor.setHours(0, dayStartMinutes, 0, 0);
   }
   return keys;
 }

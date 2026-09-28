@@ -8,6 +8,7 @@ import {
   priceApiRequest,
 } from "./api-equivalent-cost";
 import { getClaudeDataDir } from "./paths";
+import { DEFAULT_DAY_START_MINUTES, reportingDateKey } from "./time";
 
 interface ClaudeProjectUsageSummary {
   userMessageCount: number;
@@ -116,13 +117,6 @@ function timestampInRange(timestamp: string | null, start: Date, end: Date): boo
   return Number.isFinite(value) && value >= start.getTime() && value <= end.getTime();
 }
 
-function localDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 async function fileMayContainRange(filePath: string, start: Date): Promise<boolean> {
   try {
     return (await fs.stat(filePath)).mtimeMs >= start.getTime();
@@ -177,6 +171,7 @@ export async function summarizeClaudeProjectUsage(start: Date, end: Date): Promi
 export async function summarizeClaudeProjectUsageCombined(
   start: Date,
   end: Date,
+  dayStartMinutes = DEFAULT_DAY_START_MINUTES,
 ): Promise<ClaudeProjectUsageCombined> {
   const claudeDataDir = getClaudeDataDir();
   const projectDir = path.join(claudeDataDir, "projects");
@@ -222,7 +217,7 @@ export async function summarizeClaudeProjectUsageCombined(
           continue;
         }
 
-        const date = localDateKey(new Date(timestamp!));
+        const date = reportingDateKey(new Date(timestamp!), dayStartMinutes);
         const day = daily.get(date) ?? {
           date,
           userMessageCount: 0,
@@ -322,6 +317,6 @@ export async function findActiveSessionFiles(start: Date, end: Date): Promise<Ac
 /**
  * 按天汇总 Claude project transcript 中的消息数、请求数、token 用量和标准 API 等效成本。
  */
-export async function summarizeClaudeProjectUsageByDay(start: Date, end: Date): Promise<Map<string, ClaudeDailyUsageSummary>> {
-  return (await summarizeClaudeProjectUsageCombined(start, end)).daily;
+export async function summarizeClaudeProjectUsageByDay(start: Date, end: Date, dayStartMinutes = DEFAULT_DAY_START_MINUTES): Promise<Map<string, ClaudeDailyUsageSummary>> {
+  return (await summarizeClaudeProjectUsageCombined(start, end, dayStartMinutes)).daily;
 }

@@ -7,6 +7,7 @@ import { gzipSync } from "node:zlib";
 import { buildAggregatedDailyRows, buildAggregatedDetailRows, buildAggregatedWeeklyRows, buildPersonSevenDayCurve, buildSevenDayCurveFromEvents, computeCumulativeSevenDay, deburrSevenDayEvents, loadWeeklyExportBundles } from "../lib/aggregate";
 import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeeklyCsv } from "../lib/export";
 import { StatuslineEvent } from "../types";
+import { main } from "../cli";
 
 /** 构造一个最小可用的 schemaVersion 6 bundle，供 gzip 兼容性测试使用。 */
 function buildMinimalBundle(personKey: string) {
@@ -191,6 +192,42 @@ test("loadWeeklyExportBundles accepts schemaVersion 6/7/8/9/10/11 bundles", asyn
   }
 });
 
+test("未知版本的 JSON 和 gzip 被跳过，有效文件继续聚合并提示跳过原因", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-unsupported-"));
+  const warnings: string[] = [];
+  t.mock.method(process.stderr, "write", (chunk: unknown) => {
+    warnings.push(String(chunk));
+    return true;
+  });
+  try {
+    const valid = upgradeBundleToV10(buildMinimalBundle("valid"));
+    valid.schemaVersion = 12;
+    valid.weeklySummary.schemaVersion = 12;
+    valid.range.dayStart = "00:00";
+    valid.weeklySummary.range.dayStart = "00:00";
+    await fs.writeFile(path.join(root, "valid.json"), JSON.stringify(valid));
+    await fs.writeFile(path.join(root, "old.json"), JSON.stringify({ schemaVersion: 5 }));
+    await fs.writeFile(path.join(root, "future.json.gz"), gzipSync(JSON.stringify({ schemaVersion: 13 })));
+    const bundles = await loadWeeklyExportBundles(root);
+    assert.equal(bundles.length, 1);
+    assert.equal(bundles[0].bundle.identity.gitUserName, "valid");
+    assert.match(warnings.join(""), /schemaVersion=5.*old\.json/);
+    assert.match(warnings.join(""), /schemaVersion=13.*future\.json\.gz/);
+    const out = path.join(root, "csv");
+    await main(["aggregate", "--input-dir", root, "--out-dir", out]);
+    for (const file of ["detail.csv", "daily.csv", "weekly.csv"]) {
+      const csv = await fs.readFile(path.join(out, file), "utf8");
+      assert.match(csv, /"valid"/);
+      assert.equal(csv.trim().split("\n").length, 2);
+    }
+    await fs.rm(path.join(root, "valid.json"));
+    assert.deepEqual(await loadWeeklyExportBundles(root), []);
+  } finally {
+    t.mock.restoreAll();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("loadWeeklyExportBundles rejects v10 missing pricing or daily cost", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-v10-invalid-"));
   try {
@@ -205,7 +242,7 @@ test("loadWeeklyExportBundles rejects v10 missing pricing or daily cost", async 
 
     await assert.rejects(
       () => loadWeeklyExportBundles(root),
-      /schemaVersion 6\/7\/8\/9\/10\/11 bundles/,
+      /schemaVersion 6\/7\/8\/9\/10\/11\/12 bundles/,
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -862,7 +899,7 @@ test("loadWeeklyExportBundles reads gzip-compressed .json.gz bundles", async () 
   }
 });
 
-test("loadWeeklyExportBundles rejects old schema bundles explicitly", async () => {
+test("loadWeeklyExportBundles skips unsupported old schema bundles", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ccus-aggregate-old-"));
   const oldFile = path.join(root, "old.json");
 
@@ -901,10 +938,7 @@ test("loadWeeklyExportBundles rejects old schema bundles explicitly", async () =
       "utf8",
     );
 
-    await assert.rejects(
-      () => loadWeeklyExportBundles(root),
-      /schemaVersion 6\/7\/8\/9\/10\/11 bundles/,
-    );
+    assert.deepEqual(await loadWeeklyExportBundles(root), []);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

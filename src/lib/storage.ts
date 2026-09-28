@@ -4,7 +4,7 @@ import path from "node:path";
 import { PersistedStatuslineEvent } from "../types";
 import { getEventsDir } from "./paths";
 import { extractWorkspaceDir, readSessionId } from "./payload";
-import { enumerateDateKeys, localDateKey, resolveRange } from "./time";
+import { DEFAULT_DAY_START_MINUTES, enumerateDateKeys, localDateKey, resolveRange } from "./time";
 
 const LOCK_RETRY_DELAY_MS = 25;
 const LOCK_RETRY_TIMES = 40;
@@ -211,8 +211,8 @@ async function readEventsFromDayDirectory(directoryPath: string): Promise<Persis
  *
  * 同时兼容“按天目录 JSON 文件”和“旧版 JSONL 文件”两种存储布局。
  */
-export async function readEventsForRange(dataDir: string, range: string, now = new Date()): Promise<PersistedStatuslineEvent[]> {
-  const window = resolveRange(range, now);
+export async function readEventsForRange(dataDir: string, range: string, now = new Date(), dayStartMinutes = DEFAULT_DAY_START_MINUTES): Promise<PersistedStatuslineEvent[]> {
+  const window = resolveRange(range, now, dayStartMinutes);
   const keys = enumerateDateKeys(window.start, window.end);
   const eventsDir = getEventsDir(dataDir);
 

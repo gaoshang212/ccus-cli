@@ -76,7 +76,9 @@
 
 当前导出契约版本：
 
-- `schemaVersion: 11`
+- `schemaVersion: 12`
+
+统计日契约（v12）：`range.dayStart` 和 `weeklySummary.range.dayStart` 记录本地时间的每日开始时间，默认 `07:00`。`ccus config --day-start HH:mm` 持久配置，统计命令支持临时覆盖。消息、请求、token、成本、额度和日/周汇总共用边界；日志落盘仍按自然日。v6–v11 聚合仍按零点切日，同一人同一周禁止混合不同开始时间的 bundle。
 
 成本契约（v11，兼容 v10）：
 
@@ -113,10 +115,10 @@ Codex 统计（与 Codex 字段单列）：
 
 `ccus aggregate` 当前接受：
 
-- `schemaVersion: 6/7/8/9/10/11` 的 bundle JSON；v6–v9 有请求时成本按不可用映射、请求全部计入未定价，无请求时成本为 0
+- `schemaVersion: 6/7/8/9/10/11/12` 的 bundle JSON；v6–v9 有请求时成本按不可用映射、请求全部计入未定价，无请求时成本为 0
 - 通过 `ccus export` 导出的 `.json.gz`（gzip 压缩，默认）或明文 `.json` 文件，`.gz` 读取时自动 gunzip
 
-schemaVersion 6/7/8/9/10/11 以外的 bundle 会被明确拒绝，不再静默读取。
+schemaVersion 6/7/8/9/10/11/12 以外的 bundle 会跳过，并在 stderr 提示版本号和文件路径；支持版本的结构校验失败仍报错。aggregate 与 aggregate serve 共用此行为。
 不支持把 raw-event jsonl 直接作为 `aggregate` 输入。
 
 ### 2.6 aggregate 输出契约
@@ -260,7 +262,7 @@ schemaVersion 6/7/8/9/10/11 以外的 bundle 会被明确拒绝，不再静默�
 - `src/lib/aggregate.ts`
   - 读取 bundle JSON
   - 从 bundle 展开 detail/daily/weekly 行
-  - 当前校验 `schemaVersion` 为 6/7/8/9/10/11；旧版成本按不可用兼容，v10 校验价格元数据和成本结构
+  - 当前校验 `schemaVersion` 为 6/7/8/9/10/11/12；旧版成本按不可用兼容，v10 校验价格元数据和成本结构，v12 校验统计日开始时间
   - 同一个人多台电脑导出多个 bundle 时按 personKey 合并去重（见 2.6）
 
 - `src/lib/Codex.ts`
@@ -398,8 +400,9 @@ node dist/cli.js aggregate --input-dir "$env:LOCALAPPDATA\ccus\exports" --out-di
 
 ### 5.4 aggregate 向后兼容
 
-当前接受 `schemaVersion: 6/7/8/9/10/11`，对旧版本做显式容错映射（不默默放宽）：
+当前接受 `schemaVersion: 6/7/8/9/10/11/12`，对旧版本做显式容错映射（不默默放宽）：
 
+- v12：记录 `range.dayStart`，按配置的统计日边界归天和切周
 - v11：沿用 v10 成本，增加未定价模型明细 `unpricedModels`
 - v10：含价格目录与等效 API 成本，无模型明细；codex `inputTokens` 延续 v9 的净输入口径
 - 模型价格集中维护在 `src/lib/api-pricing-catalog.json`；个人与多人 dashboard 的合计成本卡下链接独立 `pricing.html`，服务模式同时响应 `/pricing.html`
@@ -408,7 +411,7 @@ node dist/cli.js aggregate --input-dir "$env:LOCALAPPDATA\ccus\exports" --out-di
 - v7：codex 有 token/消息、无额度字段 → 额度按 null
 - v6：无 codex 子结构 → codex 回退零值
 - v6–v9：有请求时成本不可用并全部计入未定价；无请求时成本为 0
-- 6/7/8/9/10/11 以外：拒绝，让用户重新导出
+- 6/7/8/9/10/11/12 以外：跳过并在 stderr 提示，继续处理其它有效文件
 
 codex 额度在 aggregate 层从 `rawEvents` 的 `source="codex"` 事件重算，所以 v6/v7 时期混进 rawEvents 的 codex 事件也能被正确分流（Codex usage 变干净、codex 额度算出）。
 

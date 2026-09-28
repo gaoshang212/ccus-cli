@@ -55,6 +55,8 @@ ccus --version     # 查看当前安装的版本
 
 ```bash
 ccus install
+ccus config                           # 查看统计日配置，默认 07:00
+ccus config --day-start 07:30          # 修改每天开始时间，支持整点或 HH:mm
 ```
 
 然后照常使用 Claude Code，statusline 会显示 5 小时额度使用率（`5h`）、7 天额度使用率（`7d`）、context window 占用百分比（`ctx`）、模型名、工作区名，以及当前 git 分支（`⎇ <branch>`，实时读取，非 git 仓库或处于 detached HEAD 时省略该段）；原始 payload 也会落到本地日志，供后续 dashboard / export 使用。
@@ -149,12 +151,16 @@ ccus aggregate serve --input-dir ./team-exports
 
 `dashboard build/open` 会在看板同目录生成独立 `pricing.html`。两种 `serve` 都通过 `/pricing.html` 提供当前价格页；看板的合计成本卡下可直接进入。`serve` 默认监听 `127.0.0.1` 上的随机端口，并在每次请求时实时读取最新日志生成页面。`dashboard serve` 默认查看 `this-week`（整周）使用量曲线（`build` / `open` 仍默认 `today`），可用 `--range` 覆盖。
 
+统计日默认从本地时间 **07:00** 开始，到次日 07:00 前结束。例如 6 月 2 日 06:59 的使用量归到 6 月 1 日，07:00 起归到 6 月 2 日。凌晨查看 `today` 时显示尚未结束的前一统计日；周一开始时间之前仍属于上一周。
+
+用 `ccus config --day-start 07:30` 持久配置，`--day-start 0` 恢复零点切日。配置保存到数据目录的 `config.json`，使用自定义目录时加 `--data-dir PATH`。`export`、`dashboard build/open/serve` 和 `sessions` 支持 `--day-start HH:mm` 临时覆盖，自动同步使用持久配置。消息数、token、成本、额度和日/周汇总使用同一边界；`5h`、`24h` 等滚动窗口长度保持不变。日志仍按自然日保存，修改配置后历史数据会在读取时重新归天。
+
 其中：
 
 - `5 小时使用量百分比` 是 **展示指标**，来自 Claude 自身字段 `rate_limits.five_hour.used_percentage`
 - 使用率趋势图会在同一张图上叠加三条线：实线为 5 小时使用率（`rate_limits.five_hour`）、虚线为 7 天使用率（`rate_limits.seven_day`），两者各自独立按时间桶聚合、共用固定 0–100% 的左侧 Y 轴；紫色「7d 分区叠加累计」是把 7 天额度锯齿波还原成的累计真实使用量（口径同团队看板的 `sevenDayCumulativeUsagePct`），量纲可超 100%、单独走**右侧自适应 Y 轴**，按分段峰谷和单调非递减地累积上升，终点即顶部卡片的累计值
 - **折线与纵向柱状图均由 [uPlot](https://github.com/leeoniya/uPlot) 渲染**：鼠标在绘图区**任意位置**悬停即可通过十字线 + **跟随鼠标的 tooltip** 看到该处各条线的当前读数（不必精确落在采样点上；遇到几乎垂直的窄尖峰，把鼠标移到竖线顶端即可读到峰值）；纵向柱还会在每根柱顶标注数值。底部为**自绘图例**（实时读数集中在 tooltip 里）。uPlot 库与样式已**内联进生成的 HTML**，`dashboard build` 产物用 `file://` 离线打开也能完整渲染与交互，不依赖任何 CDN
-- 页面新增 **每日用户消息数** 纵向柱状图：按自然日统计的真实用户请求数，口径与导出契约的 `userMessageCount` 一致（来自 `~/.claude/projects/**/*.jsonl`），不是 statusline 采样数，也仅用于页面展示、不进任何导出/聚合契约
+- 页面新增 **每日用户消息数** 纵向柱状图：按配置的统计日统计真实用户请求数，口径与导出契约的 `userMessageCount` 一致（来自 `~/.claude/projects/**/*.jsonl`），不是 statusline 采样数，也仅用于页面展示、不进任何导出/聚合契约
 - 跨多天的窗口（如 `this-week` / `last-week`）使用率曲线会自动改用小时桶聚合，避免一周生成上千个点；x 轴刻度由 uPlot 按时间跨度自适应（短窗口显示 `HH:mm` **24 小时制**、跨天的刻度再补一行日期），不用 am/pm
 - 顶部统计卡展示 `Latest 5h usage`、`Peak 5h usage`、`7d 分区叠加累计`（主数值为 7 天额度分区叠加累计真实使用量，小字补充峰值与最新值）、`用户消息数`（窗口内每日真实用户请求数合计）
 - `--range today / this-week / last-week / 24h` 是 **你要查看的采样历史时间窗口**（`last-week` 指上一个完整周一到周日）
@@ -167,7 +173,7 @@ ccus aggregate serve --input-dir ./team-exports
 - 默认输出一个 `json` 数据包，里面同时包含 `rawEvents`、`weeklySummary`、`dailySummaries`
 - 导出文件内容为**紧凑 JSON**（无缩进），并默认 **gzip 压缩**后写成 `.json.gz`；gzip 与紧凑化都只是存储/展示层变化，解压后的字段集合与 `schemaVersion` 不变
 - 默认写 `.json.gz`；若用 `--out` 指定一个非 `.gz` 结尾的路径，则按明文 JSON 写出（不压缩）
-- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `11`。顶层 `pricing` 记录本地价格目录版本、USD 币种和 `event-time-standard-api` 基准；`weeklySummary.apiEquivalentCost` 与 `dailySummaries[].apiEquivalentCost` 分别包含 `claude`、`codex`、`total` 的金额及定价覆盖度。v10 延续 v9 的 Codex token 口径：`inputTokens = max(0, input_tokens - cached_input_tokens)`，缓存输入由 `cacheReadInputTokens` 单列
+- 当前导出 bundle / weeklySummary 的 `schemaVersion` 为 `12`。两处 `range.dayStart` 记录统计日开始时间（如 `07:00`），供聚合沿用导出口径。顶层 `pricing` 记录本地价格目录版本、USD 币种和 `event-time-standard-api` 基准；`weeklySummary.apiEquivalentCost` 与 `dailySummaries[].apiEquivalentCost` 分别包含 `claude`、`codex`、`total` 的金额及定价覆盖度。v10 延续 v9 的 Codex token 口径：`inputTokens = max(0, input_tokens - cached_input_tokens)`，缓存输入由 `cacheReadInputTokens` 单列
 - v11 在有未定价请求的成本结果中增加 `unpricedModels: [{ model, requestCount }]`，按原始模型名累计请求数，模型缺失记为 `null`，无未定价请求时省略。该明细仅写入 JSON，不增加页面或 CSV 字段；v10 导出仍可读取，但没有模型明细。
 - 等效 API 成本按每次请求的模型、发生时间和 token 分类套用内置标准同步 API 价格。Claude 区分输入、输出、缓存读取及 5 分钟/1 小时缓存写入；Codex 区分净输入、缓存输入和输出。它不是 Claude/Codex 订阅账单，也不含税费、折扣、批处理、工具附加费或区域溢价
 - 未知模型不会丢弃：有部分请求可定价时金额是已知小计，页面显示“至少为”；全部请求均无法定价时金额为不可用。个人 dashboard 在顶部第五张卡显示 Claude 与 Codex 的合计成本，不显示来源分项。全部模型价格集中维护在 `src/lib/api-pricing-catalog.json`，价格目录随 ccus 发布，统计过程不联网；个人与多人 dashboard 的合计成本卡下链接独立 `pricing.html` 并在新页面打开，价格页只保留一套标题，Codex 排在 Claude 前并按模型版本从新到旧排列。当前 Claude 目录包含 Opus 4.7、Opus 4.8、Opus 5、Sonnet 5 和 Fable 5；Sonnet 5 按事件时间区分活动价与标准价
@@ -191,7 +197,8 @@ ccus aggregate serve --input-dir ./team-exports
 ## 多人汇总
 
 - 输入目录放很多通过 `ccus export` 导出的 bundle 文件，`.json.gz`（gzip 压缩）与明文 `.json` 都能识别，gzip 文件读取时自动解压
-- `aggregate` 接受 `schemaVersion: 6/7/8/9/10/11`。v6–v9 继续聚合原统计；存在 API 请求时成本为空并全部计入未定价，没有请求时成本为 0。旧版与 v10 或不同价格目录混用时，`pricingCatalogVersion` 按规则标记为 `mixed`
+- `aggregate` 和 `aggregate serve` 自动跳过不支持的导出版本，在 stderr 提示版本号和文件路径，其余有效文件继续统计；支持版本的数据结构校验失败仍报错。
+- `aggregate` 接受 `schemaVersion: 6/7/8/9/10/11/12`。v6–v11 按零点切日，v12 按 `range.dayStart` 切日；同一人同一周的 bundle 必须使用相同开始时间，否则提示统一配置后重新导出。CSV 列集合不变。v6–v9 继续聚合原统计；存在 API 请求时成本为空并全部计入未定价，没有请求时成本为 0。旧版与 v10 或不同价格目录混用时，`pricingCatalogVersion` 按规则标记为 `mixed`
 - 同一个人在多台电脑上各自导出 bundle 时会自动合并去重：去重以**天**为粒度，对每个「同人同天」取 `generatedAt` 最新的那份导出，避免同一台机器重复导出或周与周重叠造成翻倍；**周汇总不取整周单份，而是把按天去重后的各天数据上卷累加**，所以多台电脑在不同天产生的用量会正确合进同一周。usage（5h / 7d）从选中事件按真实时间戳重算，Claude+Codex 合并：peak 取两源 max、latest 两源相加
 - `ccus aggregate --input-dir DIR --out-dir DIR`
 - 输出三个文件：

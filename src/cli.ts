@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import http from "node:http";
 import path from "node:path";
+import { readConfig, writeDayStart } from "./lib/config";
 import { buildDashboardHtml } from "./lib/dashboard";
 import { summarizeEvents } from "./lib/dashboard";
 import { buildAggregateDashboardHtml } from "./lib/aggregate-dashboard";
@@ -24,7 +25,7 @@ import { installCodexHook, uninstallCodexHook } from "./lib/codex-install";
 import { formatSyncElapsed, isSyncDue, maybeSpawnBackgroundSync, performSync, readSyncConfig, readSyncStateSync, sanitizeSuffix, writeSyncConfig } from "./lib/sync";
 import type { ApiModeConfig, RawStatuslinePayload } from "./types";
 import { appendEvent, readEventsForRange } from "./lib/storage";
-import { enumerateDateKeys, expandToFullWeekWindow, extractGitEmailAccount, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "./lib/time";
+import { enumerateReportingDateKeys, expandToFullWeekWindow, extractGitEmailAccount, formatDayStart, formatGitEmailFilePrefix, formatRangeFileLabel, parseDayStart, resolveRange } from "./lib/time";
 import { computeUpdateNotice, fetchLatestVersion, maybeSpawnBackgroundCheck, performUpdateCheck } from "./lib/update-check";
 import { API_PRICING_METADATA, emptyApiEquivalentCost, mergeApiEquivalentCosts } from "./lib/api-equivalent-cost";
 import { getCurrentVersion, isNewerVersion } from "./lib/version";
@@ -35,6 +36,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
+  process.stdout.write("统计日配置：ccus config [--day-start 07:00] [--data-dir PATH]\n统计命令可用 --day-start HH:mm 临时覆盖，默认 07:00（本地时区）。\n\n");
   process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]   (默认装 Claude statusLine；--codex 改写 Codex 的 ~/.codex/config.toml notify，配 --uninstall 移除)\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus sessions [RANGE] [--out FILE] [--data-dir PATH]   (把 Claude 与 Codex 的活跃 session 打包成 zip，默认本周)\n  ccus sessions repair [codex|claude] [--min-gap 3h] [--dry-run]   (按末条记录时间修复 session 修改时间，默认仅跨天)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus api config [--enable|--disable] [--provider zhipu|custom] [--token-env NAME] [--token VAL] [--url URL] [--project P] [--organization O] [--ttl 5m] [--extractor-file FILE] [--data-dir PATH]\n  ccus api test [--data-dir PATH]   (立即拉取第三方额度并打印，验证配置是否生效)\n  ccus api status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
@@ -74,6 +76,20 @@ function getBooleanOption(options: CliOptions, key: string): boolean {
 /** 所有命令都共享一套数据目录解析逻辑。 */
 function getDataDir(options: CliOptions): string {
   return path.resolve(getStringOption(options, "data-dir") ?? getDefaultDataDir());
+}
+
+async function getDayStartMinutes(options: CliOptions): Promise<number> {
+  if (options["day-start"] === true) throw new Error("--day-start 缺少时间，例如 07:00。");
+  const override = getStringOption(options, "day-start");
+  return parseDayStart(override ?? (await readConfig(getDataDir(options))).dayStart);
+}
+
+async function handleConfig(options: CliOptions): Promise<void> {
+  await getDayStartMinutes(options);
+  const dataDir = getDataDir(options);
+  const value = getStringOption(options, "day-start");
+  const dayStart = value === undefined ? (await readConfig(dataDir)).dayStart : await writeDayStart(dataDir, value);
+  process.stdout.write(`每天开始时间：${dayStart}（本地时区）\n`);
 }
 
 /**
@@ -234,7 +250,7 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
 }
 
 /** 统计前静默同步会话修改时间，修复失败时仍尝试原有统计流程。 */
-async function loadSessionUsage(start: Date, end: Date) {
+async function loadSessionUsage(start: Date, end: Date, dayStartMinutes: number) {
   try {
     const { repairSessionMtimes } = await import("./lib/session-mtime");
     const results = await repairSessionMtimes(false);
@@ -247,8 +263,8 @@ async function loadSessionUsage(start: Date, end: Date) {
     debugLog("sessions", "统计前同步修改时间失败", error);
   }
   return Promise.all([
-    summarizeClaudeProjectUsageCombined(start, end),
-    summarizeCodexSessionUsageCombined(start, end),
+    summarizeClaudeProjectUsageCombined(start, end, dayStartMinutes),
+    summarizeCodexSessionUsageCombined(start, end, dayStartMinutes),
   ]);
 }
 
@@ -264,18 +280,19 @@ async function loadDashboardData(
 ): Promise<{ html: string; window: ReturnType<typeof resolveRange> }> {
   const dataDir = getDataDir(options);
   const range = getStringOption(options, "range") ?? defaultRange;
+  const dayStartMinutes = await getDayStartMinutes(options);
   const now = new Date();
   // this-week 固定补齐到完整一周（周一到周日），即使本周还没过完，曲线 x 轴也按 7 天逐日展示；
   // 其它范围（today / last-week / 5h）不受影响。
-  const window = expandToFullWeekWindow(resolveRange(range, now));
+  const window = expandToFullWeekWindow(resolveRange(range, now, dayStartMinutes));
   // events 含 Claude 与 Codex：个人看板额度叠加 Codex（peak max、latest 相加、7d 累计合并），与 aggregate 同口径。
   // codex 消息柱图走 dailyUserMessages，不受影响。
-  const events = (await readEventsForRange(dataDir, range, now))
+  const events = (await readEventsForRange(dataDir, range, now, dayStartMinutes))
     .map((record) => computeStatuslineEvent(record));
-  const [claudeUsage, codexUsage] = await loadSessionUsage(window.start, window.end);
+  const [claudeUsage, codexUsage] = await loadSessionUsage(window.start, window.end, dayStartMinutes);
   const claudeDailyUsage = claudeUsage.daily;
   const codexDailyUsage = codexUsage.daily;
-  const dailyUserMessages = enumerateDateKeys(window.start, window.end).map((date) => ({
+  const dailyUserMessages = enumerateReportingDateKeys(window.start, window.end, dayStartMinutes).map((date) => ({
     date,
     userMessageCount: claudeDailyUsage.get(date)?.userMessageCount ?? 0,
     codexUserMessageCount: codexDailyUsage.get(date)?.userMessageCount ?? 0,
@@ -287,7 +304,7 @@ async function loadDashboardData(
     claude: claudeCost,
     codex: codexCost,
     total: mergeApiEquivalentCosts([claudeCost, codexCost]),
-  }, API_PRICING_METADATA.catalogVersion);
+  }, API_PRICING_METADATA.catalogVersion, formatDayStart(dayStartMinutes));
   return { html, window };
 }
 
@@ -400,6 +417,7 @@ async function handleDashboardServe(options: CliOptions): Promise<void> {
  */
 async function runExport(options: CliOptions): Promise<{ outputPath: string; window: ReturnType<typeof resolveRange> }> {
   const dataDir = getDataDir(options);
+  const dayStartMinutes = await getDayStartMinutes(options);
   const range = getStringOption(options, "range") ?? "this-week";
   const output = getStringOption(options, "out");
 
@@ -413,18 +431,18 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
 
   const now = new Date();
   // 周度导出固定覆盖完整一周：this-week 即使本周还没过完，文件名与 dailySummaries 也补齐到周日。
-  const window = expandToFullWeekWindow(resolveRange(range, now));
+  const window = expandToFullWeekWindow(resolveRange(range, now, dayStartMinutes));
   debugLog("export", "range resolved", { range, label: window.label, start: window.start.toISOString(), end: window.end.toISOString() });
-  const records = await readEventsForRange(dataDir, range, now);
+  const records = await readEventsForRange(dataDir, range, now, dayStartMinutes);
   const events = records.map((record) => computeStatuslineEvent(record));
   // 按 source 分流：Claude usage 只算 claude 事件，Codex 额度单列（避免 codex 额度污染 claude usage）。
   const claudeEvents = events.filter((event) => !isCodexSourceEvent(event));
   const codexEvents = events.filter(isCodexSourceEvent);
   const statuslineSummary = summarizeEvents(claudeEvents);
-  const statuslineDailyRows = buildSummaryRows(claudeEvents);
+  const statuslineDailyRows = buildSummaryRows(claudeEvents, dayStartMinutes);
   const codexStatuslineSummary = summarizeEvents(codexEvents);
-  const codexStatuslineDailyRows = buildSummaryRows(codexEvents);
-  const [claudeScan, codexScan] = await loadSessionUsage(window.start, window.end);
+  const codexStatuslineDailyRows = buildSummaryRows(codexEvents, dayStartMinutes);
+  const [claudeScan, codexScan] = await loadSessionUsage(window.start, window.end, dayStartMinutes);
   const claudeUsage = claudeScan.weekly;
   const claudeDailyUsage = claudeScan.daily;
   const codexUsage = codexScan.weekly;
@@ -448,12 +466,13 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
     exportUserName = gitIdentity.userName;
   }
   const weeklySummary = {
-    schemaVersion: 11,
+    schemaVersion: 12,
     generatedAt: new Date().toISOString(),
     range: {
       label: window.label,
       start: window.start.toISOString(),
       end: window.end.toISOString(),
+      dayStart: formatDayStart(dayStartMinutes),
     },
     identity: {
       gitUserName: exportUserName,
@@ -504,7 +523,7 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
   };
   const statuslineDailyMap = new Map(statuslineDailyRows.map((row) => [row.date, row]));
   const codexStatuslineDailyMap = new Map(codexStatuslineDailyRows.map((row) => [row.date, row]));
-  const dailySummaries = enumerateDateKeys(window.start, window.end).map((date) => {
+  const dailySummaries = enumerateReportingDateKeys(window.start, window.end, dayStartMinutes).map((date) => {
     const row = statuslineDailyMap.get(date);
     const claudeDay = claudeDailyUsage.get(date);
     const codexDay = codexDailyUsage.get(date);
@@ -544,12 +563,13 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
     };
   });
   const bundle = {
-    schemaVersion: 11,
+    schemaVersion: 12,
     generatedAt: new Date().toISOString(),
     range: {
       label: window.label,
       start: window.start.toISOString(),
       end: window.end.toISOString(),
+      dayStart: formatDayStart(dayStartMinutes),
     },
     identity: {
       gitUserName: exportUserName,
@@ -561,7 +581,7 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
     dailySummaries,
   };
   const content = buildWeeklyExportBundleJson(bundle);
-  const fileLabel = formatRangeFileLabel(window.start, window.end);
+  const fileLabel = formatRangeFileLabel(window.start, window.end, dayStartMinutes);
   const gitEmailPrefix = formatGitEmailFilePrefix(exportUserEmail);
   // 默认导出 gzip 压缩的 bundle（.json.gz）以缩减体积；用户用 --out 指定非 .gz 路径时仍写明文 JSON。
   const defaultFileName = gitEmailPrefix ? `${gitEmailPrefix}_export_${fileLabel}.json.gz` : `export_${fileLabel}.json.gz`;
@@ -755,10 +775,11 @@ export function resolveExportOptions(action: string | undefined, args: string[],
  */
 async function handleSessions(options: CliOptions): Promise<void> {
   const dataDir = getDataDir(options);
+  const dayStartMinutes = await getDayStartMinutes(options);
   const range = getStringOption(options, "range") ?? "this-week";
   const out = getStringOption(options, "out");
   const now = new Date();
-  const window = expandToFullWeekWindow(resolveRange(range, now));
+  const window = expandToFullWeekWindow(resolveRange(range, now, dayStartMinutes));
   debugLog("sessions", "range resolved", { range, label: window.label, start: window.start.toISOString(), end: window.end.toISOString() });
 
   const [claudeSessions, codexSessions] = await Promise.all([
@@ -784,7 +805,7 @@ async function handleSessions(options: CliOptions): Promise<void> {
 
   const gitIdentity = await readGitIdentity();
   const userName = formatGitEmailFilePrefix(gitIdentity.userEmail) ?? "unknown";
-  const fileLabel = formatRangeFileLabel(window.start, window.end);
+  const fileLabel = formatRangeFileLabel(window.start, window.end, dayStartMinutes);
   const defaultFileName = `projects_${fileLabel}_${userName}.zip`;
   const outputPath = path.resolve(out ?? path.join(dataDir, "sessions", defaultFileName));
   const fsNode = await import("node:fs/promises");
@@ -1479,6 +1500,11 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 
   if (group === "open") {
     await handleOpenDataDir(parseOptions(args.slice(1)));
+    return;
+  }
+
+  if (group === "config") {
+    await handleConfig(parseOptions(args.slice(1)));
     return;
   }
 

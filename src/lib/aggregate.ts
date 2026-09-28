@@ -5,9 +5,10 @@ import { gunzip } from "node:zlib";
 import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow, PersistedStatuslineEvent, StatuslineEvent, WeeklyExportBundle, WeeklyExportDaySummary, CodexUsageSnapshot } from "../types";
 import { ApiEquivalentCostResult, emptyApiEquivalentCost, mergeApiEquivalentCosts } from "./api-equivalent-cost";
 import { computeStatuslineEvent, isCodexSourceEvent } from "./payload";
-import { extractGitEmailAccount, roundNumber } from "./time";
+import { extractGitEmailAccount, localDateKey, parseDayStart, reportingDateKey, roundNumber, startOfReportingDay } from "./time";
 
 const gunzipAsync = promisify(gunzip);
+const SUPPORTED_BUNDLE_SCHEMA_VERSIONS = [6, 7, 8, 9, 10, 11, 12];
 
 function maxOrNull(values: Array<number | null>): number | null {
   const numbers = values.filter((v): v is number => v !== null);
@@ -85,7 +86,7 @@ function isWeeklyExportBundle(value: unknown): value is WeeklyExportBundle {
     return false;
   }
 
-  if (typeof value.schemaVersion !== "number" || ![6, 7, 8, 9, 10, 11].includes(value.schemaVersion)) {
+  if (typeof value.schemaVersion !== "number" || !SUPPORTED_BUNDLE_SCHEMA_VERSIONS.includes(value.schemaVersion)) {
     return false;
   }
 
@@ -94,6 +95,11 @@ function isWeeklyExportBundle(value: unknown): value is WeeklyExportBundle {
   }
 
   if (!hasWeeklyStatuslineShape(value.weeklySummary.statusline)) {
+    return false;
+  }
+
+  if (value.schemaVersion >= 12 &&
+    (typeof value.range.dayStart !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value.range.dayStart))) {
     return false;
   }
 
@@ -108,13 +114,6 @@ function isWeeklyExportBundle(value: unknown): value is WeeklyExportBundle {
   );
 }
 
-function localDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function startOfLocalWeek(date: Date): Date {
   const day = date.getDay();
   const diff = day === 0 ? -6 : 1 - day;
@@ -124,8 +123,12 @@ function startOfLocalWeek(date: Date): Date {
   return start;
 }
 
-function weekKey(date: Date): string {
-  return localDateKey(startOfLocalWeek(date));
+function weekKey(date: Date, dayStartMinutes = 0): string {
+  return localDateKey(startOfLocalWeek(startOfReportingDay(date, dayStartMinutes)));
+}
+
+function bundleDayStartMinutes(bundle: WeeklyExportBundle): number {
+  return bundle.schemaVersion >= 12 ? parseDayStart(bundle.range.dayStart ?? "") : 0;
 }
 
 function toPersonKey(gitUserEmail: string | null, gitUserName: string | null): string {
@@ -171,6 +174,9 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
       try {
         const content = await readBundleFileContent(filePath);
         const parsed = JSON.parse(content) as unknown;
+        if (isRecord(parsed) && typeof parsed.schemaVersion === "number" && !SUPPORTED_BUNDLE_SCHEMA_VERSIONS.includes(parsed.schemaVersion)) {
+          return { filePath, bundle: null, unsupportedVersion: parsed.schemaVersion };
+        }
         if (isWeeklyExportBundle(parsed)) {
           return { filePath, bundle: parsed as WeeklyExportBundle };
         }
@@ -184,6 +190,10 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
   const bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }> = [];
   for (const result of results) {
     if (result === null) continue;
+    if ("unsupportedVersion" in result) {
+      process.stderr.write(`已忽略不支持的导出版本 schemaVersion=${result.unsupportedVersion}：${result.filePath}\n`);
+      continue;
+    }
     if (result.bundle === null) {
       invalidFiles.push(result.filePath);
     } else {
@@ -193,7 +203,7 @@ export async function loadWeeklyExportBundles(inputDir: string): Promise<Array<{
 
   if (invalidFiles.length > 0) {
     throw new Error(
-      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 6/7/8/9/10/11 bundles.`,
+      `Unsupported export bundle schema in files: ${invalidFiles.join(", ")}. Re-export with current ccus so aggregate receives schemaVersion 6/7/8/9/10/11/12 bundles.`,
     );
   }
 
@@ -273,12 +283,21 @@ function selectDailyRepresentatives(
     string,
     Array<{ day: WeeklyExportDaySummary; bundle: WeeklyExportBundle; generatedAt: string; filePath: string; sessionIds: Set<string> }>
   >();
+  const weekDayStarts = new Map<string, number>();
 
   for (const { filePath, bundle } of bundles) {
     const personKey = bundlePersonKey(bundle);
     const generatedAt = bundle.generatedAt ?? "";
     const eventsByDate = bundleEventsByDate(bundle);
+    const dayStartMinutes = bundleDayStartMinutes(bundle);
     for (const day of bundle.dailySummaries) {
+      const week = weekKey(new Date(`${day.date}T12:00:00`));
+      const weekKeyForPerson = `${personKey}|${week}`;
+      const previous = weekDayStarts.get(weekKeyForPerson);
+      if (previous !== undefined && previous !== dayStartMinutes) {
+        throw new Error(`${personKey} 在 ${week} 这一周的每天开始时间不一致，请使用相同配置重新导出该周数据。`);
+      }
+      weekDayStarts.set(weekKeyForPerson, dayStartMinutes);
       const key = `${personKey}|${day.date}`;
       const events = eventsByDate.get(day.date) ?? [];
       const sessionIds = new Set(events.map((e) => e.sessionId).filter((s): s is string => s !== null));
@@ -354,7 +373,7 @@ function selectDailyRepresentatives(
   return result;
 }
 
-/** 把 bundle 的 rawEvents 计算成 StatuslineEvent 并按本地自然日分组，结果做缓存复用。 */
+/** 按 bundle 的统计日边界分组，旧版沿用自然日。 */
 const bundleEventsCache = new WeakMap<WeeklyExportBundle, Map<string, StatuslineEvent[]>>();
 function bundleEventsByDate(bundle: WeeklyExportBundle): Map<string, StatuslineEvent[]> {
   const cached = bundleEventsCache.get(bundle);
@@ -362,9 +381,10 @@ function bundleEventsByDate(bundle: WeeklyExportBundle): Map<string, StatuslineE
     return cached;
   }
   const byDate = new Map<string, StatuslineEvent[]>();
+  const dayStartMinutes = bundleDayStartMinutes(bundle);
   for (const record of bundle.rawEvents.filter(isPersistedStatuslineEvent)) {
     const event = computeStatuslineEvent(record);
-    const dateKey = localDateKey(new Date(event.timestamp));
+    const dateKey = reportingDateKey(new Date(event.timestamp), dayStartMinutes);
     const list = byDate.get(dateKey);
     if (list) {
       list.push(event);
@@ -584,14 +604,14 @@ export function buildPersonSevenDayCurve(bundles: Array<{ filePath: string; bund
   return curves;
 }
 
-/** 从合并曲线里切出某自然日的子序列。 */
-function sliceCurveByDate(curve: StatuslineEvent[], date: string): StatuslineEvent[] {
-  return curve.filter((event) => localDateKey(new Date(event.timestamp)) === date);
+/** 从合并曲线里切出某统计日的子序列。 */
+function sliceCurveByDate(curve: StatuslineEvent[], date: string, dayStartMinutes: number): StatuslineEvent[] {
+  return curve.filter((event) => reportingDateKey(new Date(event.timestamp), dayStartMinutes) === date);
 }
 
 /** 从合并曲线里切出某周（周起始日 key）的子序列。 */
-function sliceCurveByWeek(curve: StatuslineEvent[], week: string): StatuslineEvent[] {
-  return curve.filter((event) => weekKey(new Date(event.timestamp)) === week);
+function sliceCurveByWeek(curve: StatuslineEvent[], week: string, dayStartMinutes: number): StatuslineEvent[] {
+  return curve.filter((event) => weekKey(new Date(event.timestamp), dayStartMinutes) === week);
 }
 
 /**
@@ -602,16 +622,17 @@ function sliceCurveByWeek(curve: StatuslineEvent[], week: string): StatuslineEve
 function computeCumulativeSevenDayBySource(
   curves: Map<string, PersonSevenDayCurves>,
   personKey: string,
-  slicer: (curve: StatuslineEvent[], key: string) => StatuslineEvent[],
+  slicer: (curve: StatuslineEvent[], key: string, dayStartMinutes: number) => StatuslineEvent[],
   rangeKey: string,
+  dayStartMinutes: number,
 ): number | null {
   const bySource = curves.get(personKey);
   if (!bySource) {
     return null;
   }
   return addNullable(
-    computeCumulativeSevenDay(slicer(bySource.claude, rangeKey)),
-    computeCumulativeSevenDay(slicer(bySource.codex, rangeKey)),
+    computeCumulativeSevenDay(slicer(bySource.claude, rangeKey, dayStartMinutes)),
+    computeCumulativeSevenDay(slicer(bySource.codex, rangeKey, dayStartMinutes)),
   );
 }
 
@@ -648,7 +669,7 @@ export function buildAggregatedDetailRows(bundles: Array<{ filePath: string; bun
         rows.push({
           ...event,
           personKey: rep.personKey,
-          weekKey: weekKey(new Date(event.timestamp)),
+          weekKey: weekKey(new Date(`${rep.date}T12:00:00`)),
           dateKey: rep.date,
           source: isCodex ? "codex" : "claude",
           // codex 事件无单事件 token 语义（token 在 daySummary.codex 按天聚合），不附 claude 的日总量。
@@ -751,7 +772,7 @@ export function buildAggregatedDailyRows(bundles: Array<{ filePath: string; bund
     const fallback = fallbackWeeklyUsage(reps.map((r) => r.day));
 
     // 累计指标走全样本分源曲线（Claude + Codex 各自切片累计后相加），不走单机的 recomputeUsage，避免漏掉另一台机器的样本。
-    const sevenDayCumulativeUsagePct = computeCumulativeSevenDayBySource(curves, personKey, sliceCurveByDate, date);
+    const sevenDayCumulativeUsagePct = computeCumulativeSevenDayBySource(curves, personKey, sliceCurveByDate, date, bundleDayStartMinutes(reps[0].bundle));
     rows.push({
       personKey,
       date,
@@ -802,6 +823,7 @@ function fallbackWeeklyUsage(days: WeeklyExportDaySummary[]): RecomputedUsage {
 interface WeeklyAccumulator {
   personKey: string;
   week: string;
+  dayStartMinutes: number;
   userMessageCount: number;
   apiRequestCount: number;
   inputTokens: number;
@@ -826,13 +848,14 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
 
   for (const reps of repsMap.values()) {
     for (const rep of reps) {
-      const week = weekKey(new Date(rep.bundle.range.start));
+      const week = weekKey(new Date(`${rep.date}T12:00:00`));
       const key = `${rep.personKey}|${week}`;
       let acc = groups.get(key);
       if (!acc) {
         acc = {
           personKey: rep.personKey,
           week,
+          dayStartMinutes: bundleDayStartMinutes(rep.bundle),
           userMessageCount: 0,
           apiRequestCount: 0,
           inputTokens: 0,
@@ -874,7 +897,7 @@ export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bun
     const fallback = fallbackWeeklyUsage(acc.days);
     const apiEquivalentCost = mergeApiEquivalentCosts(acc.costContributions.map((contribution) => contribution.result));
     // 整周累计：Claude + Codex 各自在整周子曲线上做分段峰谷和后相加，跨天边界增量被计入，故 weekly ≥ Σ daily。
-    const sevenDayCumulativeUsagePct = computeCumulativeSevenDayBySource(curves, acc.personKey, sliceCurveByWeek, acc.week);
+    const sevenDayCumulativeUsagePct = computeCumulativeSevenDayBySource(curves, acc.personKey, sliceCurveByWeek, acc.week, acc.dayStartMinutes);
     rows.push({
       personKey: acc.personKey,
       week: acc.week,

@@ -7,7 +7,7 @@ import {
   priceApiRequest,
 } from "./api-equivalent-cost";
 import { getCodexHome, getCodexSessionHomes } from "./paths";
-import { localDateKey } from "./time";
+import { DEFAULT_DAY_START_MINUTES, reportingDateKey } from "./time";
 
 interface CodexSessionUsageSummary {
   userMessageCount: number;
@@ -348,6 +348,7 @@ function summarizeRollout(
   start: Date,
   end: Date,
   daily?: Map<string, CodexDailyUsageSummary>,
+  dayStartMinutes = DEFAULT_DAY_START_MINUTES,
 ): RolloutParse {
   const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
   const result: RolloutParse = {
@@ -405,7 +406,7 @@ function summarizeRollout(
           result.apiEquivalentCost = mergeApiEquivalentCosts([result.apiEquivalentCost, cost]);
 
           if (daily) {
-            const day = ensureCodexDay(daily, localDateKey(new Date(timestamp!)));
+            const day = ensureCodexDay(daily, reportingDateKey(new Date(timestamp!), dayStartMinutes));
             day.apiRequestCount += 1;
             day.inputTokens += inputTokens;
             day.outputTokens += outputTokens;
@@ -432,6 +433,7 @@ function summarizeRollout(
 export async function summarizeCodexSessionUsageCombined(
   start: Date,
   end: Date,
+  dayStartMinutes = DEFAULT_DAY_START_MINUTES,
 ): Promise<CodexSessionUsageCombined> {
   const codexDataDir = getCodexHome();
   const groups = await collectRolloutFileGroups();
@@ -449,7 +451,7 @@ export async function summarizeCodexSessionUsageCombined(
       if (content === null || isGuardianRollout(content)) {
         continue;
       }
-      const parsed = summarizeRollout(content, start, end, daily);
+      const parsed = summarizeRollout(content, start, end, daily, dayStartMinutes);
       for (const turn of parsed.turns) {
         const previous = turnMinMs.get(turn.turnId);
         if (previous === undefined || turn.ms < previous) {
@@ -467,7 +469,7 @@ export async function summarizeCodexSessionUsageCombined(
   }
 
   for (const ms of turnMinMs.values()) {
-    ensureCodexDay(daily, localDateKey(new Date(ms))).userMessageCount += 1;
+    ensureCodexDay(daily, reportingDateKey(new Date(ms), dayStartMinutes)).userMessageCount += 1;
   }
 
   return {
@@ -496,12 +498,13 @@ export async function summarizeCodexSessionUsage(
  * 按天汇总 Codex session rollout 中的消息数、请求数、token 用量和标准 API 等效成本。
  * 与周汇总一致，排除 Codex Desktop 的 guardian 安全审查 rollout。
  *
- * 消息数同 weekly：先全局 Map<turn_id, minMs> 去重，再按 minMs 的本地日归桶（保证 weekly = Σ daily、
- * 且重放副本跨天不重复）。token 维度按 token_count 事件 timestamp 的本地日累加。
+ * 消息数同 weekly：先全局 Map<turn_id, minMs> 去重，再按 minMs 的统计日归桶（保证 weekly = Σ daily、
+ * 且重放副本跨天不重复）。token 按 token_count 事件 timestamp 的统计日累加。
  */
 export async function summarizeCodexSessionUsageByDay(
   start: Date,
   end: Date,
+  dayStartMinutes = DEFAULT_DAY_START_MINUTES,
 ): Promise<Map<string, CodexDailyUsageSummary>> {
-  return (await summarizeCodexSessionUsageCombined(start, end)).daily;
+  return (await summarizeCodexSessionUsageCombined(start, end, dayStartMinutes)).daily;
 }

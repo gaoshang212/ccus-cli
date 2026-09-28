@@ -233,7 +233,7 @@ function renderDailyMessages(points: DashboardDailyMessagePoint[]): string {
           <p class="eyebrow">Daily Messages</p>
           <h2>每日用户消息数</h2>
         </div>
-        <p class="muted">按自然日统计的真实用户请求数（口径同导出 userMessageCount），共 ${total} 条 Claude · ${codexTotal} 条 Codex</p>
+        <p class="muted">按配置的统计日统计真实用户请求数，共 ${total} 条 Claude · ${codexTotal} 条 Codex</p>
       </div>
       ${noData}
       ${chart}
@@ -342,6 +342,7 @@ export function buildDashboardHtml(
   dailyUserMessages: DashboardDailyMessagePoint[] = [],
   apiEquivalentCost: ApiEquivalentCostBreakdown | null = null,
   pricingCatalogVersion: string | null = null,
+  dayStart = "07:00",
 ): string {
   const summary = summarizeEvents(events);
   const buckets = bucketizeEvents(events, start, end, pickBucketMinutes(start, end));
@@ -519,6 +520,7 @@ export function buildDashboardHtml(
         <p class="subtitle">围绕 Claude Code statusline 的本地采样面板。每次刷新记录一条事件，再把 Claude 自带的 5 小时使用率百分比随时间的变化绘制成静态 Web 页面，适合快速回看与导出周报。</p>
         <div class="hero-meta">
           <span class="hero-chip">时间范围：${escapeHtml(rangeLabel)}</span>
+          <span class="hero-chip">每天开始：${escapeHtml(dayStart)}（本地时区）</span>
           <span class="hero-chip">开始：${escapeHtml(formatLocalTimestamp(start))}</span>
           <span class="hero-chip">结束：${escapeHtml(formatLocalTimestamp(end))}</span>
           <span class="hero-chip">事件：${summary.sampleCount}</span>

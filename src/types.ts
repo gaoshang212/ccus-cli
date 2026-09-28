@@ -80,6 +80,7 @@ export interface RangeWindow {
   label: string;
   start: Date;
   end: Date;
+  dayStartMinutes?: number;
 }
 
 /** dashboard 折线图使用的聚合桶结构。 */
@@ -162,6 +163,8 @@ export interface WeeklyExportSummary {
     label: string;
     start: string;
     end: string;
+    /** v12 起记录统计日边界；旧版缺失时按 00:00 读取。 */
+    dayStart?: string;
   };
   identity: {
     gitUserName: string | null;
@@ -227,6 +230,7 @@ export interface WeeklyExportBundle {
     label: string;
     start: string;
     end: string;
+    dayStart?: string;
   };
   identity: {
     gitUserName: string | null;
@@ -245,7 +249,7 @@ export interface AggregatedEventRow extends StatuslineEvent {
   dateKey: string;
   /** 事件来源："claude"（statusline）或 "codex"（Codex 额度事件），用于 detail.csv 的 source 列。 */
   source: "claude" | "codex";
-  /** 该事件所在自然日的 token 总量，来自同一 bundle 的 dailySummaries（按天总量，非单事件）。 */
+  /** 该事件所在统计日的 token 总量，来自同一 bundle 的 dailySummaries（按天总量，非单事件）。 */
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;

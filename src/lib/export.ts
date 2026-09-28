@@ -3,7 +3,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { gzip } from "node:zlib";
 import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow, ExportSummaryRow, PersistedStatuslineEvent, StatuslineEvent, WeeklyExportBundle, WeeklyExportSummary } from "../types";
-import { roundNumber } from "./time";
+import { DEFAULT_DAY_START_MINUTES, reportingDateKey, roundNumber } from "./time";
 
 const gzipAsync = promisify(gzip);
 
@@ -148,10 +148,10 @@ export function buildWeeklyExportBundleJson(bundle: WeeklyExportBundle): string 
 }
 
 /** 按天汇总 usage 数据，生成 summary 模式的中间结果。 */
-export function buildSummaryRows(events: StatuslineEvent[]): ExportSummaryRow[] {
+export function buildSummaryRows(events: StatuslineEvent[], dayStartMinutes = DEFAULT_DAY_START_MINUTES): ExportSummaryRow[] {
   const grouped = new Map<string, StatuslineEvent[]>();
   for (const event of events) {
-    const key = event.timestamp.slice(0, 10);
+    const key = reportingDateKey(new Date(event.timestamp), dayStartMinutes);
     const items = grouped.get(key);
     if (items) {
       items.push(event);

@@ -14,7 +14,7 @@ test("expandToFullWeekWindow stretches this-week to Monday..Sunday even before w
   const window = expandToFullWeekWindow(resolveRange("this-week", now));
 
   assert.equal(window.label, "this-week");
-  assert.equal(formatRangeFileLabel(window.start, window.end), "2026-06-01_to_2026-06-07");
+  assert.equal(formatRangeFileLabel(window.start, window.end, window.dayStartMinutes), "2026-06-01_to_2026-06-07");
 });
 
 test("expandToFullWeekWindow leaves last-week (already full Monday..Sunday) untouched", () => {
@@ -23,7 +23,7 @@ test("expandToFullWeekWindow leaves last-week (already full Monday..Sunday) unto
   const window = expandToFullWeekWindow(resolved);
 
   assert.equal(window.end, resolved.end);
-  assert.equal(formatRangeFileLabel(window.start, window.end), "2026-05-25_to_2026-05-31");
+  assert.equal(formatRangeFileLabel(window.start, window.end, window.dayStartMinutes), "2026-05-25_to_2026-05-31");
 });
 
 test("expandToFullWeekWindow does not touch non-week ranges", () => {

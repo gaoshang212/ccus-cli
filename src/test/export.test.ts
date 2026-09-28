@@ -7,7 +7,7 @@ import { resolveExportOptions } from "../cli";
 import { gunzipSync } from "node:zlib";
 import { buildAggregatedDailyCsv, buildAggregatedWeeklyCsv, buildRawJsonl, buildWeeklyExportBundleJson, buildWeeklySummaryJson, writeGzipFile, writeTextFile } from "../lib/export";
 import { computeStatuslineEvent } from "../lib/payload";
-import { enumerateDateKeys, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "../lib/time";
+import { enumerateDateKeys, enumerateReportingDateKeys, formatGitEmailFilePrefix, formatRangeFileLabel, resolveRange } from "../lib/time";
 import { AggregatedDailyRow, AggregatedWeeklyRow, PersistedStatuslineEvent, WeeklyExportBundle, WeeklyExportSummary } from "../types";
 
 const COST_BREAKDOWN = {
@@ -268,8 +268,8 @@ test("resolveRange resolves last-week to the previous full Mon-Sun window", () =
   const window = resolveRange("last-week", now);
 
   assert.equal(window.label, "last-week");
-  assert.equal(formatRangeFileLabel(window.start, window.end), "2026-05-18_to_2026-05-24");
-  assert.deepEqual(enumerateDateKeys(window.start, window.end), [
+  assert.equal(formatRangeFileLabel(window.start, window.end, window.dayStartMinutes), "2026-05-18_to_2026-05-24");
+  assert.deepEqual(enumerateReportingDateKeys(window.start, window.end, window.dayStartMinutes), [
     "2026-05-18",
     "2026-05-19",
     "2026-05-20",
@@ -364,7 +364,7 @@ test("resolveRange expands lw/tw short aliases to canonical week windows", () =>
   assert.equal(resolveRange("lw", now).label, "last-week");
   assert.equal(resolveRange("tw", now).label, "this-week");
   assert.equal(
-    formatRangeFileLabel(resolveRange("lw", now).start, resolveRange("lw", now).end),
+    formatRangeFileLabel(resolveRange("lw", now).start, resolveRange("lw", now).end, resolveRange("lw", now).dayStartMinutes),
     "2026-05-18_to_2026-05-24",
   );
 });
