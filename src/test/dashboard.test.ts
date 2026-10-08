@@ -208,6 +208,17 @@ test("buildApiPricingPage renders a standalone current pricing page with Codex f
   assert.ok(currentHtml.indexOf("gpt-6-astra") < currentHtml.indexOf("gpt-5.6-sol"));
   assert.doesNotMatch(html, /gpt-6-astra/);
   const latestHtml = buildApiPricingPage(new Date("2026-09-22T00:00:00Z"));
+  const sol61Html = buildApiPricingPage(new Date("2026-09-29T00:00:00Z"));
+  assert.doesNotMatch(latestHtml, /gpt-6\.1-sol/);
+  assert.equal(sol61Html.split("<code>gpt-6.1-sol</code>").length - 1, 2);
+  assert.ok(sol61Html.indexOf("gpt-6.1-sol") < sol61Html.indexOf("gpt-6-astra"));
+  const octoberHtml = buildApiPricingPage(new Date("2026-10-08T00:00:00Z"));
+  for (const model of ["claude-fable-5.1", "claude-mythos-5", "claude-mythos-5.1", "claude-sonnet-5.5", "gpt-5.4-mini"]) {
+    assert.equal(octoberHtml.split(`<code>${model}</code>`).length - 1, 1);
+  }
+  assert.doesNotMatch(sol61Html, /claude-haiku-5\.5/);
+  assert.equal(octoberHtml.split("<code>claude-haiku-5.5</code>").length - 1, 2);
+  assert.match(octoberHtml, /100,000/);
   assert.match(latestHtml, /<code>claude-opus-5\.5<\/code>/);
   assert.doesNotMatch(currentHtml, /claude-opus-5\.5/);
   for (const model of ["gpt-6-sol", "gpt-6-luna"]) {

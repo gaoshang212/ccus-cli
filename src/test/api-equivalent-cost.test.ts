@@ -202,17 +202,79 @@ test("GPT-6 Sol 和 Luna 按生效日期、推理后缀及长上下文边界计�
   }
 });
 
-test("default catalog includes current Orca Claude models and Sonnet 5 event-time pricing", () => {
+test("GPT-6.1 Sol 按生效日期、推理后缀及长上下文边界计价", () => {
+  for (const model of ["gpt-6.1-sol", "openai/gpt-6.1-sol-max", "gpt-6.1-sol (reasoning: high)"]) {
+    const request = {
+      provider: "codex" as const, model, timestamp: "2026-09-29T00:00:00Z",
+      inputTokens: 172_000, cacheReadInputTokens: 100_000, outputTokens: 10_000,
+    };
+    assert.equal(findApiModelPrice({ ...request, timestamp: "2026-09-28T23:59:59.999Z" }), null);
+    assert.deepEqual(priceApiRequest(request), {
+      estimatedUsd: 0.454, pricedApiRequestCount: 1, unpricedApiRequestCount: 0,
+    });
+    assert.deepEqual(priceApiRequest({ ...request, inputTokens: 172_001 }), {
+      estimatedUsd: 0.858004, pricedApiRequestCount: 1, unpricedApiRequestCount: 0,
+    });
+  }
+});
+
+test("新增模型按上线时间计价，兼容模型别名并区分缓存读写", () => {
+  for (const [provider, name, date, estimatedUsd] of [
+    ["claude", "claude-fable-5.1", "2026-09-01", 0.41],
+    ["claude", "claude-mythos-5", "2026-06-09", 0.4325],
+    ["claude", "claude-mythos-5.1", "2026-09-01", 0.41],
+    ["claude", "claude-sonnet-5.5", "2026-09-28", 0.0865],
+    ["claude", "claude-haiku-5.5", "2026-10-07", 0.004325],
+    ["codex", "gpt-5.4-mini", "2026-03-17", 0.01875],
+  ] as const) {
+    const timestamp = `${date}T00:00:00Z`;
+    const aliases = provider === "claude"
+      ? [name, `anthropic/${name.replace(".", "-")}-thinking[1m]`]
+      : [name, `openai/${name}-xhigh`];
+    for (const model of aliases) {
+      const request = {
+        provider, model, timestamp, inputTokens: 10_000, outputTokens: 2_000,
+        cacheReadInputTokens: 30_000, cacheWrite5mInputTokens: 5_000, cacheWrite1hInputTokens: 7_000,
+      };
+      assert.equal(findApiModelPrice({ ...request, timestamp: new Date(Date.parse(timestamp) - 1).toISOString() }), null);
+      const result = priceApiRequest(request);
+      assert.ok(Math.abs(result.estimatedUsd! - estimatedUsd) < 1e-12, model);
+      assert.equal(result.pricedApiRequestCount, 1);
+      assert.equal(result.unpricedApiRequestCount, 0);
+    }
+  }
+});
+
+test("Sonnet 5.5 缓存读取自 10 月 7 日降价，保留此前价格", () => {
+  const request = {
+    provider: "claude" as const, model: "claude-sonnet-5-5", inputTokens: 0,
+    outputTokens: 0, cacheReadInputTokens: 1_000_000,
+  };
+  assert.equal(priceApiRequest({ ...request, timestamp: "2026-10-06T23:59:59.999Z" }).estimatedUsd, 0.2);
+  assert.equal(priceApiRequest({ ...request, timestamp: "2026-10-07T00:00:00Z" }).estimatedUsd, 0.1);
+});
+
+test("Haiku 5.5 按全部输入类 token 判断 100K 长上下文边界", () => {
+  const request = {
+    provider: "claude" as const, model: "claude-haiku-5-5", timestamp: "2026-10-07T00:00:00Z",
+    inputTokens: 80_000, outputTokens: 2_000, cacheReadInputTokens: 10_000,
+    cacheWrite5mInputTokens: 5_000, cacheWrite1hInputTokens: 5_000,
+  };
+  assert.equal(priceApiRequest(request).estimatedUsd, 0.010725);
+  assert.equal(priceApiRequest({ ...request, cacheWrite1hInputTokens: 5_001 }).estimatedUsd, 0.053626);
+});
+
+test("default catalog includes current Orca Claude models and permanent Sonnet 5 pricing", () => {
   assert.equal(findApiModelPrice({ provider: "claude", model: "claude-opus-4-7", timestamp: "2026-04-16T00:00:00Z" })?.prices.inputUsdPerMillion, 5);
   assert.equal(findApiModelPrice({ provider: "claude", model: "claude-opus-4-8", timestamp: "2026-05-28T00:00:00Z" })?.prices.outputUsdPerMillion, 25);
   assert.equal(findApiModelPrice({ provider: "claude", model: "claude-fable-5", timestamp: "2026-06-09T00:00:00Z" })?.prices.cacheWrite1hInputUsdPerMillion, 20);
   assert.equal(findApiModelPrice({ provider: "claude", model: "claude-opus-5", timestamp: "2026-07-24T00:00:00Z" })?.prices.cacheReadInputUsdPerMillion, 0.5);
   assert.equal(findApiModelPrice({ provider: "claude", model: "claude-sonnet-5", timestamp: "2026-08-17T00:00:00Z" })?.prices.inputUsdPerMillion, 2);
-  assert.equal(findApiModelPrice({ provider: "claude", model: "claude-sonnet-5", timestamp: "2026-09-01T00:00:00Z" })?.prices.inputUsdPerMillion, 3);
+  assert.equal(findApiModelPrice({ provider: "claude", model: "claude-sonnet-5", timestamp: "2026-09-01T00:00:00Z" })?.prices.inputUsdPerMillion, 2);
 });
 
-test("default catalog prices Claude Sonnet 4.6 above 200K input tokens", () => {
-  const price = findApiModelPrice({ provider: "claude", model: "claude-sonnet-4-6-thinking", timestamp: "2026-08-17T00:00:00Z" });
+test("Sonnet 4.6 自 3 月 13 日取消长上下文加价，保留历史价格", () => {
+  const price = findApiModelPrice({ provider: "claude", model: "claude-sonnet-4-6-thinking", timestamp: "2026-03-12T23:59:59.999Z" });
   assert.deepEqual(price?.longContext, {
     thresholdInputTokens: 200_000,
     prices: {
@@ -225,13 +287,15 @@ test("default catalog prices Claude Sonnet 4.6 above 200K input tokens", () => {
   });
   const request = {
     provider: "claude" as const,
-    timestamp: "2026-08-17T00:00:00Z",
+    timestamp: "2026-03-12T23:59:59.999Z",
     model: "claude-sonnet-4-6-thinking",
     outputTokens: 0,
     cacheReadInputTokens: 0,
   };
   assert.equal(priceApiRequest({ ...request, inputTokens: 200_000 }).estimatedUsd, 0.6);
   assert.equal(priceApiRequest({ ...request, inputTokens: 200_001 }).estimatedUsd, 1.200006);
+  assert.equal(findApiModelPrice({ ...request, timestamp: "2026-03-13T00:00:00Z" })?.longContext, undefined);
+  assert.equal(priceApiRequest({ ...request, timestamp: "2026-03-13T00:00:00Z", inputTokens: 200_001 }).estimatedUsd, 0.600003);
 });
 
 test("default catalog prices current Codex models above 272K input tokens", () => {

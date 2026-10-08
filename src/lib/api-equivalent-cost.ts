@@ -132,15 +132,15 @@ function normalizeClaudeModel(model: string): string | null {
     .replaceAll("_", "-")
     .replace(/\[1m\]$/, "")
     .replace(/-thinking(?=-\d{8}$|$)/, "");
-  const canonicalMinor = /^claude-(opus|sonnet|haiku|fable)-(\d+)\.(\d+)(?:-\d{8})?$/.exec(value);
+  const canonicalMinor = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)\.(\d+)(?:-\d{8})?$/.exec(value);
   if (canonicalMinor) {
     return `claude-${canonicalMinor[1]}-${canonicalMinor[2]}.${canonicalMinor[3]}`;
   }
-  const modern = /^claude-(opus|sonnet|haiku|fable)-(\d+)-(\d+)(?:-\d{8})?$/.exec(value);
+  const modern = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)-(\d+)(?:-\d{8})?$/.exec(value);
   if (modern) {
     return `claude-${modern[1]}-${modern[2]}.${modern[3]}`;
   }
-  const modernMajor = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-\d{8})?$/.exec(value);
+  const modernMajor = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-\d{8})?$/.exec(value);
   if (modernMajor) {
     return `claude-${modernMajor[1]}-${modernMajor[2]}`;
   }
