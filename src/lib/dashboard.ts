@@ -3,7 +3,30 @@ import { addNullable, buildSevenDayCurveFromEvents, computeCumulativeSevenDay, c
 import { ChartSpec, renderUplotChart, uplotBodyScripts, uplotHeadAssets } from "./chart-assets";
 import { API_PRICING_PAGE_FILE } from "./api-pricing-table";
 import { isCodexSourceEvent } from "./payload";
-import { formatLocalTimestamp, roundNumber } from "./time";
+import { formatLocalTimestamp, localDateKey, parseDayStart, resolveRange, roundNumber } from "./time";
+import { calculateWeeklyScore, DEFAULT_SCORE_SETTINGS, WeeklyScoreRow } from "./weekly-score";
+
+export function buildPersonalWeeklyScores(events: StatuslineEvent[], messages: DashboardDailyMessagePoint[], dayStart: string): WeeklyScoreRow[] {
+  const dayStartMinutes = parseDayStart(dayStart);
+  const weekOf = (date: Date, boundary: number) => localDateKey(resolveRange("this-week", date, boundary).start);
+  const weeks = new Map<string, WeeklyScoreRow>();
+  const getWeek = (week: string) => {
+    if (!weeks.has(week)) weeks.set(week, { week, personKey: "本人", userMessageCount: 0, sevenDayCumulativeUsagePct: null });
+    return weeks.get(week)!;
+  };
+  for (const point of messages) {
+    getWeek(weekOf(new Date(`${point.date}T12:00:00`), 0)).userMessageCount += point.userMessageCount + (point.codexUserMessageCount ?? 0);
+  }
+  for (const event of events) getWeek(weekOf(new Date(event.timestamp), dayStartMinutes));
+  const curves = [false, true].map(codex => buildSevenDayCurveFromEvents(events.filter(event => isCodexSourceEvent(event) === codex)));
+  for (const row of weeks.values()) {
+    const totals = curves.map(curve => computeCumulativeSevenDay(
+      curve.filter(event => weekOf(new Date(event.timestamp), dayStartMinutes) === row.week),
+    ));
+    row.sevenDayCumulativeUsagePct = addNullable(totals[0], totals[1]);
+  }
+  return [...weeks.values()];
+}
 
 /** 所有插入到 HTML/SVG 的动态文本都先转义，避免本地页面被注入内容。 */
 function escapeHtml(value: string): string {
@@ -162,7 +185,7 @@ function renderChart(buckets: DashboardBucket[]): string {
       <div class="panel-header">
         <div>
           <p class="eyebrow">Recent Trend</p>
-          <h2>Claude 使用率趋势</h2>
+          <h2>使用率趋势</h2>
         </div>
         <p class="muted">按采样时间聚合：5h（实线）来自 rate_limits.five_hour，7d（虚线）来自 rate_limits.seven_day；紫色「7d 分区叠加累计」走右侧 Y 轴，是把 7d 锯齿波还原成的累计真实使用量（口径同团队看板）</p>
       </div>
@@ -349,6 +372,11 @@ export function buildDashboardHtml(
   const totalUserMessages = dailyUserMessages.reduce((sum, point) => sum + point.userMessageCount, 0);
   const codexTotalUserMessages = dailyUserMessages.reduce((sum, point) => sum + (point.codexUserMessageCount ?? 0), 0);
   const combinedUserMessages = totalUserMessages + codexTotalUserMessages;
+  const scoreWeek = localDateKey(resolveRange("this-week", end, parseDayStart(dayStart)).start);
+  const scoreRow = buildPersonalWeeklyScores(events, dailyUserMessages, dayStart).find(row => row.week === scoreWeek);
+  const weeklyScore = scoreRow
+    ? calculateWeeklyScore(scoreRow.userMessageCount, scoreRow.sevenDayCumulativeUsagePct, DEFAULT_SCORE_SETTINGS)
+    : null;
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -527,15 +555,10 @@ export function buildDashboardHtml(
         </div>
       </section>
       <section class="stats">
-        <article class="panel stat-card">
-          <h2>Latest 5h usage</h2>
-          <p class="stat-value">${escapeHtml(statValue(summary.fiveHourLatestUsagePct))}</p>
-          <p class="stat-note">最后一条有效 5 小时 usage 样本</p>
-        </article>
-        <article class="panel stat-card">
-          <h2>Peak 5h usage</h2>
-          <p class="stat-value">${escapeHtml(statValue(summary.fiveHourPeakUsagePct))}</p>
-          <p class="stat-note">窗口内观测到的 5 小时使用率峰值</p>
+        <article class="panel stat-card" id="weekly-score">
+          <h2>周评分</h2>
+          <p class="stat-value">${weeklyScore?.toFixed(1) ?? "--"}</p>
+          <p class="stat-note">${scoreWeek} 当周 · 当前查询范围内数据</p>
         </article>
         <article class="panel stat-card">
           <h2>7d 分区叠加累计</h2>

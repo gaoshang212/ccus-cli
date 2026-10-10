@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildDashboardHtml, bucketizeEvents, summarizeEvents } from "../lib/dashboard";
+import { buildDashboardHtml, buildPersonalWeeklyScores, bucketizeEvents, summarizeEvents } from "../lib/dashboard";
 import { buildApiPricingPage } from "../lib/api-pricing-table";
 import { renderDashboardPage } from "../lib/dashboard-pages";
 import { computeStatuslineEvent } from "../lib/payload";
@@ -39,6 +39,27 @@ const records: PersistedStatuslineEvent[] = [
 ];
 
 const events: StatuslineEvent[] = records.map((record) => computeStatuslineEvent(record));
+
+test("个人周评分按统计日切周并合计两源消息和额度", () => {
+  const sample = (timestamp: string, quota: number, codex = false) => computeStatuslineEvent({
+    ...records[0], timestamp: new Date(timestamp).toISOString(),
+    rawPayload: { source: codex ? "codex" : "claude", rate_limits: { seven_day: { used_percentage: quota } } },
+  });
+  const rows = buildPersonalWeeklyScores([
+    sample("2026-05-31T12:00:00", 10), sample("2026-06-01T06:55:00", 30), sample("2026-06-01T06:59:00", 30),
+    sample("2026-06-01T07:00:00", 35), sample("2026-06-01T08:00:00", 55),
+    sample("2026-06-01T07:00:00", 5, true), sample("2026-06-01T08:00:00", 15, true),
+  ], [
+    { date: "2026-05-31", userMessageCount: 100, codexUserMessageCount: 20 },
+    { date: "2026-06-01", userMessageCount: 150, codexUserMessageCount: 50 },
+  ], "07:00");
+  assert.deepEqual(rows.map(row => [row.week, row.userMessageCount, row.sevenDayCumulativeUsagePct]), [
+    ["2026-05-25", 120, 20], ["2026-06-01", 200, 30],
+  ]);
+  const html = buildDashboardHtml(events, "this-week", new Date("2026-05-25"), new Date("2026-05-31"));
+  assert.match(html, /id="weekly-score"/);
+  assert.doesNotMatch(html, /id="score-settings"/);
+});
 
 /** 校验 dashboard 顶部卡片用到的摘要指标是否正确。 */
 test("summarizeEvents computes headline stats", () => {
@@ -102,7 +123,7 @@ test("bucketizeEvents creates fixed 5-minute buckets", () => {
  */
 test("buildDashboardHtml renders the usage uPlot chart and recent events", () => {
   const html = buildDashboardHtml(events, "5h", new Date("2026-05-26T01:00:00.000Z"), new Date("2026-05-26T06:00:00.000Z"));
-  assert.match(html, /Claude 使用率趋势/);
+  assert.match(html, /<h2>使用率趋势<\/h2>/);
   assert.match(html, /最近 20 条采样/);
   // uPlot 容器 + 内联数据 script
   assert.match(html, /class="uplot-host" id="chart-usage"/);
@@ -151,7 +172,9 @@ test("buildDashboardHtml renders complete, partial, and unavailable API equivale
     total: { estimatedUsd: 1.255, pricedApiRequestCount: 5, unpricedApiRequestCount: 1 },
   }, "2026-08-14");
   const topStats = partial.match(/<section class="stats">([\s\S]*?)<\/section>/)?.[1] ?? "";
-  assert.equal((topStats.match(/<article/g) ?? []).length, 5);
+  assert.equal((topStats.match(/<article/g) ?? []).length, 4);
+  assert.match(topStats, /<h2>周评分<\/h2>/);
+  assert.doesNotMatch(topStats, /Latest 5h usage|Peak 5h usage/);
   assert.doesNotMatch(partial, /cost-stats/);
   assert.match(partial, /合计等效 API 成本/);
   assert.doesNotMatch(partial, /Claude 等效 API 成本/);

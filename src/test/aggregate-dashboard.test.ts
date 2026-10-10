@@ -204,6 +204,8 @@ test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", ()
   assert.match(html, /按真实时间戳绘制/);
   assert.match(html, /每日用户请求数对比/);
   assert.match(html, /按周聚合/);
+  assert.doesNotMatch(html, /id="weekly-score"/);
+  assert.doesNotMatch(html, /id="score-settings"/);
   // 7d 累计指标在排行榜与周表的表头都出现，bob 的累计值 70.0% 被渲染。
   assert.match(html, /7d 累计/);
   assert.match(html, /70\.0%/);
@@ -218,12 +220,28 @@ test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", ()
   assert.doesNotMatch(html, /Total API requests/);
   const peopleSection = html.match(/<section class="panel table-panel">[\s\S]*?<h2>多人对比<\/h2>[\s\S]*?<\/section>/)?.[0] ?? "";
   assert.notEqual(peopleSection, "");
+  assert.match(peopleSection, /<th>周评分<\/th>/);
+  assert.doesNotMatch(peopleSection, /5h Peak|5h Latest/);
   assert.doesNotMatch(peopleSection, /<th class="muted-col">API 请求<\/th>/);
   assert.match(html, /等效 API 成本/);
   assert.match(html, /≥ \$3\.50/);
   assert.match(html, /\$2\.50/);
   assert.match(html, /价格目录/);
   assert.doesNotMatch(html, /<h2>当前模型价格<\/h2>/);
+});
+
+test("多人对比显示逐周评分的平均值，任一周额度缺失时显示不可用", () => {
+  const weeks = [
+    { ...weeklyRows[0], week: "2026-05-18", userMessageCount: 200, sevenDayCumulativeUsagePct: 70 },
+    { ...weeklyRows[0], week: "2026-05-25", userMessageCount: 800, sevenDayCumulativeUsagePct: 280 },
+  ];
+  const peopleSection = (rows: typeof weeks) => buildAggregateDashboardHtml([], [dailyRows[0]], rows)
+    .match(/<section class="panel table-panel">[\s\S]*?<h2>多人对比<\/h2>[\s\S]*?<\/section>/)?.[0] ?? "";
+  assert.match(peopleSection(weeks), /<td><strong>150\.0<\/strong><\/td>/);
+  const missing = buildAggregateDashboardHtml([], [dailyRows[0]], [
+    weeks[0], { ...weeks[1], sevenDayCumulativeUsagePct: null },
+  ]);
+  assert.match(missing, /<td><strong>--<\/strong><\/td>/);
 });
 
 test("buildAggregateDashboardHtml renders unavailable and mixed pricing states", () => {

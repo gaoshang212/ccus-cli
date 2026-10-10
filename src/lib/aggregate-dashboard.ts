@@ -3,6 +3,7 @@ import { ChartSeriesSpec, ChartSpec, renderUplotChart, uplotBodyScripts, uplotHe
 import { roundNumber } from "./time";
 import { mergeApiEquivalentCosts } from "./api-equivalent-cost";
 import { API_PRICING_PAGE_FILE } from "./api-pricing-table";
+import { calculateWeeklyScore, DEFAULT_SCORE_SETTINGS } from "./weekly-score";
 
 /** 把多人 aggregate 行按 personKey 汇总成的一个人的总账。 */
 export interface AggregatePersonSummary {
@@ -493,7 +494,7 @@ function renderFiveHourUsageChart(people: AggregatePersonSummary[], detailRows: 
 }
 
 /** 按人渲染汇总表，给出消息、token、成本和 usage 核心指标。 */
-function renderPeopleLeaderboard(people: AggregatePersonSummary[]): string {
+function renderPeopleLeaderboard(people: AggregatePersonSummary[], weeklyRows: AggregatedWeeklyRow[]): string {
   if (people.length === 0) {
     return `
       <section class="panel table-panel">
@@ -508,20 +509,30 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[]): string {
     `;
   }
 
+  const scores = new Map<string, Array<number | null>>();
+  for (const row of weeklyRows) {
+    const values = scores.get(row.personKey) ?? [];
+    values.push(calculateWeeklyScore(row.userMessageCount, row.sevenDayCumulativeUsagePct, DEFAULT_SCORE_SETTINGS));
+    scores.set(row.personKey, values);
+  }
+  const scoreText = (personKey: string): string => {
+    const values = scores.get(personKey) ?? [];
+    if (values.length === 0 || values.some(value => value === null)) return "--";
+    return (values.reduce<number>((sum, value) => sum + (value ?? 0), 0) / values.length).toFixed(1);
+  };
   const rows = people
     .map(
       (person, index) => `
       <tr>
         <td class="rank">${index + 1}</td>
         <td><strong>${escapeHtml(person.personKey)}</strong></td>
+        <td><strong>${scoreText(person.personKey)}</strong></td>
         <td>${formatNumber(person.userMessageCount)}</td>
         <td>${formatTokensM(person.inputTokens)}</td>
         <td>${formatTokensM(person.outputTokens)}</td>
         <td>${formatTokensM(person.cacheReadInputTokens)}</td>
         <td>${escapeHtml(costDisplay(person.estimatedApiEquivalentCostUsd, person.pricedApiRequestCount, person.unpricedApiRequestCount))}</td>
         <td>${escapeHtml(person.pricingCatalogVersion ?? "--")}</td>
-        <td>${escapeHtml(statValue(person.fiveHourPeakUsagePct))}</td>
-        <td>${escapeHtml(statValue(person.fiveHourLatestUsagePct))}</td>
         <td>${escapeHtml(statValue(person.sevenDayPeakUsagePct))}</td>
         <td>${escapeHtml(statValue(person.sevenDayLatestUsagePct))}</td>
         <td>${escapeHtml(statValue(person.sevenDayCumulativeUsagePct))}</td>
@@ -537,7 +548,7 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[]): string {
           <p class="eyebrow">People</p>
           <h2>多人对比</h2>
         </div>
-        <p class="muted">按用户消息数降序排列，所有数字直接来自 daily/weekly 汇总。</p>
+        <p class="muted">按用户消息数降序排列；评分按周计算，多周取平均，缺失额度显示 --。</p>
       </div>
       <div class="table-wrap">
         <table>
@@ -545,14 +556,13 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[]): string {
             <tr>
               <th>#</th>
               <th>personKey</th>
+              <th>周评分</th>
               <th>消息</th>
               <th>Input tokens</th>
               <th>Output tokens</th>
               <th>Cache read tokens</th>
               <th>等效 API 成本</th>
               <th>价格目录</th>
-              <th>5h Peak</th>
-              <th>5h Latest</th>
               <th>7d Peak</th>
               <th>7d Latest</th>
               <th>7d 累计</th>
@@ -897,7 +907,7 @@ export function buildAggregateDashboardHtml(
           <a class="pricing-link" href="${API_PRICING_PAGE_FILE}" target="_blank" rel="noopener noreferrer">查看当前价格表</a>
         </article>
       </section>
-      ${renderPeopleLeaderboard(people)}
+      ${renderPeopleLeaderboard(people, weeklyRows)}
       ${renderSevenDayCumulativeChart(people)}
       ${renderFiveHourUsageChart(people, detailRows)}
       ${renderDailyUserRequestChart(people, dailyIndex, dateAxis)}
