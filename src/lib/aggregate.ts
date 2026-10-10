@@ -840,6 +840,7 @@ interface WeeklyAccumulator {
 /**
  * 展开 weekly.csv：不同机器的同人同天数据已在 selectDailyRepresentatives 层按 sessionId 去重分组，
  * 这里直接按 (person, 周) 把所有代表的 token / 计数累加上卷，usage 从该周所有代表事件重算。
+ * 出勤天数由 CSV 导出层提供，不从原始事件推算。
  */
 export function buildAggregatedWeeklyRows(bundles: Array<{ filePath: string; bundle: WeeklyExportBundle }>): AggregatedWeeklyRow[] {
   const repsMap = selectDailyRepresentatives(bundles);

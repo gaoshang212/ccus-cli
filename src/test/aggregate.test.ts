@@ -443,10 +443,10 @@ test("aggregate loaders and csv builders support multi-person bundle json input"
     assert.match(dailyCsv, /,2,1,0\.0003,0\.00004,0\.00002,/);
     assert.match(dailyCsv, /,1,1,,$/m);
     assert.match(dailyCsv, /,10,10,35,30,/);
-    assert.match(weeklyCsv, /^personKey,week,userMessageCount,apiRequestCount,inputTokensM,outputTokensM,cacheReadInputTokensM,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayPeakUsagePct,sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions,uniqueWorkspaces,estimatedApiEquivalentCostUsd,pricingCatalogVersion,weeklyScore$/m);
+    assert.match(weeklyCsv, /^personKey,week,userMessageCount,apiRequestCount,inputTokensM,outputTokensM,cacheReadInputTokensM,sampleCount,fiveHourPeakUsagePct,fiveHourLatestUsagePct,sevenDayPeakUsagePct,sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions,uniqueWorkspaces,estimatedApiEquivalentCostUsd,pricingCatalogVersion,weeklyScore,attendanceDays$/m);
     // bob weekly：input 800 → 0.0008，output 90 → 0.00009，cache 30 → 0.00003。
     assert.match(weeklyCsv, /,4,2,0\.0008,0\.00009,0\.00003,/);
-    assert.match(weeklyCsv, /,1,1,,,$/m);
+    assert.match(weeklyCsv, /,1,1,,,,5$/m);
     assert.match(weeklyCsv, /,15,15,50,45,/);
   } finally {
     await fs.rm(root, { recursive: true, force: true });

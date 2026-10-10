@@ -306,7 +306,7 @@ export interface SyncState {
   lastArchivedWeek?: string;
 }
 
-/** 多人按周汇总行。 */
+/** 多人按周汇总行；weeklyScore、attendanceDays 在 CSV 输出时派生。 */
 export interface AggregatedWeeklyRow {
   personKey: string;
   week: string;

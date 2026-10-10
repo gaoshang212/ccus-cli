@@ -3,7 +3,8 @@ import { ChartSeriesSpec, ChartSpec, renderUplotChart, uplotBodyScripts, uplotHe
 import { roundNumber } from "./time";
 import { mergeApiEquivalentCosts } from "./api-equivalent-cost";
 import { API_PRICING_PAGE_FILE } from "./api-pricing-table";
-import { calculateWeeklyScore, DEFAULT_SCORE_SETTINGS } from "./weekly-score";
+import { attendanceScoreScript, renderAttendanceControl, renderAttendanceScore } from "./weekly-score";
+import { buildAggregatedWeeklyCsv } from "./export";
 
 /** 把多人 aggregate 行按 personKey 汇总成的一个人的总账。 */
 export interface AggregatePersonSummary {
@@ -509,24 +510,20 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[], weeklyRows: A
     `;
   }
 
-  const scores = new Map<string, Array<number | null>>();
+  const scores = new Map<string, AggregatedWeeklyRow[]>();
   for (const row of weeklyRows) {
     const values = scores.get(row.personKey) ?? [];
-    values.push(calculateWeeklyScore(row.userMessageCount, row.sevenDayCumulativeUsagePct, DEFAULT_SCORE_SETTINGS));
+    values.push(row);
     scores.set(row.personKey, values);
   }
-  const scoreText = (personKey: string): string => {
-    const values = scores.get(personKey) ?? [];
-    if (values.length === 0 || values.some(value => value === null)) return "--";
-    return (values.reduce<number>((sum, value) => sum + (value ?? 0), 0) / values.length).toFixed(1);
-  };
   const rows = people
     .map(
       (person, index) => `
       <tr>
         <td class="rank">${index + 1}</td>
         <td><strong>${escapeHtml(person.personKey)}</strong></td>
-        <td><strong>${scoreText(person.personKey)}</strong></td>
+        <td><strong>${renderAttendanceScore(scores.get(person.personKey) ?? [])}</strong></td>
+        <td>${renderAttendanceControl(person.personKey)}</td>
         <td>${formatNumber(person.userMessageCount)}</td>
         <td>${formatTokensM(person.inputTokens)}</td>
         <td>${formatTokensM(person.outputTokens)}</td>
@@ -549,6 +546,8 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[], weeklyRows: A
           <h2>多人对比</h2>
         </div>
         <p class="muted">按用户消息数降序排列；评分按周计算，多周取平均，缺失额度显示 --。</p>
+        ${renderAttendanceControl()}
+        <button type="button" id="export-weekly-csv">导出周统计 CSV</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -557,6 +556,7 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[], weeklyRows: A
               <th>#</th>
               <th>personKey</th>
               <th>周评分</th>
+              <th>出勤天数</th>
               <th>消息</th>
               <th>Input tokens</th>
               <th>Output tokens</th>
@@ -574,6 +574,39 @@ function renderPeopleLeaderboard(people: AggregatePersonSummary[], weeklyRows: A
       </div>
     </section>
   `;
+}
+
+function weeklyCsvDownloadScript(rows: AggregatedWeeklyRow[]): string {
+  const header = buildAggregatedWeeklyCsv([]);
+  const data = rows.map(row => ({
+    personKey: row.personKey,
+    csv: [1, 2, 3, 4, 5, 6, 7].map(days => buildAggregatedWeeklyCsv([row], days).slice(header.length + 1)),
+  }));
+  // 防止用户字段闭合内联脚本；CSV 转义和公式防护复用导出模块。
+  const serialized = JSON.stringify({ header, rows: data }).replaceAll("<", "\\u003c");
+  return `<script>
+    (() => {
+      const button = document.getElementById('export-weekly-csv');
+      if (!button) return;
+      const data = ${serialized};
+      button.addEventListener('click', () => {
+        const attendance = new Map();
+        document.querySelectorAll('[data-attendance-person]').forEach(control => {
+          const days = Number(control.value);
+          attendance.set(control.dataset.attendancePerson, Number.isInteger(days) && days >= 1 && days <= 7 ? days : 5);
+        });
+        const csv = [data.header, ...data.rows.map(row => row.csv[(attendance.get(row.personKey) ?? 5) - 1])].join('\\n');
+        const url = URL.createObjectURL(new Blob(['\\uFEFF', csv], { type: 'text/csv;charset=utf-8' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'weekly.csv';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      });
+    })();
+  </script>`;
 }
 
 /** 把 daily 行按 personKey × date 排成一个矩阵表。 */
@@ -914,6 +947,8 @@ export function buildAggregateDashboardHtml(
       ${renderDailyMatrix(people, dailyIndex, dateAxis)}
       ${renderWeeklyTable(weeklyRows)}
     </main>
+    ${attendanceScoreScript()}
+    ${weeklyCsvDownloadScript(weeklyRows)}
     ${uplotBodyScripts()}
   </body>
 </html>`;

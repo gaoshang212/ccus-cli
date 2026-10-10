@@ -262,7 +262,7 @@ export function buildAggregatedDailyCsv(rows: AggregatedDailyRow[]): string {
 }
 
 /** 多人汇总的 weekly.csv。 */
-export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
+export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[], attendanceDays = 5): string {
   const header = [
     "personKey",
     "week",
@@ -282,9 +282,10 @@ export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
     "estimatedApiEquivalentCostUsd",
     "pricingCatalogVersion",
     "weeklyScore",
+    "attendanceDays",
   ];
   const lines = rows.map((row) => {
-    const score = calculateWeeklyScore(row.userMessageCount, row.sevenDayCumulativeUsagePct, DEFAULT_SCORE_SETTINGS);
+    const score = calculateWeeklyScore(row.userMessageCount, row.sevenDayCumulativeUsagePct, DEFAULT_SCORE_SETTINGS, attendanceDays);
     return toCsvLine([
       row.personKey,
       row.week,
@@ -304,6 +305,7 @@ export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
       formatApiEquivalentCost(row.estimatedApiEquivalentCostUsd),
       row.pricingCatalogVersion,
       score === null ? null : Number(score.toFixed(1)),
+      attendanceDays,
     ]);
   });
   return [header.join(","), ...lines].join("\n");

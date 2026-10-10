@@ -623,7 +623,7 @@ async function handleAggregate(options: CliOptions): Promise<void> {
   debugLog("aggregate", "bundles loaded", { bundleCount: bundles.length, detailRows: detailRows.length, dailyRows: dailyRows.length, weeklyRows: weeklyRows.length });
   const detailCsv = buildAggregatedDetailCsv(detailRows);
   const dailyCsv = buildAggregatedDailyCsv(dailyRows);
-  const weeklyCsv = buildAggregatedWeeklyCsv(weeklyRows);
+  const weeklyCsv = buildAggregatedWeeklyCsv(weeklyRows, 5);
 
   const detailPath = path.join(outputDir, "detail.csv");
   const dailyPath = path.join(outputDir, "daily.csv");

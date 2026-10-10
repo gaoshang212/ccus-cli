@@ -17,16 +17,60 @@ export interface WeeklyScoreRow {
   sevenDayCumulativeUsagePct: number | null;
 }
 
-export function calculateWeeklyScore(messages: number, quota: number | null, settings: ScoreSettings): number | null {
+export function calculateWeeklyScore(messages: number, quota: number | null, settings: ScoreSettings, attendanceDays = 5): number | null {
   const { messageWeight, messageBaseline, quotaBaseline } = settings;
-  if (!Number.isFinite(messageWeight) || messageWeight < 0 || messageWeight > 100
+  if (!Number.isInteger(attendanceDays) || attendanceDays < 1 || attendanceDays > 7
+    || !Number.isFinite(messageWeight) || messageWeight < 0 || messageWeight > 100
     || !Number.isFinite(messageBaseline) || messageBaseline <= 0
     || !Number.isFinite(quotaBaseline) || quotaBaseline <= 0
     || !Number.isFinite(messages) || messages < 0
     || (quota !== null && (!Number.isFinite(quota) || quota < 0))) return null;
   if (quota === null && messageWeight < 100) return null;
-  return messageWeight * Math.sqrt(messages / messageBaseline)
-    + (100 - messageWeight) * Math.sqrt((quota ?? 0) / quotaBaseline);
+  const attendanceRatio = attendanceDays / 5;
+  return messageWeight * Math.sqrt(messages / (messageBaseline * attendanceRatio))
+    + (100 - messageWeight) * Math.sqrt((quota ?? 0) / (quotaBaseline * attendanceRatio));
+}
+
+export function renderAttendanceControl(personKey?: string): string {
+  const attributes = personKey === undefined ? 'id="attendance-days"' : `data-attendance-person="${escapeHtml(personKey)}" aria-label="出勤天数"`;
+  const select = `<select ${attributes}>${[1, 2, 3, 4, 5, 6, 7].map(days =>
+    `<option value="${days}"${days === 5 ? " selected" : ""}>${days} 天</option>`).join("")}</select>`;
+  return personKey === undefined ? `<label>出勤天数 ${select}</label>` : select;
+}
+
+/** 多周逐周评分后取平均；浏览器切换预先按各出勤天数算好的结果。 */
+export function renderAttendanceScore(rows: Pick<WeeklyScoreRow, "userMessageCount" | "sevenDayCumulativeUsagePct">[]): string {
+  const scores = [1, 2, 3, 4, 5, 6, 7].map(days => {
+    const values = rows.map(row => calculateWeeklyScore(row.userMessageCount, row.sevenDayCumulativeUsagePct, DEFAULT_SCORE_SETTINGS, days));
+    if (!values.length || values.some(value => value === null)) return "--";
+    return (values.reduce<number>((sum, value) => sum + (value ?? 0), 0) / values.length).toFixed(1);
+  });
+  return `<span data-attendance-scores="${escapeHtml(JSON.stringify(scores))}">${scores[4]}</span>`;
+}
+
+export function attendanceScoreScript(): string {
+  return `<script>
+    (() => {
+      const select = document.getElementById('attendance-days');
+      if (!select) return;
+      select.addEventListener('change', () => {
+        const days = Number(select.value);
+        if (!Number.isInteger(days) || days < 1 || days > 7) return;
+        document.querySelectorAll('[data-attendance-scores]').forEach(element => {
+          element.textContent = JSON.parse(element.dataset.attendanceScores)[days - 1];
+        });
+        document.querySelectorAll('[data-attendance-person]').forEach(element => { element.value = select.value; });
+      });
+      document.querySelectorAll('[data-attendance-person]').forEach(control => {
+        control.addEventListener('change', () => {
+          const days = Number(control.value);
+          if (!Number.isInteger(days) || days < 1 || days > 7) return;
+          const score = control.closest('tr').querySelector('[data-attendance-scores]');
+          score.textContent = JSON.parse(score.dataset.attendanceScores)[days - 1];
+        });
+      });
+    })();
+  </script>`;
 }
 
 function escapeHtml(value: string): string {

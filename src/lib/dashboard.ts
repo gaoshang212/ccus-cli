@@ -4,7 +4,7 @@ import { ChartSpec, renderUplotChart, uplotBodyScripts, uplotHeadAssets } from "
 import { API_PRICING_PAGE_FILE } from "./api-pricing-table";
 import { isCodexSourceEvent } from "./payload";
 import { formatLocalTimestamp, localDateKey, parseDayStart, resolveRange, roundNumber } from "./time";
-import { calculateWeeklyScore, DEFAULT_SCORE_SETTINGS, WeeklyScoreRow } from "./weekly-score";
+import { attendanceScoreScript, renderAttendanceControl, renderAttendanceScore, WeeklyScoreRow } from "./weekly-score";
 
 export function buildPersonalWeeklyScores(events: StatuslineEvent[], messages: DashboardDailyMessagePoint[], dayStart: string): WeeklyScoreRow[] {
   const dayStartMinutes = parseDayStart(dayStart);
@@ -374,9 +374,6 @@ export function buildDashboardHtml(
   const combinedUserMessages = totalUserMessages + codexTotalUserMessages;
   const scoreWeek = localDateKey(resolveRange("this-week", end, parseDayStart(dayStart)).start);
   const scoreRow = buildPersonalWeeklyScores(events, dailyUserMessages, dayStart).find(row => row.week === scoreWeek);
-  const weeklyScore = scoreRow
-    ? calculateWeeklyScore(scoreRow.userMessageCount, scoreRow.sevenDayCumulativeUsagePct, DEFAULT_SCORE_SETTINGS)
-    : null;
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -557,7 +554,8 @@ export function buildDashboardHtml(
       <section class="stats">
         <article class="panel stat-card" id="weekly-score">
           <h2>周评分</h2>
-          <p class="stat-value">${weeklyScore?.toFixed(1) ?? "--"}</p>
+          <p class="stat-value">${renderAttendanceScore(scoreRow ? [scoreRow] : [])}</p>
+          ${renderAttendanceControl()}
           <p class="stat-note">${scoreWeek} 当周 · 当前查询范围内数据</p>
         </article>
         <article class="panel stat-card">
@@ -577,6 +575,7 @@ export function buildDashboardHtml(
       ${renderDailyMessages(dailyUserMessages)}
       ${renderRecentEvents(events)}
     </main>
+    ${attendanceScoreScript()}
     ${uplotBodyScripts()}
   </body>
 </html>`;

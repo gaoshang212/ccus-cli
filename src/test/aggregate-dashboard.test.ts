@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { runInNewContext } from "node:vm";
+import { buildAggregatedWeeklyCsv } from "../lib/export";
 import { alignTimeSeries, buildAggregateDashboardHtml, summarizeOverall, summarizePeople } from "../lib/aggregate-dashboard";
 import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow } from "../types";
 
@@ -237,11 +239,73 @@ test("多人对比显示逐周评分的平均值，任一周额度缺失时显�
   ];
   const peopleSection = (rows: typeof weeks) => buildAggregateDashboardHtml([], [dailyRows[0]], rows)
     .match(/<section class="panel table-panel">[\s\S]*?<h2>多人对比<\/h2>[\s\S]*?<\/section>/)?.[0] ?? "";
-  assert.match(peopleSection(weeks), /<td><strong>150\.0<\/strong><\/td>/);
+  assert.match(peopleSection(weeks), /<td><strong><span[^>]*>150\.0<\/span><\/strong><\/td>/);
+  assert.match(peopleSection(weeks), /出勤天数 <select id="attendance-days">/);
   const missing = buildAggregateDashboardHtml([], [dailyRows[0]], [
     weeks[0], { ...weeks[1], sevenDayCumulativeUsagePct: null },
   ]);
-  assert.match(missing, /<td><strong>--<\/strong><\/td>/);
+  assert.match(missing, /<td><strong><span[^>]*>--<\/span><\/strong><\/td>/);
+});
+
+test("团队逐人调整出勤，批量重置，并按每周原始行导出当前评分 CSV", async () => {
+  const weeks = [
+    { ...weeklyRows[0], userMessageCount: 120, sevenDayCumulativeUsagePct: 42 },
+    { ...weeklyRows[0], week: "2026-06-01", userMessageCount: 480, sevenDayCumulativeUsagePct: 168 },
+    { ...weeklyRows[1], userMessageCount: 240, sevenDayCumulativeUsagePct: 84 },
+  ];
+  const html = buildAggregateDashboardHtml([], dailyRows, weeks);
+  assert.match(html, /id="export-weekly-csv"/);
+  const controls = [...html.matchAll(/<tr>\s*<td class="rank">[\s\S]*?<\/tr>/g)].map(([row]) => {
+    const score = {
+      dataset: { attendanceScores: row.match(/data-attendance-scores="([^"]+)"/)![1].replaceAll('&quot;', '"') },
+      textContent: "",
+    };
+    return {
+      value: "5", dataset: { attendancePerson: row.match(/data-attendance-person="([^"]+)"/)![1] },
+      change: () => {}, score,
+      addEventListener(_event: string, callback: () => void) { this.change = callback; },
+      closest: () => ({ querySelector: () => score }),
+    };
+  });
+  assert.equal(controls.length, 2);
+  let batchChange = () => {};
+  let download = () => {};
+  let blob: Blob | undefined;
+  let clicked = false;
+  const batch = { value: "5", addEventListener: (_: string, callback: () => void) => { batchChange = callback; } };
+  const link = { href: "", download: "", click: () => { clicked = true; }, remove: () => {} };
+  const context = {
+    Blob, URL: { createObjectURL: (value: Blob) => { blob = value; return 'blob:test'; }, revokeObjectURL: () => {} },
+    setTimeout: (callback: () => void) => callback(),
+    document: {
+      getElementById: (id: string) => id === 'attendance-days' ? batch : { addEventListener: (_: string, callback: () => void) => { download = callback; } },
+      querySelectorAll: (selector: string) => selector === '[data-attendance-person]' ? controls : controls.map(control => control.score),
+      createElement: () => link, body: { appendChild: () => {} },
+    },
+  };
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match => match[1]);
+  runInNewContext(scripts.find(script => script.includes("const select = document.getElementById('attendance-days')"))!, context);
+  runInNewContext(scripts.find(script => script.includes("const button = document.getElementById('export-weekly-csv')"))!, context);
+  const alice = controls.find(control => control.dataset.attendancePerson === weeks[0].personKey)!;
+  const bob = controls.find(control => control.dataset.attendancePerson === weeks[2].personKey)!;
+  batch.value = "7";
+  batchChange();
+  assert.ok(controls.every(control => control.value === "7"));
+  const bobScore = bob.score.textContent;
+  alice.value = "3";
+  alice.change();
+  assert.equal(alice.score.textContent, "150.0");
+  assert.equal(bob.score.textContent, bobScore);
+  download();
+  assert.ok(clicked);
+  assert.equal(link.download, "weekly.csv");
+  const expected = buildAggregatedWeeklyCsv(weeks.slice(0, 2), 3) + '\n' + buildAggregatedWeeklyCsv([weeks[2]], 7).split('\n').slice(1).join('\n');
+  assert.equal(await blob!.text(), expected);
+  assert.deepEqual((await blob!.text()).split('\n').slice(1).map(row => row.split(',').at(-1)), ['3', '3', '7']);
+  batch.value = "5";
+  batchChange();
+  download();
+  assert.equal(await blob!.text(), buildAggregatedWeeklyCsv(weeks));
 });
 
 test("buildAggregateDashboardHtml renders unavailable and mixed pricing states", () => {

@@ -22,9 +22,11 @@
 
 个人和聚合面板均提供「周评分」：默认 `50 × √(周消息数 / 200) + 50 × √(周累计额度百分点 / 70)`，消息和额度均合计 Claude + Codex。两项达到基准得 100 分，分数不封顶。
 
-面板只显示评分结果。权重和基准集中在 `src/lib/weekly-score.ts` 的 `DEFAULT_SCORE_SETTINGS` 修改：`messageWeight` 为消息占比（额度占比为 100 减去消息占比），`messageBaseline` 为周消息基准，`quotaBaseline` 为周额度基准。修改后重新构建并重启面板服务。
+个人和团队面板提供「出勤天数」选择，默认 5 天，可选 1～7 天，切换后立即更新评分。消息和额度达标线按 `出勤天数 / 5` 调整，原始统计值不变；例如 3 天对应 120 条消息、42 个额度百分点。团队顶部选择批量设置所有成员，每行可单独调整，该成员所展示的各周共用所选天数；刷新页面恢复 5 天。点击「导出周统计 CSV」下载按当前各成员出勤天数评分的 `weekly.csv`，保留现有列，多周逐周导出。命令行导出仍按默认 5 天评分。
 
-评分按当前查询范围逐周计算，未满一周不折算；查看本周评分请使用 `ccus dashboard serve --range this-week`。聚合面板在「多人对比」中显示周评分，多周取逐周评分的平均值。额度缺失显示 `--`（消息占比为 100% 时可单独评分）。`weekly.csv` 末尾增加 `weeklyScore` 列，与看板共用评分公式和配置，保留最多 1 位小数，不可用时留空；bundle、`daily.csv` 和 `detail.csv` 不变。
+权重和标准 5 天基准集中在 `src/lib/weekly-score.ts` 的 `DEFAULT_SCORE_SETTINGS` 修改：`messageWeight` 为消息占比（额度占比为 100 减去消息占比），`messageBaseline` 为周消息基准，`quotaBaseline` 为周额度基准。修改后重新构建并重启面板服务。
+
+评分按当前查询范围逐周计算，未满一周不折算；查看本周评分请使用 `ccus dashboard serve --range this-week`。聚合面板在「多人对比」中显示周评分，多周取逐周评分的平均值。额度缺失显示 `--`（消息占比为 100% 时可单独评分）。`weekly.csv` 末尾包含 `weeklyScore`、`attendanceDays` 两列：评分与看板共用公式，保留最多 1 位小数，不可用时留空；出勤天数为 1～7，看板导出使用各成员当前选择，命令行默认 5 天。bundle、`daily.csv` 和 `detail.csv` 不变。
 
 ## 安装
 

@@ -174,6 +174,8 @@ test("buildDashboardHtml renders complete, partial, and unavailable API equivale
   const topStats = partial.match(/<section class="stats">([\s\S]*?)<\/section>/)?.[1] ?? "";
   assert.equal((topStats.match(/<article/g) ?? []).length, 4);
   assert.match(topStats, /<h2>周评分<\/h2>/);
+  assert.match(topStats, /出勤天数 <select id="attendance-days">/);
+  assert.match(topStats, /data-attendance-scores=/);
   assert.doesNotMatch(topStats, /Latest 5h usage|Peak 5h usage/);
   assert.doesNotMatch(partial, /cost-stats/);
   assert.match(partial, /合计等效 API 成本/);
