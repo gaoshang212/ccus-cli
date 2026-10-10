@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { gzip } from "node:zlib";
 import { AggregatedDailyRow, AggregatedEventRow, AggregatedWeeklyRow, ExportSummaryRow, PersistedStatuslineEvent, StatuslineEvent, WeeklyExportBundle, WeeklyExportSummary } from "../types";
 import { DEFAULT_DAY_START_MINUTES, reportingDateKey, roundNumber } from "./time";
+import { calculateWeeklyScore, DEFAULT_SCORE_SETTINGS } from "./weekly-score";
 
 const gzipAsync = promisify(gzip);
 
@@ -280,9 +281,11 @@ export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
     "uniqueWorkspaces",
     "estimatedApiEquivalentCostUsd",
     "pricingCatalogVersion",
+    "weeklyScore",
   ];
-  const lines = rows.map((row) =>
-    toCsvLine([
+  const lines = rows.map((row) => {
+    const score = calculateWeeklyScore(row.userMessageCount, row.sevenDayCumulativeUsagePct, DEFAULT_SCORE_SETTINGS);
+    return toCsvLine([
       row.personKey,
       row.week,
       row.userMessageCount,
@@ -300,8 +303,9 @@ export function buildAggregatedWeeklyCsv(rows: AggregatedWeeklyRow[]): string {
       row.uniqueWorkspaces,
       formatApiEquivalentCost(row.estimatedApiEquivalentCostUsd),
       row.pricingCatalogVersion,
-    ]),
-  );
+      score === null ? null : Number(score.toFixed(1)),
+    ]);
+  });
   return [header.join(","), ...lines].join("\n");
 }
 

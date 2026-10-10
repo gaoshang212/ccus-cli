@@ -195,7 +195,7 @@ test("buildWeeklyExportBundleJson includes raw events and daily summaries", () =
 });
 
 /** daily/weekly CSV 都要在 7d latest 之后带上 sevenDayCumulativeUsagePct 列，格式与现有 usage 列一致。 */
-test("aggregated daily/weekly csv keep only amount and catalog as trailing cost columns", () => {
+test("聚合 CSV 保留成本列，周表追加评分列", () => {
   const dailyRow: AggregatedDailyRow = {
     personKey: "alice",
     date: "2026-05-26",
@@ -243,22 +243,34 @@ test("aggregated daily/weekly csv keep only amount and catalog as trailing cost 
   const weeklyCsv = buildAggregatedWeeklyCsv([weeklyRow]);
 
   assert.match(dailyCsv, /uniqueWorkspaces,estimatedApiEquivalentCostUsd,pricingCatalogVersion$/m);
-  assert.match(weeklyCsv, /uniqueWorkspaces,estimatedApiEquivalentCostUsd,pricingCatalogVersion$/m);
+  assert.match(weeklyCsv, /uniqueWorkspaces,estimatedApiEquivalentCostUsd,pricingCatalogVersion,weeklyScore$/m);
   assert.equal(dailyCsv.includes("pricedApiRequestCount"), false);
   assert.equal(dailyCsv.includes("unpricedApiRequestCount"), false);
   assert.match(dailyCsv, /,1,1,1\.234568,"2026-08-14"$/m);
-  assert.match(weeklyCsv, /,1,1,,"mixed"$/m);
+  assert.match(weeklyCsv, /,1,1,,"mixed",63\.2$/m);
 
   // 列顺序：sevenDayLatestUsagePct 之后紧跟 sevenDayCumulativeUsagePct，再到 uniqueSessions。
   assert.match(dailyCsv, /sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions/);
   assert.match(weeklyCsv, /sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions/);
-  // 累计值落在 7d latest(40) 与 uniqueSessions(1) 之间；金额和目录版本位于行尾。
+  // 累计值位于 7d latest 与 uniqueSessions 之间，周评分在成本列之后。
   assert.match(dailyCsv, /,40,80,1,1,1\.234568,"2026-08-14"$/m);
-  assert.match(weeklyCsv, /,40,95,1,1,,"mixed"$/m);
+  assert.match(weeklyCsv, /,40,95,1,1,,"mixed",63\.2$/m);
 
   // null 累计写空，与现有 usage 列一致。
   const nullCsv = buildAggregatedDailyCsv([{ ...dailyRow, sevenDayCumulativeUsagePct: null }]);
   assert.match(nullCsv, /,40,,1,1,1\.234568,"2026-08-14"$/m);
+
+  // 周评分使用整周汇总值，覆盖基准、超基准、零值和额度缺失。
+  const scoredCsv = buildAggregatedWeeklyCsv([
+    { ...weeklyRow, userMessageCount: 200, sevenDayCumulativeUsagePct: 70 },
+    { ...weeklyRow, userMessageCount: 800, sevenDayCumulativeUsagePct: 280 },
+    { ...weeklyRow, userMessageCount: 0, sevenDayCumulativeUsagePct: 0 },
+    { ...weeklyRow, userMessageCount: 200, sevenDayCumulativeUsagePct: null },
+  ]);
+  assert.deepEqual(scoredCsv.split("\n").slice(1).map(line => line.split(",").at(-1)), ["100", "200", "0", ""]);
+  assert.ok(scoredCsv.split("\n").every(line => line.split(",").length === 18));
+  assert.match(buildAggregatedWeeklyCsv([]), /,weeklyScore$/);
+  assert.doesNotMatch(dailyCsv, /weeklyScore/);
 });
 
 /** last-week 应该解析成上一个完整的周一到周日，与本周不重叠。 */

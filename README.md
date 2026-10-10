@@ -24,7 +24,7 @@
 
 面板只显示评分结果。权重和基准集中在 `src/lib/weekly-score.ts` 的 `DEFAULT_SCORE_SETTINGS` 修改：`messageWeight` 为消息占比（额度占比为 100 减去消息占比），`messageBaseline` 为周消息基准，`quotaBaseline` 为周额度基准。修改后重新构建并重启面板服务。
 
-评分按当前查询范围逐周计算，未满一周不折算；查看本周评分请使用 `ccus dashboard serve --range this-week`。聚合面板在「多人对比」中显示周评分，多周取逐周评分的平均值。额度缺失显示 `--`（消息占比为 100% 时可单独评分）。评分仅在页面展示，不改变 bundle 或 CSV。
+评分按当前查询范围逐周计算，未满一周不折算；查看本周评分请使用 `ccus dashboard serve --range this-week`。聚合面板在「多人对比」中显示周评分，多周取逐周评分的平均值。额度缺失显示 `--`（消息占比为 100% 时可单独评分）。`weekly.csv` 末尾增加 `weeklyScore` 列，与看板共用评分公式和配置，保留最多 1 位小数，不可用时留空；bundle、`daily.csv` 和 `detail.csv` 不变。
 
 ## 安装
 
