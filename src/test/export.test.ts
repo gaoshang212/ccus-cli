@@ -270,7 +270,7 @@ test("聚合 CSV 保留成本列，周表追加评分列", () => {
   assert.deepEqual(scoredCsv.split("\n").slice(1).map(line => line.split(",").at(-2)), ["100", "200", "0", ""]);
   assert.ok(scoredCsv.split("\n").every(line => line.split(",").length === 19));
   assert.match(buildAggregatedWeeklyCsv([]), /,weeklyScore,attendanceDays$/);
-  for (const days of [1, 3, 7]) {
+  for (const days of [0.5, 1, 3, 3.5, 6.5, 7]) {
     const csv = buildAggregatedWeeklyCsv([{ ...weeklyRow, userMessageCount: 40 * days, sevenDayCumulativeUsagePct: 14 * days }], days);
     assert.ok(csv.endsWith(`,100,${days}`));
   }

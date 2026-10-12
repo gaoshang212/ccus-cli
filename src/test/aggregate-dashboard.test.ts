@@ -302,6 +302,15 @@ test("团队逐人调整出勤，批量重置，并按每周原始行导出当�
   const expected = buildAggregatedWeeklyCsv(weeks.slice(0, 2), 3) + '\n' + buildAggregatedWeeklyCsv([weeks[2]], 7).split('\n').slice(1).join('\n');
   assert.equal(await blob!.text(), expected);
   assert.deepEqual((await blob!.text()).split('\n').slice(1).map(row => row.split(',').at(-1)), ['3', '3', '7']);
+  batch.value = "6.5";
+  batchChange();
+  assert.ok(controls.every(control => control.value === "6.5"));
+  alice.value = "0.5";
+  alice.change();
+  assert.equal(alice.score.textContent, "367.4");
+  download();
+  assert.equal(await blob!.text(), buildAggregatedWeeklyCsv(weeks.slice(0, 2), 0.5) + '\n'
+    + buildAggregatedWeeklyCsv([weeks[2]], 6.5).split('\n').slice(1).join('\n'));
   batch.value = "5";
   batchChange();
   download();

@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import { attendanceScoreScript, calculateWeeklyScore, DEFAULT_SCORE_SETTINGS, renderAttendanceControl, renderAttendanceScore, renderWeeklyScores } from "../lib/weekly-score";
 
-test("出勤按比例调整两项达标线，默认五天且只接受一至七天", () => {
-  for (let days = 1; days <= 7; days++) {
+test("出勤按比例调整两项达标线，默认五天且接受半天至七天、步进半天", () => {
+  for (let days = 0.5; days <= 7; days += 0.5) {
     assert.equal(calculateWeeklyScore(40 * days, 14 * days, DEFAULT_SCORE_SETTINGS, days), 100);
   }
   assert.equal(calculateWeeklyScore(200, 70, DEFAULT_SCORE_SETTINGS, 5), calculateWeeklyScore(200, 70, DEFAULT_SCORE_SETTINGS));
-  for (const days of [0, 8, 1.5, NaN, Infinity]) {
+  for (const days of [0, 0.25, 1.25, 7.5, 8, NaN, Infinity]) {
     assert.equal(calculateWeeklyScore(200, 70, DEFAULT_SCORE_SETTINGS, days), null);
   }
 });
@@ -38,12 +38,19 @@ test("出勤选择更新单周及多周平均分，保留缺失额度，切回�
   select.value = "3";
   change();
   assert.deepEqual(elements.map(element => element.textContent), ["100.0", "150.0", "--", "--"]);
+  select.value = "0.5";
+  change();
+  assert.deepEqual(elements.map(element => element.textContent), ["244.9", "367.4", "--", "--"]);
+  select.value = "1.25";
+  change();
+  assert.equal(elements[0].textContent, "244.9");
   select.value = "5";
   change();
   assert.deepEqual(elements.map(element => element.textContent), defaults);
   assert.equal(JSON.stringify(rows), original);
   const control = renderAttendanceControl();
-  assert.equal((control.match(/<option /g) ?? []).length, 7);
+  assert.deepEqual([...control.matchAll(/<option value="([^"]+)"/g)].map(match => Number(match[1])),
+    [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7]);
   assert.match(control, /value="5" selected/);
 });
 

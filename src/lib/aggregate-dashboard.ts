@@ -3,7 +3,7 @@ import { ChartSeriesSpec, ChartSpec, renderUplotChart, uplotBodyScripts, uplotHe
 import { roundNumber } from "./time";
 import { mergeApiEquivalentCosts } from "./api-equivalent-cost";
 import { API_PRICING_PAGE_FILE } from "./api-pricing-table";
-import { attendanceScoreScript, renderAttendanceControl, renderAttendanceScore } from "./weekly-score";
+import { ATTENDANCE_DAYS, attendanceScoreScript, renderAttendanceControl, renderAttendanceScore } from "./weekly-score";
 import { buildAggregatedWeeklyCsv } from "./export";
 
 /** 把多人 aggregate 行按 personKey 汇总成的一个人的总账。 */
@@ -580,7 +580,7 @@ function weeklyCsvDownloadScript(rows: AggregatedWeeklyRow[]): string {
   const header = buildAggregatedWeeklyCsv([]);
   const data = rows.map(row => ({
     personKey: row.personKey,
-    csv: [1, 2, 3, 4, 5, 6, 7].map(days => buildAggregatedWeeklyCsv([row], days).slice(header.length + 1)),
+    csv: ATTENDANCE_DAYS.map(days => buildAggregatedWeeklyCsv([row], days).slice(header.length + 1)),
   }));
   // 防止用户字段闭合内联脚本；CSV 转义和公式防护复用导出模块。
   const serialized = JSON.stringify({ header, rows: data }).replaceAll("<", "\\u003c");
@@ -593,9 +593,9 @@ function weeklyCsvDownloadScript(rows: AggregatedWeeklyRow[]): string {
         const attendance = new Map();
         document.querySelectorAll('[data-attendance-person]').forEach(control => {
           const days = Number(control.value);
-          attendance.set(control.dataset.attendancePerson, Number.isInteger(days) && days >= 1 && days <= 7 ? days : 5);
+          attendance.set(control.dataset.attendancePerson, Number.isInteger(days * 2) && days >= 0.5 && days <= 7 ? days : 5);
         });
-        const csv = [data.header, ...data.rows.map(row => row.csv[(attendance.get(row.personKey) ?? 5) - 1])].join('\\n');
+        const csv = [data.header, ...data.rows.map(row => row.csv[(attendance.get(row.personKey) ?? 5) * 2 - 1])].join('\\n');
         const url = URL.createObjectURL(new Blob(['\\uFEFF', csv], { type: 'text/csv;charset=utf-8' }));
         const link = document.createElement('a');
         link.href = url;
