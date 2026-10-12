@@ -71,6 +71,22 @@ export function resolveRange(range: string | undefined, now = new Date(), daySta
   const raw = (range ?? "5h").trim().toLowerCase();
   const normalized = RANGE_ALIASES[raw] ?? raw;
 
+  if (normalized.startsWith("week:")) {
+    const dateKey = normalized.slice(5);
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+    if (!match) throw new Error("指定周的日期必须是 YYYY-MM-DD，例如 2026-09-28。");
+    const date = new Date(0);
+    date.setFullYear(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    date.setHours(0, dayStartMinutes, 0, 0);
+    if (localDateKey(date) !== dateKey) throw new Error(`无效的周日期：${dateKey}。`);
+    return {
+      label: normalized,
+      start: startOfLocalWeek(date, dayStartMinutes),
+      end: endOfLocalWeek(date, dayStartMinutes),
+      dayStartMinutes,
+    };
+  }
+
   if (normalized === "today") {
     return { label: "today", start: startOfReportingDay(now, dayStartMinutes), end: now, dayStartMinutes };
   }

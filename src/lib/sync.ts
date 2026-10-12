@@ -218,10 +218,19 @@ async function exportAndCopy(
  * 用 `sync-state.lastArchivedWeek` 去重，避免周一当天每次同步都重复归档。
  * 失败时写 error 状态后向上抛，由调用方决定展示或静默。
  */
-export async function performSync(dataDir: string, runExport: RunExport, now: Date = new Date()): Promise<SyncResult> {
+export async function performSync(dataDir: string, runExport: RunExport, now: Date = new Date(), week?: string): Promise<SyncResult> {
   const config = readSyncConfig(dataDir);
   if (!config.targetDir) {
     throw new Error("未配置同步目标目录。请先运行 `ccus sync config --target DIR`。");
+  }
+
+  // 补同步独立执行，不推迟自动同步，也不触发周一归档。
+  if (week !== undefined) {
+    const dayStartMinutes = parseDayStart((await readConfig(dataDir)).dayStart);
+    const range = `week:${week}`;
+    resolveRange(range, now, dayStartMinutes);
+    const primary = await exportAndCopy(dataDir, runExport, config.targetDir, range, config.suffix);
+    return { ...primary, archivedLastWeekDest: null };
   }
 
   const state = readSyncStateSync(dataDir);

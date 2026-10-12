@@ -1,8 +1,12 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { gunzipSync } from "node:zlib";
+import { main } from "../cli";
+import { resolveRange } from "../lib/time";
+import { appendEvent } from "../lib/storage";
 import { SyncConfig } from "../types";
 import {
   applyFileSuffix,
@@ -15,6 +19,94 @@ import {
   sanitizeSuffix,
   writeSyncConfig,
 } from "../lib/sync";
+
+test("补同步只导出指定周，覆盖目标副本并保留配置和自动同步状态", async () => {
+  const root = await makeTempDir("ccus-resync-");
+  try {
+    const targetDir = path.join(root, "target");
+    await writeSyncConfig(root, { targetDir, intervalLabel: "3h", range: "this-week", suffix: "office" });
+    const configBefore = await fs.readFile(path.join(root, "sync-config.json"), "utf8");
+    const statePath = path.join(root, "sync-state.json");
+    const stateBefore = JSON.stringify({ lastSyncedAt: "2026-10-12T00:00:00Z", lastResult: "ok", lastArchivedWeek: "old" });
+    await fs.writeFile(statePath, stateBefore);
+    const now = new Date(2026, 9, 12, 10);
+    let exports = 0;
+    const runExport = async (opts: Record<string, string | boolean | undefined>) => {
+      assert.equal(opts.range, "week:2026-09-30");
+      const window = resolveRange(String(opts.range), now);
+      const outputPath = path.join(root, "test.json.gz");
+      await fs.writeFile(outputPath, `bundle-${++exports}`);
+      return { outputPath, window };
+    };
+    const first = await performSync(root, runExport, now, "2026-09-30");
+    assert.equal(first.weekDir, "2026_09_28_2026_10_04");
+    assert.equal(path.basename(first.destPath), "test-office.json.gz");
+    assert.equal(first.archivedLastWeekDest, null);
+    assert.equal(await fs.readFile(first.destPath, "utf8"), "bundle-1");
+    await performSync(root, runExport, now, "2026-09-30");
+    assert.equal(await fs.readFile(first.destPath, "utf8"), "bundle-2");
+    assert.equal(exports, 2);
+    await assert.rejects(() => performSync(root, runExport, now, "2026-02-29"), /无效的周日期/);
+    await assert.rejects(() => performSync(root, async () => { throw new Error("导出失败"); }, now, "2026-09-30"), /导出失败/);
+    assert.equal(await fs.readFile(path.join(root, "sync-config.json"), "utf8"), configBefore);
+    assert.equal(await fs.readFile(statePath, "utf8"), stateBefore);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("sync --week 重新生成真实 bundle，过滤周边界并拒绝缺参及配置混用", async () => {
+  const root = await makeTempDir("ccus-resync-cli-");
+  const saved = { CCUS_CLAUDE_DATA_DIR: process.env.CCUS_CLAUDE_DATA_DIR, CODEX_HOME: process.env.CODEX_HOME, APPDATA: process.env.APPDATA };
+  const stdout = mock.method(process.stdout, "write", () => true);
+  try {
+    process.env.CCUS_CLAUDE_DATA_DIR = path.join(root, "claude");
+    process.env.CODEX_HOME = path.join(root, "codex");
+    process.env.APPDATA = path.join(root, "appdata");
+    const targetDir = path.join(root, "target");
+    await writeSyncConfig(root, { targetDir, intervalLabel: "3h", range: "this-week", suffix: "office" });
+    await fs.writeFile(path.join(root, "config.json"), JSON.stringify({ dayStart: "07:30" }));
+    const week = resolveRange("week:2026-09-30", new Date(), 450);
+    for (const timestamp of [week.start.getTime() - 1, week.start.getTime(), week.end.getTime(), week.end.getTime() + 1]) {
+      await appendEvent(root, {
+        schemaVersion: 3, timestamp: new Date(timestamp).toISOString(), gitUserName: "test", gitUserEmail: "test@example.com", gitUserAccount: "test",
+        rawPayload: { rate_limits: { seven_day: { used_percentage: 10 } } },
+      });
+    }
+    const args = ["sync", "--week", "2026-09-30", "--data-dir", root];
+    await main(args);
+    const weekDir = path.join(targetDir, "2026_09_28_2026_10_04");
+    const [fileName] = await fs.readdir(weekDir);
+    assert.match(fileName, /2026-09-28_to_2026-10-04-office\.json\.gz$/);
+    const dest = path.join(weekDir, fileName);
+    const bundle = JSON.parse(gunzipSync(await fs.readFile(dest)).toString("utf8"));
+    assert.equal(bundle.schemaVersion, 12);
+    assert.equal(bundle.range.start, week.start.toISOString());
+    assert.equal(bundle.range.end, week.end.toISOString());
+    assert.equal(bundle.range.dayStart, "07:30");
+    assert.equal(bundle.dailySummaries.length, 7);
+    assert.equal(bundle.rawEvents.length, 2);
+    await fs.writeFile(dest, "旧文件");
+    await main(args);
+    assert.equal(JSON.parse(gunzipSync(await fs.readFile(dest)).toString("utf8")).rawEvents.length, 2);
+    assert.equal(readSyncConfig(root).range, "this-week");
+    assert.equal(readSyncStateSync(root), null);
+    await assert.rejects(() => main(["sync", "--week", "--data-dir", root]), /缺少日期/);
+    for (const option of ["target", "interval", "range", "suffix", "no-suffix"]) {
+      await assert.rejects(() => main([...args, `--${option}`, "changed"]), /不能与同步配置参数/);
+    }
+    await assert.rejects(() => main(["sync", "config", "--week", "2026-09-30", "--data-dir", root]), /只用于本次同步/);
+    await assert.rejects(() => main(["sync", "--week", "2026-02-29", "--data-dir", root]), /无效的周日期/);
+    assert.equal(readSyncConfig(root).targetDir, targetDir);
+  } finally {
+    stdout.mock.restore();
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 /** 造一个临时数据目录，避免污染真实 data-dir。 */
 async function makeTempDir(prefix: string): Promise<string> {

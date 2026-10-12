@@ -37,7 +37,7 @@ export interface CliOptions {
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
   process.stdout.write("统计日配置：ccus config [--day-start 07:00] [--data-dir PATH]\n统计命令可用 --day-start HH:mm 临时覆盖，默认 07:00（本地时区）。\n\n");
-  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]   (默认装 Claude statusLine；--codex 改写 Codex 的 ~/.codex/config.toml notify，配 --uninstall 移除)\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus sessions [RANGE] [--out FILE] [--data-dir PATH]   (把 Claude 与 Codex 的活跃 session 打包成 zip，默认本周)\n  ccus sessions repair [codex|claude] [--min-gap 3h] [--dry-run]   (按末条记录时间修复 session 修改时间，默认仅跨天)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus api config [--enable|--disable] [--provider zhipu|custom] [--token-env NAME] [--token VAL] [--url URL] [--project P] [--organization O] [--ttl 5m] [--extractor-file FILE] [--data-dir PATH]\n  ccus api test [--data-dir PATH]   (立即拉取第三方额度并打印，验证配置是否生效)\n  ccus api status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
+  process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]   (默认装 Claude statusLine；--codex 改写 Codex 的 ~/.codex/config.toml notify，配 --uninstall 移除)\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus sessions [RANGE] [--out FILE] [--data-dir PATH]   (把 Claude 与 Codex 的活跃 session 打包成 zip，默认本周)\n  ccus sessions repair [codex|claude] [--min-gap 3h] [--dry-run]   (按末条记录时间修复 session 修改时间，默认仅跨天)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--week YYYY-MM-DD] [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus api config [--enable|--disable] [--provider zhipu|custom] [--token-env NAME] [--token VAL] [--url URL] [--project P] [--organization O] [--ttl 5m] [--extractor-file FILE] [--data-dir PATH]\n  ccus api test [--data-dir PATH]   (立即拉取第三方额度并打印，验证配置是否生效)\n  ccus api status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
 /** 一个轻量的参数解析器，当前命令面不复杂，没必要引入额外依赖。 */
@@ -945,6 +945,17 @@ async function handleBackgroundCheckUpdate(options: CliOptions): Promise<void> {
 async function handleSync(options: CliOptions): Promise<void> {
   const startedAt = process.hrtime.bigint();
   const dataDir = getDataDir(options);
+  if (options.week !== undefined) {
+    const week = getStringOption(options, "week");
+    if (!week) throw new Error("--week 缺少日期，用法：ccus sync --week YYYY-MM-DD。");
+    if (["target", "interval", "range", "suffix", "no-suffix"].some(key => options[key] !== undefined)) {
+      throw new Error("--week 不能与同步配置参数同时使用；请先用 ccus sync config 配置目标目录和后缀。");
+    }
+    const result = await performSync(dataDir, runExport, new Date(), week);
+    process.stdout.write(`已重新同步到 ${result.destPath}\n`);
+    process.stdout.write(`耗时：${formatSyncElapsed(Number(process.hrtime.bigint() - startedAt) / 1_000_000)}\n`);
+    return;
+  }
   const target = getStringOption(options, "target");
   const interval = getStringOption(options, "interval");
   const range = getStringOption(options, "range");
@@ -1005,6 +1016,7 @@ async function handleSyncStatus(options: CliOptions): Promise<void> {
  * 不带任何参数时仅打印当前配置，方便确认。
  */
 async function handleSyncConfig(options: CliOptions): Promise<void> {
+  if (options.week !== undefined) throw new Error("--week 只用于本次同步，请使用 ccus sync --week YYYY-MM-DD。");
   const dataDir = getDataDir(options);
   const target = getStringOption(options, "target");
   const interval = getStringOption(options, "interval");

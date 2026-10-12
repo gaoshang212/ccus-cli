@@ -173,6 +173,7 @@ schemaVersion 6/7/8/9/10/11/12 以外的 bundle 会跳过，并在 stderr 提示
 - `ccus open`（用系统文件管理器打开本地存储目录，`--print` 只输出路径不打开）
 - `ccus update`（主动检查更新，仅提示不自动安装）
 - `ccus sync`（立即执行一次同步：导出当前周 bundle 并复制到目标目录的按周子目录，周一额外归档上一周）
+- `ccus sync --week YYYY-MM-DD`（重新导出并同步该日期所在整周，沿用目标目录、机器后缀和统计日边界；覆盖同名文件，不改配置或自动同步状态，不触发周一归档）
 - `ccus sync config`（只读写同步配置 `--target` / `--interval` / `--range` / `--suffix`，不触发同步；不带参数打印当前配置）
 - `ccus sync install`（注册系统调度器：每周五 18:00 跑一次 `ccus sync`；Windows 用 schtasks 真正创建，macOS/Linux 打印 cron 命令引导手动安装；`--print` 只打印不安装）
 - `ccus sync uninstall`（卸载系统调度器；Windows 用 schtasks 删除任务，macOS/Linux 打印 crontab 提示；`--print` 只打印不执行）
