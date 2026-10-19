@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -80,19 +81,46 @@ export function getOrcaCodexHome(): string | null {
   return appData ? path.join(appData, "orca", "codex-runtime-home", "home") : null;
 }
 
+/** 动态发现 Orca 托管账号，添加/移除账号后下一次扫描即可生效。 */
+function getOrcaCodexAccountHomes(): string[] {
+  const appData = process.env.APPDATA;
+  if (!appData) {
+    return [];
+  }
+  const accountsRoot = path.join(appData, "orca", "codex-accounts");
+  try {
+    return fs.readdirSync(accountsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.resolve(accountsRoot, entry.name, "home"))
+      .sort();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return [];
+    }
+    throw error;
+  }
+}
+
 /**
  * Codex session 的全部数据源。
  *
- * 默认合并 `~/.codex` 与 Orca runtime home；`CODEX_HOME` 指向 Orca 时仍保留
+ * 默认合并 `~/.codex`、Orca runtime home 与各托管账号 home；`CODEX_HOME` 指向 Orca 时仍保留
  * `~/.codex`，其它显式覆盖则沿用原有覆盖语义。路径按平台规则去重。
  */
 export function getCodexSessionHomes(): string[] {
   const configuredHome = path.resolve(getCodexHome());
   const defaultHome = path.resolve(path.join(os.homedir(), ".codex"));
   const orcaHome = getOrcaCodexHome();
-  const candidates = orcaHome && samePath(configuredHome, orcaHome)
-    ? [defaultHome, configuredHome]
-    : [configuredHome, ...(orcaHome ? [path.resolve(orcaHome)] : [])];
+  const orcaHomes = [
+    ...(orcaHome ? [path.resolve(orcaHome)] : []),
+    ...getOrcaCodexAccountHomes(),
+  ];
+  const candidates = [
+    ...(orcaHomes.some((home) => samePath(configuredHome, home)) ? [defaultHome] : []),
+    configuredHome,
+    ...orcaHomes,
+  ];
   const seen = new Set<string>();
 
   return candidates.filter((candidate) => {

@@ -255,6 +255,7 @@ schemaVersion 6/7/8/9/10/11/12 以外的 bundle 会跳过，并在 stderr 提示
   - 纯写 hooks.json / config.toml，不碰 export/aggregate 契约，不 bump `schemaVersion`
 
 - `src/lib/codex-sessions.ts`
+  - session 根目录由 `paths.ts` 的 `getCodexSessionHomes` 统一发现：标准/配置的 Codex home、`%APPDATA%/orca/codex-runtime-home/home` 和 `orca/codex-accounts/<账号 ID>/home`；`CODEX_HOME` 指向 Orca 时仍保留标准 `~/.codex`。统计、会话打包与 repair 共用发现逻辑，同一相对路径的 rollout 副本继续去重，不改变导出 schemaVersion。
   - 扫 `<CODEX_HOME>/sessions` 下递归的 rollout jsonl（仿 `Codex.ts`），统计 Codex 的 userMessageCount / apiRequestCount / inputTokens / outputTokens / cacheReadInputTokens
   - 口径：`payload.type=="task_started"` 取 `turn_id` 计消息（**跨文件全局 distinct**，按最早 timestamp 归天）；`payload.type=="token_count"` 取 `info.last_token_usage` 累加 token、+1 请求；`input_tokens` 包含缓存输入，普通输入按 `max(0, input_tokens - cached_input_tokens)` 计算；`turn_context.payload.model` 决定后续请求模型；timestamp 在 top-level
   - `summarizeCodexSessionUsage` / `summarizeCodexSessionUsageByDay` 由 `cli.ts` 的 `runExport` 与 `loadDashboardData` 调用，填进 `weeklySummary.codex` / `dailySummaries[].codex`（export）和每日消息柱图（dashboard）

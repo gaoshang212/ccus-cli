@@ -258,15 +258,19 @@ test("ccus sessions exports active Claude and Codex sessions into one zip", asyn
   const claudeProjectDir = path.join(claudeHome, "projects", "D--workspace-nodejs-ccus");
   const codexRolloutDir = path.join(codexHome, "sessions", "2026", "07", "31");
   const orcaRolloutDir = path.join(orcaCodexHome, "sessions", "2026", "07", "31");
+  const accountRolloutDir = path.join(appData, "orca", "codex-accounts", "account-a", "home", "sessions", "2026", "07", "31");
   await fs.mkdir(claudeProjectDir, { recursive: true });
   await fs.mkdir(codexRolloutDir, { recursive: true });
   await fs.mkdir(orcaRolloutDir, { recursive: true });
+  await fs.mkdir(accountRolloutDir, { recursive: true });
   await fs.writeFile(path.join(claudeProjectDir, "claude-active.jsonl"), `${JSON.stringify({ timestamp: inRangeTimestamp })}\n`);
   await fs.writeFile(path.join(claudeProjectDir, "claude-old.jsonl"), `${JSON.stringify({ timestamp: outsideTimestamp })}\n`);
   await fs.writeFile(path.join(codexRolloutDir, "rollout-active.jsonl"), `${JSON.stringify({ timestamp: inRangeTimestamp })}\n`);
   await fs.writeFile(path.join(codexRolloutDir, "rollout-old.jsonl"), `${JSON.stringify({ timestamp: outsideTimestamp })}\n`);
   await fs.writeFile(path.join(orcaRolloutDir, "rollout-active.jsonl"), `${JSON.stringify({ timestamp: inRangeTimestamp })}\n`);
   await fs.writeFile(path.join(orcaRolloutDir, "rollout-orca.jsonl"), `${JSON.stringify({ timestamp: inRangeTimestamp })}\n`);
+  await fs.writeFile(path.join(accountRolloutDir, "rollout-active.jsonl"), `${JSON.stringify({ timestamp: inRangeTimestamp })}\n`);
+  await fs.writeFile(path.join(accountRolloutDir, "rollout-account.jsonl"), `${JSON.stringify({ timestamp: inRangeTimestamp })}\n`);
 
   let stdout = "";
   const stdoutMock = mock.method(process.stdout, "write", (chunk: string | Uint8Array) => {
@@ -282,6 +286,7 @@ test("ccus sessions exports active Claude and Codex sessions into one zip", asyn
     const names = readZipEntryNames(await fs.readFile(outputPath));
     assert.deepEqual(names.sort(), [
       "D--workspace-nodejs-ccus/claude-active.jsonl",
+      "codex/2026/07/31/rollout-account.jsonl",
       "codex/2026/07/31/rollout-active.jsonl",
       "codex/2026/07/31/rollout-orca.jsonl",
     ]);

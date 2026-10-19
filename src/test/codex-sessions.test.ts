@@ -12,15 +12,16 @@ async function mkdtemp(prefix: string): Promise<string> {
 }
 
 /** 把 ccus 指向一个临时 CODEX_HOME，返回它和恢复函数。 */
-async function withTempCodexHome(prefix: string): Promise<{ home: string; orcaHome: string; restore: () => void }> {
+async function withTempCodexHome(prefix: string): Promise<{ home: string; orcaHome: string; orcaAccountsRoot: string; restore: () => void }> {
   const home = await mkdtemp(prefix);
   const appData = path.join(home, "appdata");
   const orcaHome = path.join(appData, "orca", "codex-runtime-home", "home");
+  const orcaAccountsRoot = path.join(appData, "orca", "codex-accounts");
   const previous = process.env.CODEX_HOME;
   const previousAppData = process.env.APPDATA;
   process.env.CODEX_HOME = home;
   process.env.APPDATA = appData;
-  return { home, orcaHome, restore: () => {
+  return { home, orcaHome, orcaAccountsRoot, restore: () => {
     if (previous === undefined) {
       delete process.env.CODEX_HOME;
     } else {
@@ -74,6 +75,75 @@ test("getCodexSessionHomes keeps ~/.codex when CODEX_HOME points to Orca", async
     } else {
       process.env.APPDATA = previousAppData;
     }
+  }
+});
+
+test("getCodexSessionHomes discovers Orca accounts dynamically and preserves explicit overrides", async () => {
+  const { home, orcaHome, orcaAccountsRoot, restore } = await withTempCodexHome("ccus-codex-accounts-");
+  try {
+    assert.deepEqual(getCodexSessionHomes(), [home, orcaHome]);
+    const accountA = path.join(orcaAccountsRoot, "account-a", "home");
+    const accountB = path.join(orcaAccountsRoot, "account-b", "home");
+    await fs.mkdir(accountB, { recursive: true });
+    await fs.mkdir(accountA, { recursive: true });
+    await fs.writeFile(path.join(orcaAccountsRoot, "not-an-account.json"), "{}");
+    assert.deepEqual(getCodexSessionHomes(), [home, orcaHome, accountA, accountB]);
+
+    process.env.CODEX_HOME = accountA;
+    assert.deepEqual(getCodexSessionHomes(), [
+      path.resolve(os.homedir(), ".codex"), accountA, orcaHome, accountB,
+    ]);
+    process.env.CODEX_HOME = home;
+    await fs.rmdir(accountB);
+    await fs.rmdir(path.dirname(accountB));
+    assert.deepEqual(getCodexSessionHomes(), [home, orcaHome, accountA]);
+
+    // 空账号 home 没有 sessions 时仍可正常扫描。
+    assert.equal((await summarizeCodexSessionUsage(RANGE_START, RANGE_END)).apiRequestCount, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("Codex account homes contribute usage and deduplicate copies across all Orca homes", async () => {
+  const { home, orcaHome, orcaAccountsRoot, restore } = await withTempCodexHome("ccus-codex-accounts-");
+  try {
+    const accountA = path.join(orcaAccountsRoot, "account-a", "home");
+    const accountB = path.join(orcaAccountsRoot, "account-b", "home");
+    const relativePath = "2026/07/27/rollout-shared.jsonl";
+    const context = JSON.stringify({ timestamp: ts(0), type: "turn_context", payload: { model: "gpt-5.4" } });
+    const turn = (id: string, minute: number) => JSON.stringify({
+      timestamp: ts(minute), type: "event_msg", payload: { type: "task_started", turn_id: id },
+    });
+    const tokens = (minute: number) => JSON.stringify({
+      timestamp: ts(minute, 1), type: "event_msg", payload: {
+        type: "token_count", info: { last_token_usage: { input_tokens: 100, output_tokens: 10, cached_input_tokens: 20 } },
+      },
+    });
+    const shared = [context, turn("shared", 1), tokens(1)];
+    await writeRollout(home, relativePath, shared);
+    await writeRollout(orcaHome, relativePath, shared);
+    await writeRollout(accountA, relativePath, [...shared, turn("account-a", 2), tokens(2)]);
+    await writeRollout(accountB, relativePath, shared);
+    await writeRollout(accountB, "2026/07/27/rollout-account-b.jsonl", [context, turn("account-b", 3), tokens(3)]);
+
+    const { weekly, daily } = await summarizeCodexSessionUsageCombined(RANGE_START, RANGE_END);
+    assert.equal(weekly.userMessageCount, 3);
+    assert.equal(weekly.apiRequestCount, 3);
+    assert.equal(weekly.inputTokens, 240);
+    assert.equal(weekly.outputTokens, 30);
+    assert.equal(weekly.cacheReadInputTokens, 60);
+    assert.equal(weekly.matchedFileCount, 2);
+    assert.equal(weekly.apiEquivalentCost.pricedApiRequestCount, 3);
+    const { matchedFileCount, codexDataDir, ...usage } = weekly;
+    assert.deepEqual(daily.get(DAY), { date: DAY, ...usage });
+
+    const active = await findActiveCodexSessionFiles(RANGE_START, RANGE_END);
+    assert.equal(active.length, 2);
+    const merged = active.find((file) => file.relativePath.replaceAll("\\", "/") === relativePath);
+    assert.equal(merged?.content.trim().split(/\r?\n/).length, 5);
+  } finally {
+    restore();
   }
 });
 
