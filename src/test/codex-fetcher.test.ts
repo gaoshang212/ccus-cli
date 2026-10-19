@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
+import { PassThrough, Writable } from "node:stream";
+import childProcess, { execFileSync, spawn } from "node:child_process";
 import { fetchCodexQuota, fetchCodexQuotaViaWham, parseWhamUsage, readCodexAuth, readCodexQuotaCacheSync, resolveCodexQuota } from "../lib/codex-fetcher";
 import type { CodexChildProcess, CodexSpawnFn } from "../lib/codex-fetcher";
 
@@ -17,27 +19,31 @@ async function mkdtemp(prefix: string): Promise<string> {
  * emit 经 queueMicrotask 延迟到 fetchCodexQuota 注册完 stdout listener 之后，模拟真实异步 stdio。
  */
 class FakeChild extends EventEmitter {
-  readonly stdout = new EventEmitter();
-  readonly stderr = new EventEmitter();
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
   readonly sent: string[] = [];
   killed = false;
-  readonly stdin = {
-    write: (chunk: string): boolean => {
-      this.sent.push(chunk);
+  unreferenced = false;
+  readonly stdin = new Writable({
+    write: (chunk: Buffer, _encoding, callback) => {
+      this.sent.push(chunk.toString());
       try {
-        const msg = JSON.parse(chunk.trim()) as { id?: number; method: string };
+        const msg = JSON.parse(chunk.toString().trim()) as { id?: number; method: string };
         this.onMessage(msg);
       } catch {
         // 非 JSON 行忽略。
       }
-      return true;
+      callback();
     },
-  };
+  });
   onMessage(_msg: { id?: number; method: string }): void {
     // 默认不响应。
   }
   kill(): void {
     this.killed = true;
+  }
+  unref(): void {
+    this.unreferenced = true;
   }
 }
 
@@ -51,6 +57,80 @@ function rpcChild(responder: (msg: { id?: number; method: string }, emit: (line:
 const asChild = (child: FakeChild): CodexChildProcess => child as unknown as CodexChildProcess;
 
 const INIT_RESULT_LINE = (id: number | undefined) => JSON.stringify({ id, result: { codexHome: "/tmp" } }) + "\n";
+
+for (const mode of ["success", "rpc-error", "timeout"] as const) {
+  test(`fetchCodexQuota closes the Windows process tree after ${mode}`, { skip: process.platform !== "win32" }, async (t) => {
+    const dir = await mkdtemp("ccus-codex-tree-");
+    const pidFile = path.join(dir, "pids.txt");
+    const serverPath = path.join(dir, "server.cjs");
+    const launcherPath = path.join(dir, "launcher.cjs");
+    await fs.writeFile(serverPath, `
+      require('node:fs').appendFileSync(${JSON.stringify(pidFile)}, process.pid + '\\n');
+      setInterval(() => {}, 1000);
+      require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+        const msg = JSON.parse(line);
+        if (${JSON.stringify(mode)} === 'timeout') return;
+        if (msg.method === 'initialize') {
+          console.log(JSON.stringify({ id: msg.id, result: {} }));
+        } else if (msg.method === 'account/rateLimits/read') {
+          const response = ${JSON.stringify(mode)} === 'rpc-error'
+            ? { error: { message: 'test error' } }
+            : { result: { rateLimits: { primary: { usedPercent: 42 } } } };
+          console.log(JSON.stringify({ id: msg.id, ...response }));
+        }
+      });
+    `);
+    await fs.writeFile(launcherPath, `
+      require('node:fs').appendFileSync(${JSON.stringify(pidFile)}, process.pid + '\\n');
+      require('node:child_process').spawn(process.execPath, [${JSON.stringify(serverPath)}], { stdio: 'inherit' });
+    `);
+    await fs.writeFile(path.join(dir, "codex.cmd"), `@"${process.execPath}" "${launcherPath}"\r\n`);
+    const env = { ...process.env };
+    const pathKey = Object.keys(env).find(key => key.toLowerCase() === "path") ?? "PATH";
+    env[pathKey] = `${dir}${path.delimiter}${env[pathKey] ?? ""}`;
+    const runner = spawn(process.execPath, ["--import", "tsx", "-e", `
+      const { fetchCodexQuota } = require(${JSON.stringify(require.resolve("../lib/codex-fetcher"))});
+      fetchCodexQuota({ timeoutMs: 1500 }).then(result => console.log(JSON.stringify(result)));
+    `], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    runner.stdout.on("data", chunk => { stdout += chunk; });
+    runner.stderr.on("data", chunk => { stderr += chunk; });
+    const started = Date.now();
+    let watchdog: NodeJS.Timeout | undefined;
+    try {
+      const exitCode = await new Promise<number | null>((resolve, reject) => {
+        watchdog = setTimeout(() => reject(new Error(`query process did not exit: ${stdout} ${stderr}`)), 7000);
+        runner.once("error", reject);
+        runner.once("close", resolve);
+      });
+      assert.equal(exitCode, 0, stderr);
+      assert.equal(JSON.parse(stdout).status, mode === "success" ? "ok" : "error");
+      if (mode === "success") assert.equal(JSON.parse(stdout).fiveHour, 42);
+      const pids = (await fs.readFile(pidFile, "utf8")).trim().split(/\s+/).map(Number);
+      assert.equal(pids.length, 2, "both descendant processes must have started");
+      for (const pid of pids) {
+        assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, `descendant ${pid} is still alive`);
+      }
+      t.diagnostic(`query and process exit: ${Date.now() - started} ms`);
+    } finally {
+      clearTimeout(watchdog);
+      // 失败时只清理本测试记录的 PID，包括旧实现杀掉 shell 后遗留的后代。
+      const pids = (await fs.readFile(pidFile, "utf8").catch(() => "")).trim().split(/\s+/).map(Number);
+      for (const pid of [...pids.reverse(), runner.pid]) {
+        if (!pid) continue;
+        try {
+          process.kill(pid, 0);
+          execFileSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore", timeout: 2000 });
+        } catch { /* 已退出。 */ }
+      }
+      runner.stdout.destroy();
+      runner.stderr.destroy();
+      runner.unref();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 test("fetchCodexQuota parses primary/secondary usedPercent (camelCase) and resetsAt seconds", async () => {
   const child = rpcChild((msg, emit) => {
@@ -77,6 +157,10 @@ test("fetchCodexQuota parses primary/secondary usedPercent (camelCase) and reset
   assert.equal(out.fiveHour, 42);
   assert.equal(out.sevenDay, 18);
   assert.equal(out.resetsAt, 1730947200 * 1000);
+  assert.equal(child.stdin.destroyed, true);
+  assert.equal(child.stdout.destroyed, true);
+  assert.equal(child.stderr.destroyed, true);
+  assert.equal(child.unreferenced, true);
   assert.equal(captured.command, "codex");
   assert.deepEqual(captured.args, ["-s", "read-only", "-a", "never", "app-server"]);
   assert.equal(captured.args?.includes("untrusted"), false);
@@ -129,6 +213,56 @@ test("fetchCodexQuota returns error on timeout when server never replies", async
 
   assert.equal(out.status, "error");
   assert.equal(child.killed, true);
+  assert.equal(child.stdin.destroyed, true);
+  assert.equal(child.stdout.destroyed, true);
+  assert.equal(child.stderr.destroyed, true);
+});
+
+test("fetchCodexQuota releases pipes on Windows tree cleanup failure without losing quota", { skip: process.platform !== "win32" }, async (t) => {
+  const child = rpcChild((msg, emit) => {
+    if (msg.method === "initialize") emit(INIT_RESULT_LINE(msg.id));
+    if (msg.method === "account/rateLimits/read") {
+      emit(JSON.stringify({ id: msg.id, result: { rateLimits: { primary: { usedPercent: 42 } } } }) + "\n");
+    }
+  });
+  Object.assign(child, { pid: 12345 });
+  let cleanupCalls = 0;
+  t.mock.method(childProcess, "execFile", (command: string, args: string[], options: { timeout: number; windowsHide: boolean }, callback: (error: Error) => void) => {
+    cleanupCalls += 1;
+    assert.equal(command, "taskkill.exe");
+    assert.deepEqual(args, ["/PID", "12345", "/T", "/F"]);
+    assert.equal(options.windowsHide, true);
+    assert.equal(options.timeout, 2000);
+    assert.equal(child.killed, false, "keep shell alive until tree cleanup completes");
+    assert.equal(child.stdin.destroyed, false, "keep pipes open until tree cleanup completes");
+    queueMicrotask(() => {
+      child.stdin.emit("error", new Error("EPIPE during cleanup"));
+      callback(new Error("taskkill failed"));
+    });
+  });
+  const out = await fetchCodexQuota({ spawn: () => asChild(child), timeoutMs: 1000 });
+  assert.equal(out.status, "ok");
+  assert.equal(out.fiveHour, 42);
+  assert.equal(cleanupCalls, 1);
+  assert.equal(child.killed, true);
+  assert.equal(child.stdin.destroyed, true);
+  assert.equal(child.stdout.destroyed, true);
+  assert.equal(child.stderr.destroyed, true);
+  assert.equal(child.unreferenced, true);
+});
+
+test("fetchCodexQuota handles asynchronous pipe errors even when kill throws", async () => {
+  const child = new FakeChild();
+  child.kill = () => { throw new Error("already gone"); };
+  const out = await fetchCodexQuota({ spawn: () => {
+    queueMicrotask(() => child.stdin.emit("error", new Error("EPIPE")));
+    return asChild(child);
+  }, timeoutMs: 1000 });
+  assert.equal(out.status, "error");
+  assert.equal(child.stdin.destroyed, true);
+  assert.equal(child.stdout.destroyed, true);
+  assert.equal(child.stderr.destroyed, true);
+  assert.equal(child.unreferenced, true);
 });
 
 test("fetchCodexQuota tolerates missing usedPercent in one window", async () => {

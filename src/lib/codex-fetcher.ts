@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import type { Readable, Writable } from "node:stream";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { homedir } from "node:os";
@@ -10,6 +11,7 @@ import { getCodexQuotaCachePath } from "./paths";
 // app-server 子进程参数：read-only + never，避免新版 Codex 拒绝已移除的 untrusted 审批策略。
 const CODEX_ARGS = ["-s", "read-only", "-a", "never", "app-server"];
 const DEFAULT_TIMEOUT_MS = 10_000;
+const CLEANUP_TIMEOUT_MS = 2_000;
 // notify 每 turn 触发，额度缓存 5 分钟，命中秒回避免阻塞 Codex 主流程。
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 // ChatGPT 后端 wham/usage 回退：app-server 未返回可用额度时走，直连读 auth.json 的 OAuth token。
@@ -35,12 +37,14 @@ export interface CodexFetchOutcome extends CodexQuota {
 
 /** 测试注入用：替代 child_process.spawn 的最小子进程形状。 */
 export interface CodexChildProcess {
-  stdin: { write(chunk: string): boolean };
-  stdout: NodeJS.ReadableStream;
-  stderr: NodeJS.ReadableStream;
+  pid?: number;
+  stdin: Pick<Writable, "write" | "destroy" | "on">;
+  stdout: Readable;
+  stderr: Readable;
   on(event: "error", listener: (err: Error) => void): this;
   on(event: "close", listener: (code: number | null) => void): this;
   kill(signal?: string): void;
+  unref(): void;
 }
 
 export type CodexSpawnFn = (
@@ -235,6 +239,33 @@ const defaultSpawn: CodexSpawnFn = (command, args, options) => {
   return spawn(command, args, merged as unknown as Parameters<typeof spawn>[2]) as unknown as CodexChildProcess;
 };
 
+/** Windows 必须先清理整棵树，再关闭管道；先杀 shell 会失去后代进程的关联。 */
+async function cleanupCodexChild(child: CodexChildProcess, kill: boolean): Promise<void> {
+  try {
+    if (kill) {
+      if (process.platform === "win32" && child.pid !== undefined) {
+        await new Promise<void>((resolve, reject) => {
+          execFile("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+            windowsHide: true,
+            timeout: CLEANUP_TIMEOUT_MS,
+          }, (error) => error ? reject(error) : resolve());
+        });
+      } else {
+        child.kill();
+      }
+    }
+  } catch (error) {
+    debugLog("codex", "process cleanup failed", error instanceof Error ? error.message : String(error));
+    try { child.kill(); } catch { /* 清理失败不覆盖查询结果。 */ }
+  } finally {
+    // 即使 taskkill 失败，也不让后代继承的管道或进程句柄阻塞 Hook 退出。
+    child.stdin.destroy();
+    child.stdout.destroy();
+    child.stderr.destroy();
+    child.unref();
+  }
+}
+
 export interface FetchCodexQuotaOptions {
   codexHomePath?: string | null;
   timeoutMs?: number;
@@ -278,15 +309,11 @@ export async function fetchCodexQuota(options: FetchCodexQuotaOptions = {}): Pro
         clearTimeout(timer);
         timer = null;
       }
-      // settled 标志已保证 resolve 幂等，无需再手动摘 listener；kill 终止子进程后其 stdio 自然关闭。
-      if (kill && child) {
-        try {
-          child.kill();
-        } catch {
-          // kill 失败不影响结果。
-        }
+      if (child) {
+        void cleanupCodexChild(child, kill).then(() => resolve(outcome));
+      } else {
+        resolve(outcome);
       }
-      resolve(outcome);
     };
 
     try {
@@ -306,11 +333,22 @@ export async function fetchCodexQuota(options: FetchCodexQuotaOptions = {}): Pro
       finish(empty("error"), true);
     }, timeoutMs);
 
+    // 管道错误（例如清理期间的 EPIPE）是异步事件，不能仅靠 write 的 try/catch。
+    for (const stream of [child.stdin, child.stdout, child.stderr]) {
+      stream.on("error", (error: Error) => {
+        debugLog("codex", "stdio error", error.message);
+        finish(empty("error"), true);
+      });
+    }
+    child.stderr.resume();
+
     const send = (message: string): void => {
+      if (settled) return;
       try {
         child?.stdin.write(message);
       } catch (error) {
         debugLog("codex", "stdin write failed", error instanceof Error ? error.message : String(error));
+        finish(empty("error"), true);
       }
     };
 
@@ -318,6 +356,7 @@ export async function fetchCodexQuota(options: FetchCodexQuotaOptions = {}): Pro
     send(buildRpcMessage(initId, "initialize", { clientInfo: { name: "ccus", version: "1.0.0" } }));
 
     child.stdout.on("data", (chunk: Buffer | string) => {
+      if (settled) return;
       buffer += chunk.toString();
       let newline: number;
       while ((newline = buffer.indexOf("\n")) !== -1) {
@@ -351,6 +390,7 @@ export async function fetchCodexQuota(options: FetchCodexQuotaOptions = {}): Pro
           const quota = parseRateLimitsResult(message.result);
           debugLog("codex", "quota parsed", quota);
           finish({ ...quota, status: "ok" }, true);
+          return;
         }
       }
     });
@@ -358,7 +398,7 @@ export async function fetchCodexQuota(options: FetchCodexQuotaOptions = {}): Pro
     child.on("error", (err: Error & { code?: string }) => {
       const enoent = err.code === "ENOENT";
       debugLog("codex", "spawn error", { code: err.code, message: err.message });
-      finish(empty(enoent ? "unavailable" : "error"));
+      finish(empty(enoent ? "unavailable" : "error"), true);
     });
 
     child.on("close", (code: number | null) => {
