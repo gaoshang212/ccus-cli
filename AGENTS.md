@@ -61,6 +61,8 @@
 
 ### 2.4 当前导出契约（非常重要）
 
+统计来源：`ccus config --disable-source claude|codex` 禁用指定来源，`--enable-source` 恢复；支持逗号分隔多个来源，保存到数据目录 `config.json.disabledSources`，默认空列表（全部统计）。`export` 与个人 `dashboard` 支持同名参数临时覆盖，同步通过共享导出入口读取持久配置。禁用来源不扫描会话、不自动修复 mtime，历史额度事件也过滤（包括 bundle 的 `rawEvents`）；保留原字段，计数/token/成本为 0、额度为 null，不 bump schemaVersion。全部禁用时输出空统计。不影响采集、原始日志、sessions 打包/手动修复；aggregate 只读输入 bundle，旧产物需重新导出替换。
+
 `ccus export` 当前默认导出 **bundle JSON**，不是 jsonl。
 
 顶层结构：

@@ -65,9 +65,17 @@ ccus --version     # 查看当前安装的版本
 
 ```bash
 ccus install
-ccus config                           # 查看统计日配置，默认 07:00
+ccus config                           # 查看统计配置，默认 07:00、双来源
 ccus config --day-start 07:30          # 修改每天开始时间，支持整点或 HH:mm
+ccus config --disable-source claude   # 禁用 Claude 数据统计
+ccus config --disable-source codex    # 禁用 Codex 数据统计
+ccus config --enable-source claude    # 恢复 Claude 数据统计
+ccus config --enable-source claude,codex # 恢复全部来源统计（默认）
 ```
+
+禁用来源保存在数据目录的 `config.json.disabledSources`，默认空列表（全部统计），对后续 `export`、个人 `dashboard build/open/serve` 和同步（含自动同步、指定周补同步）生效。禁用/启用只修改指定来源，重复执行幂等；两者都禁用时统计为空。导出和个人看板支持 `--disable-source` / `--enable-source` 临时覆盖，不修改配置，例如 `ccus export lw --disable-source claude`。使用自定义数据目录时，配置命令也需带相同的 `--data-dir PATH`。
+
+被禁用来源的会话不扫描、不自动修复修改时间；其历史额度事件也不参与统计或进入导出的 `rawEvents`。消息、请求、token 和等效 API 成本统一遵循禁用配置；bundle 保留原字段，禁用来源计数/成本为 0、额度为 null，`schemaVersion` 仍为 12。此配置不关闭 statusline/hook 采集、不删除原始日志，也不影响 `sessions` 打包与手动修复。已有 bundle 不会自动改写；`aggregate` 及多人看板继续按输入 bundle 汇总，要让历史汇总采用新来源配置，需重新导出并替换旧 bundle（包含其它机器的副本）。
 
 然后照常使用 Claude Code，statusline 会显示 5 小时额度使用率（`5h`）、7 天额度使用率（`7d`）、context window 占用百分比（`ctx`）、模型名、工作区名，以及当前 git 分支（`⎇ <branch>`，实时读取，非 git 仓库或处于 detached HEAD 时省略该段）；原始 payload 也会落到本地日志，供后续 dashboard / export 使用。
 

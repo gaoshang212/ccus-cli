@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 import http from "node:http";
 import path from "node:path";
-import { readConfig, writeDayStart } from "./lib/config";
+import { parseSources, readConfig, writeConfig, type UsageSource } from "./lib/config";
 import { buildDashboardHtml } from "./lib/dashboard";
 import { summarizeEvents } from "./lib/dashboard";
 import { buildAggregateDashboardHtml } from "./lib/aggregate-dashboard";
 import { API_PRICING_PAGE_FILE, buildApiPricingPage } from "./lib/api-pricing-table";
 import { renderDashboardPage } from "./lib/dashboard-pages";
-import { findActiveSessionFiles, summarizeClaudeProjectUsageCombined } from "./lib/claude";
-import { findActiveCodexSessionFiles, summarizeCodexSessionUsageCombined } from "./lib/codex-sessions";
+import { findActiveSessionFiles, summarizeClaudeProjectUsageCombined, type ClaudeProjectUsageCombined } from "./lib/claude";
+import { findActiveCodexSessionFiles, summarizeCodexSessionUsageCombined, type CodexSessionUsageCombined } from "./lib/codex-sessions";
 import { buildAggregatedDailyCsv, buildAggregatedDetailCsv, buildAggregatedWeeklyCsv, buildSummaryRows, buildWeeklyExportBundleJson, writeGzipFile, writeTextFile } from "./lib/export";
 import { buildAggregatedDailyRows, buildAggregatedDetailRows, buildAggregatedWeeklyRows, loadWeeklyExportBundles } from "./lib/aggregate";
 import { debugLog, resolveDebugEnabled, setDebugEnabled } from "./lib/debug";
@@ -16,8 +16,8 @@ import { readGitBranch, readGitIdentity } from "./lib/git";
 import { installStatusline } from "./lib/install";
 import { readStdin } from "./lib/io";
 import { openInBrowser, openPath } from "./lib/open";
-import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, isCodexSourceEvent, parseStatuslinePayload } from "./lib/payload";
-import { getClaudeSettingsPath, getCodexHooksPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
+import { computeStatuslineEvent, createPersistedStatuslineEvent, extractWorkspaceDir, isCodexSourceEvent, isCodexSourceRecord, parseStatuslinePayload } from "./lib/payload";
+import { getClaudeDataDir, getClaudeSettingsPath, getCodexHome, getCodexHooksPath, getDashboardDir, getDefaultDataDir } from "./lib/paths";
 import { installScheduler, uninstallScheduler } from "./lib/scheduler";
 import { applyQuotaToPayload, fetchQuota, readApiConfig, readApiQuotaCacheSync, readClaudeSettingsEnvTokenSync, resolveApiQuota, resolveApiToken, resolveApiTokenWithSettings, writeApiConfig } from "./lib/api-mode";
 import { resolveCodexQuota } from "./lib/codex-fetcher";
@@ -36,7 +36,7 @@ export interface CliOptions {
 
 /** CLI 帮助信息保持简洁，方便直接挂到 README 或终端里查看。 */
 function printHelp(): void {
-  process.stdout.write("统计日配置：ccus config [--day-start 07:00] [--data-dir PATH]\n统计命令可用 --day-start HH:mm 临时覆盖，默认 07:00（本地时区）。\n\n");
+  process.stdout.write("统计配置：ccus config [--day-start 07:00] [--disable-source claude|codex] [--enable-source claude|codex] [--data-dir PATH]\n统计命令可用 --day-start HH:mm 临时覆盖，默认 07:00（本地时区）。\n默认统计全部来源；export 和 dashboard 也支持 --disable-source / --enable-source 临时覆盖，多来源以逗号分隔。\n\n");
   process.stdout.write(`ccus\n\nCommands:\n  ccus install [--settings PATH] [--command CMD] [--data-dir PATH]   (默认装 Claude statusLine；--codex 改写 Codex 的 ~/.codex/config.toml notify，配 --uninstall 移除)\n  ccus statusline emit [--data-dir PATH] [--input FILE] [--no-store]\n  ccus dashboard build [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard open [--range today|this-week|last-week|5h] [--out FILE] [--data-dir PATH]\n  ccus dashboard serve [--range today|this-week|last-week|5h] [--port 0] [--host 127.0.0.1] [--open] [--data-dir PATH]\n  ccus export [RANGE] [--out FILE] [--data-dir PATH]   (RANGE: this-week|tw, last-week|lw, today, 5h; e.g. ccus export lw)\n  ccus sessions [RANGE] [--out FILE] [--data-dir PATH]   (把 Claude 与 Codex 的活跃 session 打包成 zip，默认本周)\n  ccus sessions repair [codex|claude] [--min-gap 3h] [--dry-run]   (按末条记录时间修复 session 修改时间，默认仅跨天)\n  ccus aggregate --input-dir DIR [--out-dir DIR]\n  ccus aggregate serve --input-dir DIR [--port 0] [--host 127.0.0.1]\n  ccus sync [--week YYYY-MM-DD] [--data-dir PATH]\n  ccus sync config [--target DIR] [--interval 3h|daily|<N>h|<N>m] [--range this-week] [--suffix NAME | --no-suffix] [--data-dir PATH]\n  ccus sync install [--print] [--data-dir PATH]   (注册每周五 18:00 的系统调度器)\n  ccus sync uninstall [--print]   (卸载系统调度器)\n  ccus sync status [--data-dir PATH]\n  ccus api config [--enable|--disable] [--provider zhipu|custom] [--token-env NAME] [--token VAL] [--url URL] [--project P] [--organization O] [--ttl 5m] [--extractor-file FILE] [--data-dir PATH]\n  ccus api test [--data-dir PATH]   (立即拉取第三方额度并打印，验证配置是否生效)\n  ccus api status [--data-dir PATH]\n  ccus open [--data-dir PATH] [--print]\n  ccus update [--data-dir PATH]\n  ccus --version\n\nGlobal flags:\n  --verbose | --debug | -v   输出详细调试日志到 stderr（等价于设置 CCUS_DEBUG=1），方便排查问题\n`);
 }
 
@@ -87,9 +87,32 @@ async function getDayStartMinutes(options: CliOptions): Promise<number> {
 async function handleConfig(options: CliOptions): Promise<void> {
   await getDayStartMinutes(options);
   const dataDir = getDataDir(options);
-  const value = getStringOption(options, "day-start");
-  const dayStart = value === undefined ? (await readConfig(dataDir)).dayStart : await writeDayStart(dataDir, value);
-  process.stdout.write(`每天开始时间：${dayStart}（本地时区）\n`);
+  const disabledSources = await getDisabledSources(options);
+  const dayStart = getStringOption(options, "day-start");
+  const config = dayStart === undefined && options["disable-source"] === undefined && options["enable-source"] === undefined
+    ? await readConfig(dataDir)
+    : await writeConfig(dataDir, { ...(dayStart === undefined ? {} : { dayStart }), disabledSources });
+  process.stdout.write(`每天开始时间：${config.dayStart}（本地时区）\n已禁用来源：${config.disabledSources.join(",") || "无（统计全部来源）"}\n`);
+}
+
+async function getDisabledSources(options: CliOptions): Promise<UsageSource[]> {
+  const changes = (key: string): UsageSource[] => {
+    if (options[key] === true) throw new Error(`--${key} 缺少来源，例如 claude 或 codex。`);
+    const value = getStringOption(options, key);
+    return value === undefined ? [] : parseSources(value);
+  };
+  const disable = changes("disable-source");
+  const enable = changes("enable-source");
+  if (disable.some((source) => enable.includes(source))) throw new Error("同一来源不能同时禁用和启用。");
+  const disabled = new Set((await readConfig(getDataDir(options))).disabledSources);
+  for (const source of disable) disabled.add(source);
+  for (const source of enable) disabled.delete(source);
+  return (["claude", "codex"] as const).filter((source) => disabled.has(source));
+}
+
+async function getSources(options: CliOptions): Promise<UsageSource[]> {
+  const disabled = await getDisabledSources(options);
+  return (["claude", "codex"] as const).filter((source) => !disabled.includes(source));
 }
 
 /**
@@ -250,10 +273,10 @@ async function handleStatuslineEmit(options: CliOptions): Promise<void> {
 }
 
 /** 统计前静默同步会话修改时间，修复失败时仍尝试原有统计流程。 */
-async function loadSessionUsage(start: Date, end: Date, dayStartMinutes: number) {
+async function loadSessionUsage(start: Date, end: Date, dayStartMinutes: number, sources: UsageSource[]): Promise<[ClaudeProjectUsageCombined, CodexSessionUsageCombined]> {
   try {
     const { repairSessionMtimes } = await import("./lib/session-mtime");
-    const results = await repairSessionMtimes(false);
+    const results = sources.length === 0 ? [] : await repairSessionMtimes(false, sources.length === 1 ? sources[0] : undefined);
     debugLog("sessions", "统计前同步修改时间", {
       scanned: results.length,
       repaired: results.filter((result) => result.status === "repaired").length,
@@ -262,9 +285,15 @@ async function loadSessionUsage(start: Date, end: Date, dayStartMinutes: number)
   } catch (error) {
     debugLog("sessions", "统计前同步修改时间失败", error);
   }
+  const emptyUsage = {
+    userMessageCount: 0, apiRequestCount: 0, inputTokens: 0, outputTokens: 0,
+    cacheReadInputTokens: 0, matchedFileCount: 0, apiEquivalentCost: emptyApiEquivalentCost(),
+  };
   return Promise.all([
-    summarizeClaudeProjectUsageCombined(start, end, dayStartMinutes),
-    summarizeCodexSessionUsageCombined(start, end, dayStartMinutes),
+    sources.includes("claude") ? summarizeClaudeProjectUsageCombined(start, end, dayStartMinutes)
+      : { weekly: { ...emptyUsage, claudeDataDir: getClaudeDataDir() }, daily: new Map() },
+    sources.includes("codex") ? summarizeCodexSessionUsageCombined(start, end, dayStartMinutes)
+      : { weekly: { ...emptyUsage, codexDataDir: getCodexHome() }, daily: new Map() },
   ]);
 }
 
@@ -281,6 +310,7 @@ async function loadDashboardData(
   const dataDir = getDataDir(options);
   const range = getStringOption(options, "range") ?? defaultRange;
   const dayStartMinutes = await getDayStartMinutes(options);
+  const sources = await getSources(options);
   const now = new Date();
   // this-week 固定补齐到完整一周（周一到周日），即使本周还没过完，曲线 x 轴也按 7 天逐日展示；
   // 其它范围（today / last-week / 5h）不受影响。
@@ -288,8 +318,9 @@ async function loadDashboardData(
   // events 含 Claude 与 Codex：个人看板额度叠加 Codex（peak max、latest 相加、7d 累计合并），与 aggregate 同口径。
   // codex 消息柱图走 dailyUserMessages，不受影响。
   const events = (await readEventsForRange(dataDir, range, now, dayStartMinutes))
+    .filter((record) => sources.includes(isCodexSourceRecord(record) ? "codex" : "claude"))
     .map((record) => computeStatuslineEvent(record));
-  const [claudeUsage, codexUsage] = await loadSessionUsage(window.start, window.end, dayStartMinutes);
+  const [claudeUsage, codexUsage] = await loadSessionUsage(window.start, window.end, dayStartMinutes, sources);
   const claudeDailyUsage = claudeUsage.daily;
   const codexDailyUsage = codexUsage.daily;
   const dailyUserMessages = enumerateReportingDateKeys(window.start, window.end, dayStartMinutes).map((date) => ({
@@ -433,7 +464,9 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
   // 周度导出固定覆盖完整一周：this-week 即使本周还没过完，文件名与 dailySummaries 也补齐到周日。
   const window = expandToFullWeekWindow(resolveRange(range, now, dayStartMinutes));
   debugLog("export", "range resolved", { range, label: window.label, start: window.start.toISOString(), end: window.end.toISOString() });
-  const records = await readEventsForRange(dataDir, range, now, dayStartMinutes);
+  const sources = await getSources(options);
+  const records = (await readEventsForRange(dataDir, range, now, dayStartMinutes))
+    .filter((record) => sources.includes(isCodexSourceRecord(record) ? "codex" : "claude"));
   const events = records.map((record) => computeStatuslineEvent(record));
   // 按 source 分流：Claude usage 只算 claude 事件，Codex 额度单列（避免 codex 额度污染 claude usage）。
   const claudeEvents = events.filter((event) => !isCodexSourceEvent(event));
@@ -442,7 +475,7 @@ async function runExport(options: CliOptions): Promise<{ outputPath: string; win
   const statuslineDailyRows = buildSummaryRows(claudeEvents, dayStartMinutes);
   const codexStatuslineSummary = summarizeEvents(codexEvents);
   const codexStatuslineDailyRows = buildSummaryRows(codexEvents, dayStartMinutes);
-  const [claudeScan, codexScan] = await loadSessionUsage(window.start, window.end, dayStartMinutes);
+  const [claudeScan, codexScan] = await loadSessionUsage(window.start, window.end, dayStartMinutes, sources);
   const claudeUsage = claudeScan.weekly;
   const claudeDailyUsage = claudeScan.daily;
   const codexUsage = codexScan.weekly;

@@ -62,7 +62,7 @@ test("配置可持久化、保留其它字段，非法输入不覆盖原文件",
     assert.equal((await readConfig(root)).dayStart, "07:00");
     await fs.writeFile(path.join(root, "config.json"), '{"other":true}', "utf8");
     await main(["config", "--day-start", "7:30", "--data-dir", root]);
-    assert.deepEqual(await readConfig(root), { other: true, dayStart: "07:30" });
+    assert.deepEqual(await readConfig(root), { other: true, dayStart: "07:30", disabledSources: [] });
     await assert.rejects(() => writeDayStart(root, "24"), /每天开始时间/);
     await assert.rejects(() => main(["config", "--day-start"]), /缺少时间/);
     assert.equal((await readConfig(root)).dayStart, "07:30");
