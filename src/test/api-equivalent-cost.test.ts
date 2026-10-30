@@ -218,6 +218,22 @@ test("GPT-6.1 Sol 按生效日期、推理后缀及长上下文边界计价", ()
   }
 });
 
+test("GPT-6.1 Terra 按生效日期、推理后缀及长上下文边界计价", () => {
+  for (const model of ["gpt-6.1-terra", "openai/gpt-6.1-terra-max", "gpt-6.1-terra (reasoning: high)"]) {
+    const request = {
+      provider: "codex" as const, model, timestamp: "2026-10-26T00:00:00Z",
+      inputTokens: 172_000, cacheReadInputTokens: 100_000, outputTokens: 10_000,
+    };
+    assert.equal(findApiModelPrice({ ...request, timestamp: "2026-10-25T23:59:59.999Z" }), null);
+    assert.deepEqual(priceApiRequest(request), {
+      estimatedUsd: 0.227, pricedApiRequestCount: 1, unpricedApiRequestCount: 0,
+    });
+    assert.deepEqual(priceApiRequest({ ...request, inputTokens: 172_001 }), {
+      estimatedUsd: 0.429002, pricedApiRequestCount: 1, unpricedApiRequestCount: 0,
+    });
+  }
+});
+
 test("新增模型按上线时间计价，兼容模型别名并区分缓存读写", () => {
   for (const [provider, name, date, estimatedUsd] of [
     ["claude", "claude-fable-5.1", "2026-09-01", 0.41],

@@ -237,6 +237,11 @@ test("buildApiPricingPage renders a standalone current pricing page with Codex f
   assert.doesNotMatch(latestHtml, /gpt-6\.1-sol/);
   assert.equal(sol61Html.split("<code>gpt-6.1-sol</code>").length - 1, 2);
   assert.ok(sol61Html.indexOf("gpt-6.1-sol") < sol61Html.indexOf("gpt-6-astra"));
+  const terra61Html = buildApiPricingPage(new Date("2026-10-26T00:00:00Z"));
+  const beforeTerra61Html = buildApiPricingPage(new Date("2026-10-25T23:59:59.999Z"));
+  assert.doesNotMatch(beforeTerra61Html, /gpt-6\.1-terra/);
+  assert.equal(terra61Html.split("<code>gpt-6.1-terra</code>").length - 1, 2);
+  assert.ok(terra61Html.indexOf("gpt-6.1-terra") < terra61Html.indexOf("gpt-6-astra"));
   const octoberHtml = buildApiPricingPage(new Date("2026-10-08T00:00:00Z"));
   for (const model of ["claude-fable-5.1", "claude-mythos-5", "claude-mythos-5.1", "claude-sonnet-5.5", "gpt-5.4-mini"]) {
     assert.equal(octoberHtml.split(`<code>${model}</code>`).length - 1, 1);
