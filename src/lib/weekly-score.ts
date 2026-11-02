@@ -7,7 +7,7 @@ export interface ScoreSettings {
 export const DEFAULT_SCORE_SETTINGS: ScoreSettings = {
   messageWeight: 50,
   messageBaseline: 200,
-  quotaBaseline: 70,
+  quotaBaseline: 35,
 };
 
 export const ATTENDANCE_DAYS = Array.from({ length: 14 }, (_, index) => (index + 1) / 2);

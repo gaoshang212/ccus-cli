@@ -5,18 +5,18 @@ import { attendanceScoreScript, calculateWeeklyScore, DEFAULT_SCORE_SETTINGS, re
 
 test("出勤按比例调整两项达标线，默认五天且接受半天至七天、步进半天", () => {
   for (let days = 0.5; days <= 7; days += 0.5) {
-    assert.equal(calculateWeeklyScore(40 * days, 14 * days, DEFAULT_SCORE_SETTINGS, days), 100);
+    assert.equal(calculateWeeklyScore(40 * days, 7 * days, DEFAULT_SCORE_SETTINGS, days), 100);
   }
-  assert.equal(calculateWeeklyScore(200, 70, DEFAULT_SCORE_SETTINGS, 5), calculateWeeklyScore(200, 70, DEFAULT_SCORE_SETTINGS));
+  assert.equal(calculateWeeklyScore(200, 35, DEFAULT_SCORE_SETTINGS, 5), calculateWeeklyScore(200, 35, DEFAULT_SCORE_SETTINGS));
   for (const days of [0, 0.25, 1.25, 7.5, 8, NaN, Infinity]) {
-    assert.equal(calculateWeeklyScore(200, 70, DEFAULT_SCORE_SETTINGS, days), null);
+    assert.equal(calculateWeeklyScore(200, 35, DEFAULT_SCORE_SETTINGS, days), null);
   }
 });
 
 test("出勤选择更新单周及多周平均分，保留缺失额度，切回五天恢复默认", () => {
   const rows = [
-    { userMessageCount: 120, sevenDayCumulativeUsagePct: 42 },
-    { userMessageCount: 480, sevenDayCumulativeUsagePct: 168 },
+    { userMessageCount: 120, sevenDayCumulativeUsagePct: 21 },
+    { userMessageCount: 480, sevenDayCumulativeUsagePct: 84 },
   ];
   const original = JSON.stringify(rows);
   const elements = [[rows[0]], rows, [{ ...rows[0], sevenDayCumulativeUsagePct: null }], []].map(values => {
@@ -56,20 +56,20 @@ test("出勤选择更新单周及多周平均分，保留缺失额度，切回�
 
 test("周评分支持零值、超基准、权重修改及无效数据", () => {
   const defaults = DEFAULT_SCORE_SETTINGS;
-  assert.equal(calculateWeeklyScore(200, 70, defaults), 100);
-  assert.equal(calculateWeeklyScore(800, 280, defaults), 200);
+  assert.equal(calculateWeeklyScore(200, 35, defaults), 100);
+  assert.equal(calculateWeeklyScore(800, 140, defaults), 200);
   assert.equal(calculateWeeklyScore(0, 0, defaults), 0);
   assert.equal(calculateWeeklyScore(200, null, defaults), null);
   assert.equal(calculateWeeklyScore(200, null, { ...defaults, messageWeight: 100 }), 100);
-  assert.equal(calculateWeeklyScore(800, 70, { ...defaults, messageWeight: 80 }), 180);
+  assert.equal(calculateWeeklyScore(800, 35, { ...defaults, messageWeight: 80 }), 180);
   assert.equal(calculateWeeklyScore(400, 140, { ...defaults, messageBaseline: 400, quotaBaseline: 140 }), 100);
   for (const settings of [{ ...defaults, messageBaseline: 0 }, { ...defaults, quotaBaseline: -1 }, { ...defaults, messageWeight: 101 }, { ...defaults, messageWeight: NaN }]) {
-    assert.equal(calculateWeeklyScore(200, 70, settings), null);
+    assert.equal(calculateWeeklyScore(200, 35, settings), null);
   }
 });
 
 test("评分区只显示分数，不提供参数控件或浏览器配置", () => {
-  const html = renderWeeklyScores([{ week: "2026-06-01", personKey: "<用户>", userMessageCount: 800, sevenDayCumulativeUsagePct: 70 }]);
+  const html = renderWeeklyScores([{ week: "2026-06-01", personKey: "<用户>", userMessageCount: 800, sevenDayCumulativeUsagePct: 35 }]);
   assert.match(html, /&lt;用户&gt;/);
   assert.match(html, /<strong>150.0<\/strong>/);
   assert.doesNotMatch(html, /<form|<input|<button|<script|localStorage|占比|基准|√/);

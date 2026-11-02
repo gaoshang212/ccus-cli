@@ -234,8 +234,8 @@ test("buildAggregateDashboardHtml renders people, charts, and weekly rollup", ()
 
 test("多人对比显示逐周评分的平均值，任一周额度缺失时显示不可用", () => {
   const weeks = [
-    { ...weeklyRows[0], week: "2026-05-18", userMessageCount: 200, sevenDayCumulativeUsagePct: 70 },
-    { ...weeklyRows[0], week: "2026-05-25", userMessageCount: 800, sevenDayCumulativeUsagePct: 280 },
+    { ...weeklyRows[0], week: "2026-05-18", userMessageCount: 200, sevenDayCumulativeUsagePct: 35 },
+    { ...weeklyRows[0], week: "2026-05-25", userMessageCount: 800, sevenDayCumulativeUsagePct: 140 },
   ];
   const peopleSection = (rows: typeof weeks) => buildAggregateDashboardHtml([], [dailyRows[0]], rows)
     .match(/<section class="panel table-panel">[\s\S]*?<h2>多人对比<\/h2>[\s\S]*?<\/section>/)?.[0] ?? "";
@@ -249,9 +249,9 @@ test("多人对比显示逐周评分的平均值，任一周额度缺失时显�
 
 test("团队逐人调整出勤，批量重置，并按每周原始行导出当前评分 CSV", async () => {
   const weeks = [
-    { ...weeklyRows[0], userMessageCount: 120, sevenDayCumulativeUsagePct: 42 },
-    { ...weeklyRows[0], week: "2026-06-01", userMessageCount: 480, sevenDayCumulativeUsagePct: 168 },
-    { ...weeklyRows[1], userMessageCount: 240, sevenDayCumulativeUsagePct: 84 },
+    { ...weeklyRows[0], userMessageCount: 120, sevenDayCumulativeUsagePct: 21 },
+    { ...weeklyRows[0], week: "2026-06-01", userMessageCount: 480, sevenDayCumulativeUsagePct: 84 },
+    { ...weeklyRows[1], userMessageCount: 240, sevenDayCumulativeUsagePct: 42 },
   ];
   const html = buildAggregateDashboardHtml([], dailyRows, weeks);
   assert.match(html, /id="export-weekly-csv"/);

@@ -247,14 +247,14 @@ test("聚合 CSV 保留成本列，周表追加评分列", () => {
   assert.equal(dailyCsv.includes("pricedApiRequestCount"), false);
   assert.equal(dailyCsv.includes("unpricedApiRequestCount"), false);
   assert.match(dailyCsv, /,1,1,1\.234568,"2026-08-14"$/m);
-  assert.match(weeklyCsv, /,1,1,,"mixed",63\.2,5$/m);
+  assert.match(weeklyCsv, /,1,1,,"mixed",87\.4,5$/m);
 
   // 列顺序：sevenDayLatestUsagePct 之后紧跟 sevenDayCumulativeUsagePct，再到 uniqueSessions。
   assert.match(dailyCsv, /sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions/);
   assert.match(weeklyCsv, /sevenDayLatestUsagePct,sevenDayCumulativeUsagePct,uniqueSessions/);
   // 累计值位于 7d latest 与 uniqueSessions 之间，周评分在成本列之后。
   assert.match(dailyCsv, /,40,80,1,1,1\.234568,"2026-08-14"$/m);
-  assert.match(weeklyCsv, /,40,95,1,1,,"mixed",63\.2,5$/m);
+  assert.match(weeklyCsv, /,40,95,1,1,,"mixed",87\.4,5$/m);
 
   // null 累计写空，与现有 usage 列一致。
   const nullCsv = buildAggregatedDailyCsv([{ ...dailyRow, sevenDayCumulativeUsagePct: null }]);
@@ -262,8 +262,8 @@ test("聚合 CSV 保留成本列，周表追加评分列", () => {
 
   // 周评分使用整周汇总值，覆盖基准、超基准、零值和额度缺失。
   const scoredCsv = buildAggregatedWeeklyCsv([
-    { ...weeklyRow, userMessageCount: 200, sevenDayCumulativeUsagePct: 70 },
-    { ...weeklyRow, userMessageCount: 800, sevenDayCumulativeUsagePct: 280 },
+    { ...weeklyRow, userMessageCount: 200, sevenDayCumulativeUsagePct: 35 },
+    { ...weeklyRow, userMessageCount: 800, sevenDayCumulativeUsagePct: 140 },
     { ...weeklyRow, userMessageCount: 0, sevenDayCumulativeUsagePct: 0 },
     { ...weeklyRow, userMessageCount: 200, sevenDayCumulativeUsagePct: null },
   ]);
@@ -271,7 +271,7 @@ test("聚合 CSV 保留成本列，周表追加评分列", () => {
   assert.ok(scoredCsv.split("\n").every(line => line.split(",").length === 19));
   assert.match(buildAggregatedWeeklyCsv([]), /,weeklyScore,attendanceDays$/);
   for (const days of [0.5, 1, 3, 3.5, 6.5, 7]) {
-    const csv = buildAggregatedWeeklyCsv([{ ...weeklyRow, userMessageCount: 40 * days, sevenDayCumulativeUsagePct: 14 * days }], days);
+    const csv = buildAggregatedWeeklyCsv([{ ...weeklyRow, userMessageCount: 40 * days, sevenDayCumulativeUsagePct: 7 * days }], days);
     assert.ok(csv.endsWith(`,100,${days}`));
   }
   assert.doesNotMatch(dailyCsv, /attendanceDays/);
